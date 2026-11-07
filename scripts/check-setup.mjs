@@ -1,20 +1,112 @@
-import "dotenv/config";
+#!/usr/bin/env node
+// check-setup — verifies env file format without connecting to providers.
+// Usage:
+//   node scripts/check-setup.mjs [local|staging|production] [--strict]
+//   node scripts/check-setup.mjs --env <local|staging|production> [--strict]
+//   node scripts/check-setup.mjs --env staging --strict   # reads .env.staging, checks only keys set in that file
+//   node scripts/check-setup.mjs --env production
+// With --env, loads .env.<env> (or .env for local) and validates only the secrets present in that file
+// (missing required keys that are not in the file are not reported as ERROR).
 
-const profile = process.argv[2] || "local";
-const strict = process.argv.includes("--strict");
+import fs from "node:fs";
+import path from "node:path";
+
+const rawArgs = process.argv.slice(2);
+let profile = "local";
+let envFilter = null;
+let strict = false;
+
+for (let i = 0; i < rawArgs.length; i++) {
+  const a = rawArgs[i];
+  if (a === "--env" && rawArgs[i + 1]) {
+    envFilter = rawArgs[++i];
+    profile = envFilter;
+  } else if (a.startsWith("--env=")) {
+    envFilter = a.split("=")[1];
+    profile = envFilter;
+  } else if (a === "--strict") {
+    strict = true;
+  } else if (["local", "staging", "production"].includes(a)) {
+    profile = a;
+    // if no explicit --env, envFilter stays null so we check all
+  } else if (a === "--help" || a === "-h") {
+    console.log(`Usage: node scripts/check-setup.mjs [local|staging|production] [--env <env>] [--strict]`);
+    console.log(`  --env <local|staging|production>  Load .env.<env> (.env for local) and only check keys set in that file`);
+    console.log(`  --strict                           Warns become errors`);
+    process.exit(0);
+  } else {
+    console.error(`Usage: node scripts/check-setup.mjs <local|staging|production> [--strict]`);
+    console.error(`  or: node scripts/check-setup.mjs --env <local|staging|production> [--strict]`);
+    process.exit(2);
+  }
+}
+
 if (!["local", "staging", "production"].includes(profile)) {
-  console.error("Usage: node scripts/check-setup.mjs <local|staging|production> [--strict]");
+  console.error(`Usage: node scripts/check-setup.mjs <local|staging|production> [--strict]`);
   process.exit(2);
 }
+
+// Load dotenv from the targeted file if --env was requested
+let keysInFile = null; // Set<string> | null => if set, only check these keys
+if (envFilter) {
+  const envFile = envFilter === "local" ? ".env" : `.env.${envFilter}`;
+  const fullPath = path.resolve(envFile);
+  if (!fs.existsSync(fullPath)) {
+    console.error(`ERROR ${envFile} not found — copy from ${envFile}.example first`);
+    process.exit(2);
+  }
+  const content = fs.readFileSync(fullPath, "utf8");
+  keysInFile = new Set();
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    // strip quotes
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+    keysInFile.add(key);
+    if (!process.env[key]) process.env[key] = val;
+  }
+  console.log(`Loaded ${envFile} (${keysInFile.size} keys) — checking only keys set in that file.`);
+} else {
+  // fallback to dotenv/config for backward compat (loads .env)
+  try {
+    const dotenv = await import("dotenv/config");
+    void dotenv;
+  } catch {}
+}
+
 let errors = 0;
 let warnings = 0;
 function report(level, message) {
+  if (keysInFile && !shouldReportForFilter(message, level)) return;
   if (level === "ERROR") errors++;
   if (level === "WARN") warnings++;
   console.log(`${level.padEnd(5)} ${message}`);
 }
+
+// When --env is used, only report checks for keys that are actually in the file
+// We infer by looking at message containing key names, or by allowing all DB/APP_URL checks
+// since they are core. For other keys, skip if not in file.
+function shouldReportForFilter(msg, level) {
+  if (!keysInFile) return true;
+  // Always show DB/APP_URL and summary, even if not in file? But spec says "only for secrets set"
+  // So we filter: if message mentions a specific env var, only show if that var is in file
+  const knownKeys = ["DATABASE_URL", "APP_URL", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID_MXN", "STRIPE_PRICE_ID_USD", "STRIPE_PREMIUM_PRICE_IDS", "OPEN_METEO_API_KEY", "NEXT_PUBLIC_MAP_TILE_URL", "NEXT_PUBLIC_MAP_ATTRIBUTION", "LOCAL_SEED_PASSWORD", "ALLOW_LOCAL_SEED"];
+  for (const k of knownKeys) {
+    if (msg.includes(k)) return keysInFile.has(k);
+  }
+  // For generic messages without key, show them (e.g., DATABASE_URL format)
+  // But we still want to hide if the key itself wasn't in file — check if message is about a key not in file
+  // For now, show all generic DB/APP checks since they are always relevant when file is loaded
+  return true;
+}
+
 function value(name) { return process.env[name]?.trim() || ""; }
 console.log(`Solara configuration check: ${profile}. Values are never printed.`);
+if (envFilter) console.log(`(Filtered to .env.${envFilter === "local" ? "" : envFilter} — only secrets set in that file)`);
 const database = value("DATABASE_URL");
 try {
   if (!database) throw new Error("missing");
