@@ -59,5 +59,9 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/usage-guide)" = "404"
           # Ensure no internal-doc content leaked in 404
           ! curl -s http://localhost:3000/blueprint | grep -q "EL PROYECTO DE SOLARA"
+          # #14 — non-development HTML must not contain internal-document links (header/footer/dashboard)
+          ! curl -s http://localhost:3000/ | grep -q 'href="/blueprint'
+          ! curl -s http://localhost:3000/ | grep -q 'href="/setup'
+          ! curl -s http://localhost:3000/ | grep -q 'href="/usage-guide'
           kill $PID
           wait $PID || true

@@ -12,7 +12,8 @@
     "test:integration": "RUN_BILLING_INTEGRATION_TESTS=1 tsx --test tests/*.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "check:setup": "node scripts/check-setup.mjs local"
+    "check:setup": "node scripts/check-setup.mjs local",
+    "db:seed:local": "tsx scripts/local/seed-users.ts"
   },
   "engines": {
     "node": ">=22"

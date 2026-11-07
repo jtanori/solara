@@ -1,0 +1,7 @@
+# Never deploy local-only seed and mock code
+scripts/local
+tests
+drizzle/meta
+.env
+.env.*
+!.env.example

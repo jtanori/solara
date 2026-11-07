@@ -1,6 +1,6 @@
 # Solara setup guides
 
-These guides cover the current application in three separate environments. A compact bilingual version is available inside the application at `/setup` when running in development (`npm run dev`). Outside development the in-app route returns 404 (its availability is gated by runtime `NODE_ENV === "development"`).
+These guides cover the current application in three separate environments. The compact bilingual checklist is also available inside the application at `/setup` when running in development (`npm run dev`). Outside development the internal-document routes `/blueprint`, `/setup`, and `/usage-guide` each return 404 (availability is gated by runtime `NODE_ENV === "development"`), and their header, footer, and dashboard links are hidden — the blueprint-only footer column is removed and the grid compacts.
 
 1. [Foundation, database, CI/CD and deployments](01-foundation-and-deployment.md)
 2. [Stripe subscriptions and MXN/USD pricing](02-stripe.md)
