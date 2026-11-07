@@ -84,7 +84,7 @@ With a single collaborator, requiring approving reviews blocks progress, but unr
 ### Decision
 - Every PR is reviewed via GitHub **Commented** reviews (not Approvals) until a second maintainer exists; the author cannot approve own PRs (GitHub-enforced).
 - Target: branch protection will require **conversation resolution** — open review comments must be resolved before merge. **Status: not applied yet** (no rulesets).
-- Merge method is **squash** only, preserving a linear history and a single commit per feature on `main`/`staging`. **Status: target** — repo currently `allow_merge_commit:true`, `allow_rebase_merge:true`, `delete_branch_on_merge:false`; verify with `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` and toggle in Settings → General → Pull Requests.
+- Merge method is **squash** only, preserving a linear history and a single commit per feature on `main`/`staging`. **Status: target** — repo currently `allow_merge_commit:true`, `allow_rebase_merge:true`, `delete_branch_on_merge:false`; verify with `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` and toggle in Settings → General → Pull Requests. **Exception:** promotion PRs `staging → main` are **not squashed** — they are fast-forwarded (or merged with a merge commit) to preserve ancestry so `staging` remains an ancestor of `main` and future promotions diff only new work. See PR #23 review for rationale.
 
 ### Consequences
 - Human-readable review history is kept in PR comments; `mergeStateStatus` must be `CLEAN` and `verify` green.
