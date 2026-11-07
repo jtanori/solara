@@ -103,7 +103,7 @@ Launch limitations are listed in `README.md` and `docs/setup/README.md`: calcula
 ### Decision
 - The app ships as a functional prototype. Public sign-up creates a free `user`; owner provisioning is via a privileged `psql` session, not a bootstrap endpoint.
 - No Stripe live keys, real customer data, or production secrets are committed or used in Preview deployments.
-- Branch protection and deployment isolation (separate DBs/keys per env) enforce this.
+- Target: branch protection and per-environment isolation (separate DBs/keys, #2) will enforce this once applied.
 
 ### Consequences
 - Any production deploy must pass ADR 003 checklist and the operational runbook in `docs/setup/01-foundation-and-deployment.md`.
