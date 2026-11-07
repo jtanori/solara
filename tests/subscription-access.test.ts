@@ -70,7 +70,8 @@ test(
     } finally {
       if (createdSubIds.length) await db.delete(subscriptions).where(inArray(subscriptions.stripeSubscriptionId, createdSubIds));
       for (const id of createdUserIds) await db.delete(users).where(eq(users.id, id));
-      // Do not end pool here — billing-integration.test.ts also uses the shared Pool; ending it would break subsequent billing tests in the same run.
+      // Intentionally do not end the shared Pool here; let the process exit handle it.
+      // (Node's test runner may isolate files in separate processes, so cross-file Pool sharing is not the failure mode it once appeared to be.)
     }
   },
 );
