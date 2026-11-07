@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { db } from "@/db";
 import { sessions, users } from "@/db/schema";
-import { createSession, hashPassword, hashToken, sameOrigin, SESSION_COOKIE, verifyPassword } from "@/lib/auth";
+import { createSession, hashToken, sameOrigin, SESSION_COOKIE } from "@/lib/auth";
+import { hashPassword, verifyPassword } from "@/lib/passwords";
 import { getLocale } from "@/lib/i18n-server";
 export async function POST(request:Request) {
   if(!sameOrigin(request)) return NextResponse.json({error:"Invalid request origin."},{status:403});
