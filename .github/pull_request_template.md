@@ -9,8 +9,8 @@ Closes #<!-- issue number --> — <!-- title -->
 ## Branching and merge policy
 - [ ] This PR targets `staging` (feature → staging → main). Direct PRs to `main` are only for promoting `staging`.
 - [ ] Branch name follows `<type>/<issue-number>-<slug>` (e.g. `feat/13-usage-guide-role-scope`).
-- [ ] Merge method will be **squash** with auto-delete head branch (repository Settings → General → Pull Requests: `allow_squash_merge:true`, `allow_merge_commit:false`, `allow_rebase_merge:false`, `delete_branch_on_merge:true` — target, not yet enforced; verify via `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'`).
-- [ ] Branch protection (target, not yet applied) requires PR, `verify` status check, conversation resolution, linear history, and blocking force-push/deletion. See `docs/decisions.md` ADR 001 and ADR 004.
+- [ ] Merge method: **squash for `feature→staging`, merge commit for `staging→main`** (repo Settings → General → Pull Requests: `allow_squash_merge:true`, `allow_merge_commit:true`, `allow_rebase_merge:false`, `delete_branch_on_merge:true`; verify via `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` → `{true,true,false,true}`).
+- [ ] Branch protection (applied `protect-staging`/`protect-main`) requires PR, `verify` status check, conversation resolution, and blocking force-push/deletion; `staging` requires linear history, `main` allows merge commits for promotions. See `docs/decisions.md` ADR 001 and ADR 004.
 
 ## Evidence
 - [ ] `npm ci` + `npx drizzle-kit migrate` (CI does this on a disposable DB)
@@ -42,9 +42,9 @@ Closes #<!-- issue number --> — <!-- title -->
 - [ ] No secrets committed (`.env` never committed; `.env.example` contains placeholders only)
 - [ ] Docs updated (`README.md`, `docs/setup/*`, `docs/decisions.md`, `BACKLOG.md` when issues change) and `BACKLOG.md` links resolve
 - [ ] No mocked/seed code in `src/` (keep in `scripts/`)
-- [ ] **Accepted for promotion** — maintainer posted deploy command as a comment (feature → `staging` only for now). Production promotion is manual pending owner decision on ADR 004:
+- [ ] **Accepted for promotion** — maintainer posted deploy command as a comment:
   - feature PR → `staging`: `./scripts/deploy.sh --pr <number> --env staging`
-  - promotion PR `staging → main`: **blocked** — `scripts/deploy.sh` refuses `--env production` until owner decides squash vs fast-forward; use manual GitHub UI promotion with owner oversight.
+  - promotion PR `staging → main`: `./scripts/deploy.sh --pr <number> --env production` (runs `migrate.yml` for `production` env **before** merge if `drizzle/` touched, then `--merge` to preserve ancestry).
 
 <!--
 Accepted-for-promotion comment copy — paste the one matching the target branch:
@@ -54,7 +54,7 @@ Accepted-for-promotion comment copy — paste the one matching the target branch
 
 CI is green (`verify` 1m30s + Vercel Preview → `solara-stg.vercel.app`). Check `[x]` below then deploy — if drizzle/ changed, `deploy.sh` will trigger `.github/workflows/migrate.yml` for Environment `staging` (secret `DATABASE_URL` = Neon direct, no -pooler) *before* merging.
 
-- [ ] touches `drizzle/` — will dispatch `migrate.yml`
+- [ ] touches `drizzle/` — will dispatch `migrate.yml` (Env: staging)
 - [ ] does not touch `drizzle/` — direct merge
 
 Run locally (no local DB URL needed):
@@ -63,10 +63,19 @@ Run locally (no local DB URL needed):
 ```
 See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://solara-stg.vercel.app/api/health` → `{"ok":true}`.
 
-— Promotion staging → main (PR targets `main`) — currently blocked —
-⚠️ **Production promotion requires owner decision on ADR 004**
+— Promotion staging → main (PR targets `main`) —
+✅ **Accepted for promotion — ready to deploy to production**
 
-Staging QA done on `https://solara-stg.vercel.app` + `verify` on `staging` is green. Per AGENTS.md & ADR 004, `staging → main` must be fast-forward/merge (not squash) to preserve ancestry, but repo is currently squash-only. `scripts/deploy.sh --env production` will refuse until the owner decides and updates repo settings. Proceed manually via GitHub UI with owner approval and ensure GitHub Environment `production` has required reviewers + branch restriction to `main` (Settings → Environments → production → Required reviewers, Deployment branches → Selected branches: `main`).
+Staging QA done on `https://solara-stg.vercel.app` + `verify` on `staging` is green. This promotion uses `merge commit` (not squash) to keep `staging` ancestor of `main` per ADR 004. If `drizzle/` changed, `deploy.sh` will trigger `migrate.yml` for Environment `production` (secret `DATABASE_URL` = Neon direct) *before* merging to avoid Vercel/migration race.
+
+- [ ] touches `drizzle/` — will dispatch `migrate.yml` (Env: production)
+- [ ] does not touch `drizzle/` — direct merge
+
+Run locally (no local DB URL needed):
+```bash
+./scripts/deploy.sh --pr <number> --env production
+```
+Requires repo `Allow merge commits:true` (Settings → General → Pull Requests) and `protect-main` without linear history. Ensure GitHub Environment `production` has required reviewers + branch restriction to `main` (Settings → Environments → production).
 -->
 
 ---

@@ -13,16 +13,16 @@ This is the click-path for the two owner-only issues that cannot be automated wi
 **Link:** <https://github.com/jtanori/solara/settings> → scroll to **General** → **Pull Requests**
 
 1. Check **Allow squash merging** → set **Default message:** *Pull request title and description* (or title only — pick one and keep).
-2. **Uncheck** *Allow merge commits*.
+2. **Check** *Allow merge commits* — needed for `staging → main` promotions (preserve ancestry, ADR 004).
 3. **Uncheck** *Allow rebase merging*.
 4. Check **Automatically delete head branches**.
 
-> **Why squash-only for `feature → staging`?** One commit per feature, linear history. **Exception:** `staging → main` promotions are **not** squashed — they are fast-forward/merge to keep `staging` an ancestor (see `docs/decisions.md` ADR 004 + PR #23 review).
+> **Why squash + merge?** `feature → staging` is squash (one commit per feature, linear). `staging → main` is **merge commit** to keep `staging` an ancestor of `main` so future promotions diff only new work (see `docs/decisions.md` ADR 004 + PR #23). `scripts/deploy.sh` picks `--squash` vs `--merge` automatically.
 
 *Verify locally:*
 ```bash
 gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'
-# expect {true,false,false,true}
+# expect {true,true,false,true}
 ```
 
 ### B. Branch protection rules (new Rulesets UI — recommended)
@@ -46,13 +46,13 @@ Click **New ruleset → New branch ruleset**:
   - ✓ *Require status checks to pass*
     - ✓ Require branches to be up to date before merging
     - Add check → search `verify` (the CI job: migrations → `next typegen` → `tsc` → `eslint` → `tsx --test` → `audit` → `build` + smoke 404s)
-  - ✓ *Require linear history*
+  - ✓ *Require linear history* — keep on `staging` (feature PRs are squash)
   - ✓ *Block force pushes*
   - ✓ *Block deletions*
 - **Save**
 
 **Ruleset 2 — `main`:**
-- Same as staging, but name `protect-main`.
+- Same as staging, but name `protect-main` and **uncheck Require linear history** (promotions are merge commits per ADR 004 — linear history would block `--merge`).
 - Keep Required approvals **0** for now (author can't approve own PR anyway — GitHub blocks it; protection still requires `0` approvers). Documented in ADR 001 to bump to `1` later.
 
 **Classic alternative (if Rulesets feels heavy):**
