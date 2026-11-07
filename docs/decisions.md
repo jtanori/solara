@@ -16,16 +16,16 @@ We need environment isolation for a prototype that will handle personal data and
 ### Decision
 - **`staging`** is a long-lived branch from `main` at `166539f`. Feature work branches from `staging` as `<type>/<issue-number>-<slug>` (e.g. `feat/13-usage-guide-role-scope`).
 - Merge flow: `feature → staging` (reviewed PR) → QA on staging → promotion PR `staging → main` → Vercel production deploy.
-- **Merge settings:** squash-only, auto-delete head branches on the repository (Settings → General → Pull Requests). Verified via `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` should be `{true,false,false,true}` — currently requires manual toggle (403 for `GITHUB_TOKEN` on API).
-- **Branch protection — `staging` (target, not yet applied):**
+- **Merge settings:** **squash for `feature → staging`, merge commit for `staging → main`** (ADR 004), auto-delete head branches (Settings → General → Pull Requests). Verified via `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` → `{true,true,false,true}` — `allow_squash_merge:true` for features, `allow_merge_commit:true` for promotions, `delete_branch_on_merge:true`.
+- **Branch protection — `staging` (applied 2026-11-07 as `protect-staging`):**
   - Require PR before merging
   - Require status check `verify` (CI: migrations, typecheck, lint, tests, audit, build + smoke)
   - Require conversation resolution
   - Require linear history
   - Block force-pushes and deletions
-  - Required approvals: **0** while single collaborator (target: enforced via Ruleset “Require a pull request before merging” with `required_approving_review_count: 0`; **Status: not applied yet** — `gh api repos/jtanori/solara/rulesets` → `[]`, no rulesets)
-- **Branch protection — `main` (target, not yet applied):**
-  - Same as `staging`, plus required approvals deferred to `1` once a second maintainer exists (per #1 spec). Today `0` — self-merge is allowed; `gh pr review --approve` from author is blocked by GitHub (expected). **Status: not applied yet**.
+  - Required approvals: **0** while single collaborator (enforced via Ruleset “Require a pull request before merging” with `required_approving_review_count: 0`)
+- **Branch protection — `main` (applied 2026-11-07 as `protect-main`):**
+  - Same as `staging` except **no linear history** (merge commits allowed for promotions), plus required approvals deferred to `1` once a second maintainer exists (per #1 spec). Today `0` — self-merge is allowed; `gh pr review --approve` from author is blocked by GitHub (expected).
 - **Documentation:** `docs/setup/01-foundation-and-deployment.md` is kept aligned with the above.
 
 ### Consequences
@@ -83,8 +83,8 @@ With a single collaborator, requiring approving reviews blocks progress, but unr
 
 ### Decision
 - Every PR is reviewed via GitHub **Commented** reviews (not Approvals) until a second maintainer exists; the author cannot approve own PRs (GitHub-enforced).
-- Target: branch protection will require **conversation resolution** — open review comments must be resolved before merge. **Status: not applied yet** (no rulesets).
-- Merge method is **squash** only, preserving a linear history and a single commit per feature on `main`/`staging`. **Status: target** — repo currently `allow_merge_commit:true`, `allow_rebase_merge:true`, `delete_branch_on_merge:false`; verify with `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` and toggle in Settings → General → Pull Requests. **Exception:** promotion PRs `staging → main` are **not squashed** — they are fast-forwarded (or merged with a merge commit) to preserve ancestry so `staging` remains an ancestor of `main` and future promotions diff only new work. See PR #23 review for rationale.
+- Branch protection requires **conversation resolution** — open review comments must be resolved before merge (enforced via `protect-staging`/`protect-main` Rulesets).
+- Merge method is **squash for `feature → staging`** (one commit per feature), **merge commit for `staging → main`** (preserves ancestry so `staging` remains ancestor of `main` and future promotions diff only new work). Repo `allow_squash_merge:true` + `allow_merge_commit:true` + `delete_branch_on_merge:true` (verify via `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` → `{true,true,false,true}`). See PR #23 review for rationale.
 
 ### Consequences
 - Human-readable review history is kept in PR comments; `mergeStateStatus` must be `CLEAN` and `verify` green.

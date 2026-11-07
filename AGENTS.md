@@ -103,13 +103,14 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 **Model:** `feature → staging → main`
 - **Long-lived:** `main` (Vercel Production) and `staging` (Vercel Preview, stable `staging.*` domain) — both protected (see `gh api repos/jtanori/solara/rulesets` → `protect-main`, `protect-staging`).
 - **Feature:** branch from `staging` as `<type>/<issue>-<slug>` (e.g. `feat/8-local-seed-scaffold`, `chore/6-dependabot`).
-- **Flow:** `feature` (squash PR) → `staging` (QA) → promotion `staging → main` (fast-forward/merge, **not** squash — ADR 004 exception) → Vercel production.
+- **Flow:** `feature` (squash PR) → `staging` (QA on `solara-stg.vercel.app`) → promotion `staging → main` (merge commit, **not** squash — ADR 004) → Vercel production. Deploy via `scripts/deploy.sh` (handles `drizzle/` migrations **before** merge via `migrate.yml`).
 - **Naming examples:** `docs/3-agents-guide`, `chore/6-dependabot`, `feat/10-stripe-lifecycle`.
 
 **Protection (applied 2026-11-07):**
-- Require PR, status check `verify`, conversation resolution, linear history, block force-push/deletion.
+- Require PR, status check `verify`, conversation resolution, block force-push/deletion.
+- `staging`: linear history required. `main`: linear history **not** required (merge commits allowed for promotions).
 - Approvals: `0` on both while single collaborator (bump `main` to `1` when 2nd maintainer joins).
-- Repo settings: **squash-only**, **auto-delete head branches** (`gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` → `{true,false,false,true}`).
+- Repo settings: **squash + merge commit** for promotions, **auto-delete head branches** (`gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` → `{true,true,false,true}` — squash for features, merge for promotions).
 
 **Environments (target, see `docs/setup/00-manual-setup-ui.md` for UI clicks):**
 - **Staging:** Neon project `solara-staging` (pooled `DATABASE_URL` for Vercel Preview → `staging` branch; direct for `npx drizzle-kit migrate`), Vercel Preview env (`APP_URL=https://staging...`, Stripe **test** keys), isolated previews.
@@ -124,7 +125,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 ## 5. PR & Commit Protocol (ADR 004)
 
 - **Reviews:** COMMENT-only until 2nd maintainer (author cannot approve own PR — GitHub blocks it). Protection requires `0` approvals but **conversation resolution** — all review comments must be resolved.
-- **Merge:** **squash** for `feature → staging` (one commit per feature, `Closes #X` on its own line each — GitHub only closes the first if comma-separated). Promotions `staging → main` are **rebase/fast-forward** (see ADR 004 exception).
+- **Merge:** **squash** for `feature → staging` (one commit per feature, `Closes #X` on its own line each — GitHub only closes the first if comma-separated). Promotions `staging → main` are **merge commit** (preserves `staging` ancestor — see ADR 004).
 - **Commits:** Conventional style, no secrets, `DATABASE_URL` never in message. Example:
   ```
   docs: add AGENTS.md operating guide (#3)

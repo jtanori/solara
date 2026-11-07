@@ -198,7 +198,6 @@ if (!envFilter) {
     report(yml.includes("target-branch: staging") ? "OK" : "WARN", "local", "dependabot target-branch", yml.includes("target-branch: staging") ? "staging" : "not staging", null);
   }
   report(fileExists("scripts/check-setup.mjs") ? "OK" : "ERROR", "local", "check-setup.mjs", fileExists("scripts/check-setup.mjs") ? "present" : "missing", null);
-  report(fileExists("scripts/vercel-bootstrap.sh") ? "OK" : "WARN", "local", "vercel-bootstrap.sh", fileExists("scripts/vercel-bootstrap.sh") ? "present +x" : "missing", "chmod +x scripts/vercel-bootstrap.sh");
   report(fileExists("scripts/verify-gating-production.ts") ? "OK" : "WARN", "local", "verify-gating-production.ts", fileExists("scripts/verify-gating-production.ts") ? "present (#15)" : "missing", null);
 }
 
@@ -251,7 +250,7 @@ if (!envFilter || envFilter === "staging" || envFilter === "production") {
     const envs = tryExec("vercel env ls 2>&1");
     if (envs) {
       if (!envFilter || envFilter === "staging") {
-        report(envs.includes("DATABASE_URL") ? "OK" : "WARN", "vercel", "env staging DATABASE_URL", envs.includes("DATABASE_URL") ? "present (Preview/staging)" : "missing — run scripts/vercel-bootstrap.sh", null);
+        report(envs.includes("DATABASE_URL") ? "OK" : "WARN", "vercel", "env staging DATABASE_URL", envs.includes("DATABASE_URL") ? "present (Preview/staging)" : "missing — configure via Vercel dashboard: solara → Settings → Environment Variables (Preview/staging)", null);
         report(envs.includes("APP_URL") ? "OK" : "WARN", "vercel", "env staging APP_URL", envs.includes("APP_URL") ? "present" : "missing", null);
       }
       if (!envFilter || envFilter === "production") {

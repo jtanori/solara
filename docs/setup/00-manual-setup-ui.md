@@ -13,16 +13,16 @@ This is the click-path for the two owner-only issues that cannot be automated wi
 **Link:** <https://github.com/jtanori/solara/settings> → scroll to **General** → **Pull Requests**
 
 1. Check **Allow squash merging** → set **Default message:** *Pull request title and description* (or title only — pick one and keep).
-2. **Uncheck** *Allow merge commits*.
+2. **Check** *Allow merge commits* — needed for `staging → main` promotions (preserve ancestry, ADR 004).
 3. **Uncheck** *Allow rebase merging*.
 4. Check **Automatically delete head branches**.
 
-> **Why squash-only for `feature → staging`?** One commit per feature, linear history. **Exception:** `staging → main` promotions are **not** squashed — they are fast-forward/merge to keep `staging` an ancestor (see `docs/decisions.md` ADR 004 + PR #23 review).
+> **Why squash + merge?** `feature → staging` is squash (one commit per feature, linear). `staging → main` is **merge commit** to keep `staging` an ancestor of `main` so future promotions diff only new work (see `docs/decisions.md` ADR 004 + PR #23). `scripts/deploy.sh` picks `--squash` vs `--merge` automatically.
 
 *Verify locally:*
 ```bash
 gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'
-# expect {true,false,false,true}
+# expect {true,true,false,true}
 ```
 
 ### B. Branch protection rules (new Rulesets UI — recommended)
@@ -46,13 +46,13 @@ Click **New ruleset → New branch ruleset**:
   - ✓ *Require status checks to pass*
     - ✓ Require branches to be up to date before merging
     - Add check → search `verify` (the CI job: migrations → `next typegen` → `tsc` → `eslint` → `tsx --test` → `audit` → `build` + smoke 404s)
-  - ✓ *Require linear history*
+  - ✓ *Require linear history* — keep on `staging` (feature PRs are squash)
   - ✓ *Block force pushes*
   - ✓ *Block deletions*
 - **Save**
 
 **Ruleset 2 — `main`:**
-- Same as staging, but name `protect-main`.
+- Same as staging, but name `protect-main` and **uncheck Require linear history** (promotions are merge commits per ADR 004 — linear history would block `--merge`).
 - Keep Required approvals **0** for now (author can't approve own PR anyway — GitHub blocks it; protection still requires `0` approvers). Documented in ADR 001 to bump to `1` later.
 
 **Classic alternative (if Rulesets feels heavy):**
@@ -98,17 +98,17 @@ After this, a test PR `feature → staging → main` is already proven by #23/`#
 
 If already imported:
 1. **Settings → Git → Production Branch:** set to `main`.
-2. **Settings → Domains:**
-   - Add `solara.vercel.app` (or your custom prod domain) → assign to **Production (`main`)**.
-   - Add `staging.solara.vercel.app` → Add → Git branch → `staging` → Preview. Docs: <https://vercel.com/docs/deployments/environments>
+2. **Settings → Domains:** (live: Production `solara-production.vercel.app` @ `039d9b6`, Staging `solara-stg.vercel.app` @ `a0454ed` — custom domains pending)
+   - Add `solara-production.vercel.app` (or your custom prod domain) → assign to **Production (`main`)**.
+   - Add `solara-stg.vercel.app` → Add → Git branch → `staging` → Preview. Docs: <https://vercel.com/docs/deployments/environments>
 3. **Settings → Environment Variables** → **Add** (pay attention to **Environment** + **Git Branch** scopes):
 
    | Variable | Value | Environment | Git Branch |
    |---|---|---|---|
    | `DATABASE_URL` | `<staging pooled>` | Preview | `staging` |
-   | `APP_URL` | `https://staging.solara.vercel.app` | Preview | `staging` |
+   | `APP_URL` | `https://solara-stg.vercel.app` | Preview | `staging` |
    | `DATABASE_URL` | `<prod pooled>` | Production | `main` |
-   | `APP_URL` | `https://solara.vercel.app` | Production | `main` |
+   | `APP_URL` | `https://solara-production.vercel.app` | Production | `main` |
    | `STRIPE_SECRET_KEY` (test) | `sk_test_...` | Preview | `staging` |
    | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (test) | `pk_test_...` | Preview | `staging` |
    | `STRIPE_WEBHOOK_SECRET` (test) | `whsec_...` | Preview | `staging` |
@@ -155,4 +155,4 @@ vercel env ls   # or check dashboard env scoping
 node scripts/check-setup.mjs local
 ```
 
-Tell me “#1 and #2 done” and I’ll immediately open **#3 `AGENTS.md`** (depends on these) from `arena/75fa5f0e-solara` targeting `staging`.
+Verify: `https://solara-stg.vercel.app/api/health` and `https://solara-production.vercel.app/api/health` should both return `{"ok":true}`.
