@@ -1,24 +1,24 @@
 # Backlog — Solara
 
-> **Source of truth:** [GitHub Issues](https://github.com/jtanori/solara/issues) are authoritative. This file is an **offline index** only — it lists every issue with a link and a snapshot of its lifecycle at the time of the last update. Update this file only when issues are created, changed, or closed; do not duplicate status tracking here. See `docs/decisions.md` ADR 002 and `AGENTS.md` (when it lands in #3).
+> **Source of truth:** [GitHub Issues](https://github.com/jtanori/solara/issues) are authoritative. This file is an **offline index** only — it lists every issue with a link and a snapshot of its lifecycle at the time of the last update. Update this file only when issues are created, changed, or closed; do not duplicate status tracking here. See `docs/decisions.md` ADR 002 and `AGENTS.md`.
 
-*Last updated: 2026-11-07 from `main` at `2176a15` (PR #23 promotion `staging@dfec9b6 → main`).*
+*Last updated: 2026-11-07 from `staging` at `9a57fab` / `main` at `03467bd` (PR #46 promotion `staging@7c73a11 → main`, sync #47 — branching + deployment aligned).*
 
 ## Open
 
 | # | Title | Labels | Status |
 |---|-------|--------|--------|
-| [#1](https://github.com/jtanori/solara/issues/1) | chore: establish feature -> staging -> main branching and merge policy | `type:chore` `area:docs,area:infra` `priority:p1` `status:ready` | ready — staging exists, `feature → staging → main` demonstrated in #23; protection/rulesets + squash-only settings still manual (see ADR 001) |
-| [#2](https://github.com/jtanori/solara/issues/2) | chore: set up staging and production deployment strategy | `type:chore` `area:db,area:docs,area:infra` `priority:p1` `status:ready` | ready — Vercel/Neon isolation, domains, secrets, runbooks still to configure |
-| [#3](https://github.com/jtanori/solara/issues/3) | docs: add AGENTS.md operating guide | `type:docs` `area:docs` `priority:p1` `status:blocked` | blocked → #1, #2 |
-| [#6](https://github.com/jtanori/solara/issues/6) | chore: enable Dependabot alerts and security updates | `type:deps` `area:infra` `priority:p2` `status:ready` | ready — `dependabot.yml` landed in #23 (`target-branch: staging`); first update run + repo alerts/security-updates toggles still to verify |
-| [#10](https://github.com/jtanori/solara/issues/10) | chore: validate Stripe test-mode subscription lifecycle | `type:chore` `area:billing,area:infra` `priority:p2` `status:blocked` | blocked → #9 (now closed); needs Stripe CLI + test keys |
-| [#16](https://github.com/jtanori/solara/issues/16) | chore: define independent platform validation checklist | `type:chore` `area:infra,area:content,area:astro` `priority:p3` `status:needs-triage` | needs-triage |
+| [#6](https://github.com/jtanori/solara/issues/6) | chore: enable Dependabot alerts and security updates | `type:deps` `area:infra` `priority:p2` `status:ready` | ready — `dependabot.yml` `target-branch: staging` landed in #23; first update run + repo Alerts/Security-update toggles to verify |
+| [#10](https://github.com/jtanori/solara/issues/10) | chore: validate Stripe test-mode subscription lifecycle | `type:chore` `area:billing,area:infra` `priority:p2` `status:ready` | ready — unblocked by #9; needs Stripe test keys + CLI login (Checkout → webhook → portal/renewal/cancel) |
+| [#16](https://github.com/jtanori/solara/issues/16) | chore: define independent platform validation checklist | `type:chore` `area:infra,area:content,area:astro` `priority:p3` `status:needs-triage` | needs-triage — astro fixtures, hist TZ/leap/high-lat, editorial versioning, backup/restore, MFA/rate-limit/CSRF |
 
 ## Closed (recent)
 
 | # | Title | Closed in |
 |---|-------|-----------|
+| [#1](https://github.com/jtanori/solara/issues/1) | chore: establish feature -> staging -> main branching and merge policy | #46 (`03467bd` merge `promo/staging-sync-20251107` 9553ceb — `staging@7c73a11`) + #47 (`9a57fab` sync) — staging exists, protect-staging (linear) / protect-main (merge), `{true,true,false,true}` squash+merge, demo #44→staging→main |
+| [#2](https://github.com/jtanori/solara/issues/2) | chore: set up staging and production deployment strategy | #46 (`03467bd`) + #47 (`9a57fab`) — Vercel `solara-stg`/`solara-production` health `{"ok":true}`, Neon pooled/direct, secrets per env, `migrate.yml` + `deploy.sh` pre-merge race-free, runbooks in `01-foundation`/`00-manual-setup-ui` |
+| [#3](https://github.com/jtanori/solara/issues/3) | docs: add AGENTS.md operating guide | #40 (`86c63d4`→`fc2a122`) + #44 (`7c73a11`) — AGENTS.md live, aligned to ADR 001/004 post-sync |
 | [#4](https://github.com/jtanori/solara/issues/4) | docs: add decision log and pull request template | #23 (`2176a15`) promotion — implemented in #19 (`0e40608`) |
 | [#5](https://github.com/jtanori/solara/issues/5) | chore: add offline BACKLOG.md index | #23 (`2176a15`) — implemented in #18 (`58aaf0e`) |
 | [#8](https://github.com/jtanori/solara/issues/8) | feat: add local role seed scaffold | #23 (`2176a15`) — implemented in #19 (`0e40608`) |
@@ -40,6 +40,13 @@
 | [#20](https://github.com/jtanori/solara/pull/20) | feat: subscription fixtures, prod gating verification, dependabot (#9, #15, #6) | `fb8408c` → `staging:51a4bb4` |
 | [#22](https://github.com/jtanori/solara/pull/22) | fix: allow verifier in CI disposable DB (ALLOW_LOCAL_SEED_IN_CI) | `2176a15` → `staging:dfec9b6` |
 | [#23](https://github.com/jtanori/solara/pull/23) | chore: promote staging to main (branching, docs, seed, gating, dependabot) | `2176a15` |
+| [#36](https://github.com/jtanori/solara/pull/36) | docs: refresh BACKLOG after promotion, clarify promotion merge policy (ADR 004) | `e779bec` |
+| [#41](https://github.com/jtanori/solara/issues/41) | feat(check): add --env filter to setup verifiers | `a0454ed` |
+| [#42](https://github.com/jtanori/solara/pull/42) | chore: promote staging to main (AGENTS + Vercel bootstrap, --env verifiers) | `039d9b6` |
+| [#43](https://github.com/jtanori/solara/pull/43) | feat(deploy): Vercel domains + migrate/deploy automation, remove vercel-bootstrap | `eb39c26` |
+| [#44](https://github.com/jtanori/solara/pull/44) | feat(deploy): align promotion to merge commit, enable production deploy path | `7c73a11` |
+| [#46](https://github.com/jtanori/solara/pull/46) | chore: promote staging to main — sync unrelated histories (7c73a11) | `03467bd` (merge) |
+| [#47](https://github.com/jtanori/solara/pull/47) | chore: sync staging to main (03467bd) | `9a57fab` |
 
 ## How to use
 
