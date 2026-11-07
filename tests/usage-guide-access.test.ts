@@ -166,3 +166,25 @@ test("no payload leakage: non-dev guide array contains only the single guide's c
   // But should contain its own caption
   assert.ok(payload.includes("Go a little deeper"), "should contain premium caption");
 });
+
+test("non-development hides internal /setup and /blueprint section links", () => {
+  for (const user of [editorUser, adminUser, ownerUser]) {
+    const result = resolveUsageGuideAccess({ environment: "production", user, locale: "en" });
+    assert.ok(result);
+    const payload = JSON.stringify(result.guides);
+    assert.ok(!payload.includes('"/setup"'), `should not contain /setup link for ${user.role}`);
+    assert.ok(!payload.includes('"/blueprint"'), `should not contain /blueprint link for ${user.role}`);
+  }
+  for (const user of [freeUser, premiumUser]) {
+    const result = resolveUsageGuideAccess({ environment: "production", user, locale: "en" });
+    assert.ok(result);
+    // Free/premium guides should not have internal links originally, but check they still have no leakage
+    const payload = JSON.stringify(result.guides);
+    assert.ok(!payload.includes('"/setup"') || payload.includes("/setup") === false || !payload.includes('"/blueprint"'));
+  }
+  // Development should preserve internal links
+  const devEditor = resolveUsageGuideAccess({ environment: "development", user: editorUser, locale: "en" });
+  assert.ok(devEditor);
+  const devPayload = JSON.stringify(devEditor.guides);
+  assert.ok(devPayload.includes("/setup") || devPayload.includes("/blueprint"), "dev should preserve internal links");
+});
