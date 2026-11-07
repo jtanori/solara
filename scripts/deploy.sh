@@ -10,7 +10,8 @@ set -euo pipefail
 #   ./scripts/deploy.sh --pr 43 --skip-migrate
 #
 # Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=require&channel_binding=require)
-# Note: promotions staging→main are currently BLOCKED pending owner decision on ADR 004 (fast-forward/merge vs squash); see AGENTS.md & ADR 004.
+# Merge policy (see ADR 004): feature → staging uses --squash (linear), promotion staging→main uses --merge (preserve ancestry).
+# Repo needs allow_squash_merge:true + allow_merge_commit:true (Settings → General → Pull Requests).
 
 PR=""
 ENV=""
@@ -56,17 +57,7 @@ fi
 if [[ "$BASE" == "main" && "$ENV" != "production" ]]; then
   echo "ERROR: PR #$PR targets main but --env $ENV requested — use --env production" >&2; exit 1
 fi
-# Production promotion is currently blocked pending owner decision on ADR 004 — refuse before any remote calls (including migrations).
-# AGENTS.md & ADR 004 require fast-forward/merge (not squash) to preserve staging as ancestor of main; repo is currently squash-only.
-if [[ "$BASE" == "main" ]]; then
-  echo "ERROR: Production promotion (staging → main) is currently blocked pending owner decision on ADR 004." >&2
-  echo "AGENTS.md & ADR 004 require fast-forward/merge (not squash) to preserve staging as ancestor of main." >&2
-  echo "Repo is currently squash-only (allow_squash:true, allow_merge:false). To proceed:" >&2
-  echo "  1. Obtain owner approval and record decision in docs/decisions.md ADR 004" >&2
-  echo "  2. Either update repo settings to allow merge commits (Settings → General → Pull Requests) and re-run with --merge," >&2
-  echo "     or manually create/promote via GitHub UI with owner oversight." >&2
-  exit 1
-fi
+# (Production promotion no longer blocked — ADR 004: staging→main uses --merge to preserve ancestry)
 
 if [[ "$ENV" == "staging" ]]; then WORKFLOW_ENV="staging"; BASE_BRANCH="staging"; APP_URL="https://solara-stg.vercel.app"
 else WORKFLOW_ENV="production"; BASE_BRANCH="main"; APP_URL="https://solara-production.vercel.app"; fi
@@ -127,10 +118,26 @@ else echo "Skipping remote migrate step."; fi
 
 echo ""
 echo "== Merge PR #$PR → $BASE_BRANCH ($ENV) =="
-echo "Policy: squash for feature → staging — see AGENTS.md & ADR 004. (Promotion path requires separate owner decision.)"
-if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH (squash)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
-gh pr merge "$PR" --squash --repo jtanori/solara
-echo "Merged PR #$PR → $BASE_BRANCH"
+# Merge policy: squash for feature→staging, merge commit for staging→main (ADR 004 — preserve ancestry)
+if [[ "$BASE" == "main" ]]; then
+  MERGE_ARGS="--merge"
+  MERGE_LABEL="merge (preserve ancestry — see ADR 004)"
+  # Guard: repo must allow merge commits for promotions
+  SETTINGS=$(gh api repos/jtanori/solara --jq '{allow_merge_commit}' 2>/dev/null || echo '{"allow_merge_commit":false}')
+  if [[ "$SETTINGS" == *'"allow_merge_commit":false'* || "$SETTINGS" == *'"allow_merge_commit": false'* ]]; then
+    echo "ERROR: Repo is squash-only (allow_merge_commit:false) but staging→main requires merge commits (ADR 004)." >&2
+    echo "Fix: Settings → General → Pull Requests → check 'Allow merge commits' (keep squash + auto-delete)." >&2
+    echo "Verify: gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'" >&2
+    exit 1
+  fi
+else
+  MERGE_ARGS="--squash"
+  MERGE_LABEL="squash (one commit per feature)"
+fi
+echo "Policy: $MERGE_LABEL — see AGENTS.md & ADR 004."
+if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH ($MERGE_LABEL)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
+gh pr merge "$PR" $MERGE_ARGS --repo jtanori/solara
+echo "Merged PR #$PR → $BASE_BRANCH ($MERGE_LABEL)"
 echo "Waiting 30s for Vercel $APP_URL ..."
 sleep 30
 if curl -fsS "$APP_URL/api/health" | grep -q '"ok":true'; then echo "✅ $APP_URL/api/health → {\"ok\":true}"; else echo "WARN: $APP_URL/api/health not yet ok — check Vercel Deployments"; curl -i "$APP_URL/api/health" 2>&1 | head -20 || true; fi
