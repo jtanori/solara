@@ -55,8 +55,22 @@ export function resolveUsageGuideAccess(
   const single = guides.find((guide) => guide.id === audience);
   // Fail closed: unknown audience means deny (should not happen with valid Role mapping)
   if (!single) return null;
+  // Hide internal-document section links (/setup, /blueprint) outside development.
+  // These are not public in prod; they must not appear in HTML or RSC payload.
+  const filteredSections = single.sections.map((section) => {
+    if (section.link && isInternalDocumentLink(section.link.href)) {
+      const { link: _ignored, ...rest } = section;
+      return rest;
+    }
+    return section;
+  });
+  const filteredGuide: AudienceGuide = { ...single, sections: filteredSections };
   // Ignore requestedRole entirely outside development
-  return { guides: [single], activeAudience: audience };
+  return { guides: [filteredGuide], activeAudience: audience };
+}
+
+function isInternalDocumentLink(href: string): boolean {
+  return href.startsWith("/setup") || href.startsWith("/blueprint");
 }
 
 /**

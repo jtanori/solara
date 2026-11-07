@@ -6,30 +6,311 @@ import { AstroWheel } from "@/components/astro-wheel";
 import type { Locale } from "@/lib/i18n";
 import type { AudienceGuide, UsageAudience } from "@/lib/usage-guide";
 
-const icons = {visitor:Compass,free:UserRound,premium:Sparkles,editor:PenLine,admin:ShieldCheck,owner:Crown};
-function normalize(value:string) { return value.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase(); }
+const icons = { visitor: Compass, free: UserRound, premium: Sparkles, editor: PenLine, admin: ShieldCheck, owner: Crown };
+function normalize(value: string) { return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 
-export function UsageGuide({guides,locale,initialAudience,signedInName}:{guides:AudienceGuide[];locale:Locale;initialAudience:UsageAudience;signedInName:string|null}) {
-  const es=locale==="es";const [audience,setAudience]=useState<UsageAudience>(initialAudience);const [query,setQuery]=useState("");
-  const selected=guides.find(guide=>guide.id===audience) ?? guides[0];
-  const filtered=useMemo(()=>{const needle=normalize(query.trim());return needle?selected.sections.filter(section=>normalize([section.title,section.summary,...section.steps,section.note??""].join(" ")).includes(needle)):selected.sections;},[selected,query]);
-  function selectRole(id:UsageAudience){setAudience(id);setQuery("");}
-  function onTabKey(event:React.KeyboardEvent<HTMLButtonElement>,index:number){
-    let next=index;
-    if(event.key==="ArrowRight"||event.key==="ArrowDown")next=(index+1)%guides.length;
-    else if(event.key==="ArrowLeft"||event.key==="ArrowUp")next=(index-1+guides.length)%guides.length;
-    else if(event.key==="Home")next=0;
-    else if(event.key==="End")next=guides.length-1;
-    else return;
-    event.preventDefault();selectRole(guides[next].id);document.getElementById(`usage-tab-${guides[next].id}`)?.focus();
+export function UsageGuide({
+  guides,
+  locale,
+  initialAudience,
+  signedInName,
+  isDevelopment = false,
+}: {
+  guides: AudienceGuide[];
+  locale: Locale;
+  initialAudience: UsageAudience;
+  signedInName: string | null;
+  isDevelopment?: boolean;
+}) {
+  const es = locale === "es";
+  const [audience, setAudience] = useState<UsageAudience>(initialAudience);
+  const [query, setQuery] = useState("");
+  const selected = guides.find((guide) => guide.id === audience) ?? guides[0];
+  const filtered = useMemo(() => {
+    const needle = normalize(query.trim());
+    return needle ? selected.sections.filter((section) => normalize([section.title, section.summary, ...section.steps, section.note ?? ""].join(" ")).includes(needle)) : selected.sections;
+  }, [selected, query]);
+  function selectRole(id: UsageAudience) {
+    setAudience(id);
+    setQuery("");
   }
-  const RoleIcon=icons[selected.id];
-  return <main className="usage-page"><div className="wrap usage-wrap"><div className="usage-breadcrumb"><Link href="/">{es?"Inicio":"Home"}</Link><span>/</span><span>{es?"Guía de uso":"Usage guide"}</span></div><section className="usage-hero"><div className="usage-hero-copy"><div className="usage-eyebrow-row"><span className="eyebrow">✦ &nbsp; {es?"LA GUÍA DE USO DE SOLARA":"THE SOLARA USER GUIDE"}</span><span className="usage-dev-badge"><span/> {es?"SOLO DESARROLLO":"DEV ONLY"}</span></div><h1>{es?<>Un poco de guía,<br/><em>para cada camino.</em></>:<>A little guidance,<br/><em>for every journey.</em></>}</h1><p>{es?"Desde tu primera carta hasta la administración del contenido: descubre qué puedes hacer y cómo hacerlo, paso a paso.":"From your first chart to the people behind the scenes: discover what you can do, and how to do it, step by step."}</p><div className="usage-hero-actions"><a className="button button-large" href="#choose-role">{es?"Explorar la guía":"Explore the guide"} <ArrowDown size={17}/></a><span><LockKeyhole size={15}/>{es?"Disponible solo en desarrollo":"Available in development only"}</span></div></div><div className="usage-hero-art"><div className="usage-orbit-one"/><div className="usage-orbit-two"/><span className="usage-art-spark usage-art-spark-a">✦</span><span className="usage-art-spark usage-art-spark-b">✧</span><div className="usage-art-card"><span className="tiny-label">{es?"TU MAPA DE SOLARA":"YOUR MAP TO SOLARA"}</span><AstroWheel className="usage-hero-wheel" label={es?"Rueda astrológica decorativa":"Decorative astrological wheel"}/><div className="usage-art-bottom"><span>✳</span><div><strong>{es?"Encuentra tu camino.":"Find your way."}</strong><small>{es?"UN PASO A LA VEZ":"ONE STEP AT A TIME"}</small></div></div></div></div></section>
-    <section id="choose-role" className="usage-choose"><div className="usage-heading-row"><div><span className="eyebrow">{es?"COMIENZA POR AQUÍ":"START HERE"}</span><h2>{es?"Una guía para cada persona.":"A guide for every role."}</h2><p>{es?"Elige la experiencia que quieras explorar.":"Choose the experience you’d like to explore."}</p></div><span className="usage-heading-hint">{es?"SELECCIONA UNA OPCIÓN":"CHOOSE A PERSPECTIVE"} <ArrowDown size={14}/></span></div><div className="usage-role-tabs" role="tablist" aria-label={es?"Elige una guía por rol":"Choose a role guide"}>{guides.map((guide,index)=>{const Icon=icons[guide.id];const active=guide.id===audience;return <button type="button" role="tab" id={`usage-tab-${guide.id}`} aria-controls="usage-role-panel" aria-selected={active} tabIndex={active?0:-1} onKeyDown={event=>onTabKey(event,index)} onClick={()=>selectRole(guide.id)} className={active?"usage-role-tab active":"usage-role-tab"} key={guide.id}><span className="usage-role-icon"><Icon size={18} strokeWidth={1.5}/></span><span><strong>{guide.label}</strong><small>{guide.caption}</small></span><span className="usage-role-check">{active&&<Check size={13}/>}</span></button>;})}</div><p className="usage-role-disclaimer"><ShieldCheck size={14}/>{es?"Elegir una guía no cambia tus permisos. El acceso real se verifica en el servidor.":"Choosing a guide does not change your permissions. Actual access is checked on the server."}</p></section>
-    <section className="usage-selected" role="tabpanel" id="usage-role-panel" aria-labelledby={`usage-tab-${audience}`}><div className="usage-selected-main"><div className="usage-selected-icon"><RoleIcon size={23} strokeWidth={1.5}/></div><div><span className="tiny-label">{es?"TU PERSPECTIVA":"YOUR PERSPECTIVE"} · {selected.label.toUpperCase()}</span><h2>{selected.headline}</h2><p>{selected.description}</p>{signedInName&&<span className="usage-signed-in">{es?"Sesión iniciada como":"Signed in as"} <strong>{signedInName}</strong></span>}</div></div><div className="usage-selected-side"><span className="tiny-label">{es?"DE UN VISTAZO":"AT A GLANCE"}</span><div><strong>{String(selected.sections.length).padStart(2,"0")}</strong><span>{es?"GUÍAS PRÁCTICAS":"PRACTICAL GUIDES"}</span></div><small>{es?"Selecciona cualquier rol para aprender cómo funciona.":"Select any role to see how it works."}</small></div></section>
-    <div className="usage-content-layout"><aside className="usage-sidebar"><span className="tiny-label">{es?"EN ESTA GUÍA":"IN THIS GUIDE"}</span>{filtered.map((section,index)=><a key={section.id} href={`#usage-${audience}-${section.id}`}><span>{String(index+1).padStart(2,"0")}</span>{section.title}</a>)}<div className="usage-sidebar-card"><BookOpen size={19}/><strong>{es?"¿Buscas configurar Solara?":"Setting up Solara?"}</strong><p>{es?"Consulta la guía para local, staging y producción.":"Explore the local, staging, and production setup guide."}</p><Link href="/setup">{es?"Ver configuración":"View setup guide"} <ArrowRight size={12}/></Link></div></aside><div className="usage-content"><div className="usage-content-header"><div><span className="eyebrow">{es?"TU GUÍA PASO A PASO":"YOUR STEP-BY-STEP GUIDE"}</span><h2>{es?"Vamos paso a paso.":"Let’s take it step by step."}</h2><p>{es?"Consejos prácticos para sacar más provecho de Solara.":"Practical guidance for making the most of Solara."}</p></div><form name="usage-guide-search" role="search" autoComplete="off" onSubmit={event=>event.preventDefault()} className="usage-search"><Search size={16}/><input name="query" type="search" autoComplete="off" value={query} onChange={event=>setQuery(event.target.value)} placeholder={es?"Buscar en esta guía":"Search this guide"} aria-label={es?"Buscar en la guía seleccionada":"Search the selected role guide"}/>{query&&<button type="button" onClick={()=>setQuery("")} aria-label={es?"Limpiar búsqueda":"Clear search"}><X size={15}/></button>}</form></div>
-      <div className="usage-permissions"><div><span className="usage-permission-label"><Check size={14}/>{es?"LO QUE PUEDES HACER":"WHAT YOU CAN DO"}</span><ul>{selected.can.map(item=><li key={item}>{item}</li>)}</ul></div><div><span className="usage-permission-label usage-permission-muted"><LockKeyhole size={14}/>{es?"LO QUE NO ESTÁ DISPONIBLE":"WHAT ISN’T AVAILABLE"}</span><ul>{selected.cannot.map(item=><li key={item}>{item}</li>)}</ul></div></div>
-      {filtered.length?filtered.map((section,index)=><article className="usage-topic" id={`usage-${audience}-${section.id}`} key={`${audience}-${section.id}`}><div className="usage-topic-header"><span className="usage-topic-number">{String(index+1).padStart(2,"0")}</span><div><span className="tiny-label">{es?"GUÍA PRÁCTICA":"PRACTICAL GUIDE"}</span><h3>{section.title}</h3><p>{section.summary}</p></div></div><ol>{section.steps.map((step,stepIndex)=><li key={`${section.id}-${stepIndex}`}><span>{stepIndex+1}</span><p>{step}</p></li>)}</ol>{section.note&&<div className="usage-topic-note"><Sparkles size={16}/><p><strong>{es?"Es bueno saberlo. ":"Good to know. "}</strong>{section.note}</p></div>}{section.link&&<Link className="usage-topic-link" href={section.link.href}>{section.link.label} <ArrowRight size={15}/></Link>}</article>):<div className="usage-empty"><Search size={22}/><h3>{es?"No encontramos ese tema.":"No topics found."}</h3><p>{es?"Prueba otra palabra o elige un rol diferente.":"Try another search or choose a different role."}</p><button type="button" onClick={()=>setQuery("")}>{es?"Limpiar búsqueda":"Clear search"}</button></div>}
-      <div className="usage-footer-note"><div className="usage-footer-note-icon">✳</div><div><span className="tiny-label">{es?"UNA NOTA CON CUIDADO":"A GENTLE REMINDER"}</span><h3>{es?"Tu historia es tuya.":"Your story is yours."}</h3><p>{es?"Las cartas son privadas y las interpretaciones son invitaciones a reflexionar. Los cálculos aún necesitan validación profesional independiente.":"Charts are private and interpretations are invitations to reflect. Calculations still require independent professional validation."}</p></div></div>
-    </div></div></div></main>;
+  function onTabKey(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    let next = index;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % guides.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + guides.length) % guides.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = guides.length - 1;
+    else return;
+    event.preventDefault();
+    selectRole(guides[next].id);
+    document.getElementById(`usage-tab-${guides[next].id}`)?.focus();
+  }
+  const RoleIcon = icons[selected.id];
+  return (
+    <main className="usage-page">
+      <div className="wrap usage-wrap">
+        <div className="usage-breadcrumb">
+          <Link href="/">{es ? "Inicio" : "Home"}</Link>
+          <span>/</span>
+          <span>{es ? "Guía de uso" : "Usage guide"}</span>
+        </div>
+        <section className="usage-hero">
+          <div className="usage-hero-copy">
+            <div className="usage-eyebrow-row">
+              <span className="eyebrow">✦ &nbsp; {es ? "LA GUÍA DE USO DE SOLARA" : "THE SOLARA USER GUIDE"}</span>
+              {isDevelopment && (
+                <span className="usage-dev-badge">
+                  <span /> {es ? "SOLO DESARROLLO" : "DEV ONLY"}
+                </span>
+              )}
+            </div>
+            <h1>{es ? <>Un poco de guía,<br /><em>para cada camino.</em></> : <>A little guidance,<br /><em>for every journey.</em></>}</h1>
+            <p>
+              {isDevelopment
+                ? es
+                  ? "Desde tu primera carta hasta la administración del contenido: descubre qué puedes hacer y cómo hacerlo, paso a paso."
+                  : "From your first chart to the people behind the scenes: discover what you can do, and how to do it, step by step."
+                : es
+                  ? "Tu guía personal, paso a paso, según tu rol en Solara."
+                  : "Your personal step-by-step guide, tailored to your role."}
+            </p>
+            <div className="usage-hero-actions">
+              <a className="button button-large" href={isDevelopment ? "#choose-role" : "#usage-role-panel"}>
+                {es ? "Explorar la guía" : "Explore the guide"} <ArrowDown size={17} />
+              </a>
+              {isDevelopment && (
+                <span>
+                  <LockKeyhole size={15} />
+                  {es ? "Disponible solo en desarrollo" : "Available in development only"}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="usage-hero-art">
+            <div className="usage-orbit-one" />
+            <div className="usage-orbit-two" />
+            <span className="usage-art-spark usage-art-spark-a">✦</span>
+            <span className="usage-art-spark usage-art-spark-b">✧</span>
+            <div className="usage-art-card">
+              <span className="tiny-label">{es ? "TU MAPA DE SOLARA" : "YOUR MAP TO SOLARA"}</span>
+              <AstroWheel className="usage-hero-wheel" label={es ? "Rueda astrológica decorativa" : "Decorative astrological wheel"} />
+              <div className="usage-art-bottom">
+                <span>✳</span>
+                <div>
+                  <strong>{es ? "Encuentra tu camino." : "Find your way."}</strong>
+                  <small>{es ? "UN PASO A LA VEZ" : "ONE STEP AT A TIME"}</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        {isDevelopment && (
+          <section id="choose-role" className="usage-choose">
+            <div className="usage-heading-row">
+              <div>
+                <span className="eyebrow">{es ? "COMIENZA POR AQUÍ" : "START HERE"}</span>
+                <h2>{es ? "Una guía para cada persona." : "A guide for every role."}</h2>
+                <p>{es ? "Elige la experiencia que quieras explorar." : "Choose the experience you’d like to explore."}</p>
+              </div>
+              <span className="usage-heading-hint">
+                {es ? "SELECCIONA UNA OPCIÓN" : "CHOOSE A PERSPECTIVE"} <ArrowDown size={14} />
+              </span>
+            </div>
+            <div className="usage-role-tabs" role="tablist" aria-label={es ? "Elige una guía por rol" : "Choose a role guide"}>
+              {guides.map((guide, index) => {
+                const Icon = icons[guide.id];
+                const active = guide.id === audience;
+                return (
+                  <button
+                    type="button"
+                    role="tab"
+                    id={`usage-tab-${guide.id}`}
+                    aria-controls="usage-role-panel"
+                    aria-selected={active}
+                    tabIndex={active ? 0 : -1}
+                    onKeyDown={(event) => onTabKey(event, index)}
+                    onClick={() => selectRole(guide.id)}
+                    className={active ? "usage-role-tab active" : "usage-role-tab"}
+                    key={guide.id}
+                  >
+                    <span className="usage-role-icon">
+                      <Icon size={18} strokeWidth={1.5} />
+                    </span>
+                    <span>
+                      <strong>{guide.label}</strong>
+                      <small>{guide.caption}</small>
+                    </span>
+                    <span className="usage-role-check">{active && <Check size={13} />}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="usage-role-disclaimer">
+              <ShieldCheck size={14} />
+              {es ? "Elegir una guía no cambia tus permisos. El acceso real se verifica en el servidor." : "Choosing a guide does not change your permissions. Actual access is checked on the server."}
+            </p>
+          </section>
+        )}
+        <section className="usage-selected" role={isDevelopment ? "tabpanel" : undefined} id="usage-role-panel" aria-labelledby={isDevelopment ? `usage-tab-${audience}` : undefined}>
+          <div className="usage-selected-main">
+            <div className="usage-selected-icon">
+              <RoleIcon size={23} strokeWidth={1.5} />
+            </div>
+            <div>
+              <span className="tiny-label">
+                {es ? "TU PERSPECTIVA" : "YOUR PERSPECTIVE"} · {selected.label.toUpperCase()}
+              </span>
+              <h2>{selected.headline}</h2>
+              <p>{selected.description}</p>
+              {signedInName && (
+                <span className="usage-signed-in">
+                  {es ? "Sesión iniciada como" : "Signed in as"} <strong>{signedInName}</strong>
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="usage-selected-side">
+            <span className="tiny-label">{es ? "DE UN VISTAZO" : "AT A GLANCE"}</span>
+            <div>
+              <strong>{String(selected.sections.length).padStart(2, "0")}</strong>
+              <span>{es ? "GUÍAS PRÁCTICAS" : "PRACTICAL GUIDES"}</span>
+            </div>
+            <small>{isDevelopment ? (es ? "Selecciona cualquier rol para aprender cómo funciona." : "Select any role to see how it works.") : es ? "Tu guía personal según tu rol." : "Your personal guide for your role."}</small>
+          </div>
+        </section>
+        <div className="usage-content-layout">
+          <aside className="usage-sidebar">
+            <span className="tiny-label">{es ? "EN ESTA GUÍA" : "IN THIS GUIDE"}</span>
+            {filtered.map((section, index) => (
+              <a key={section.id} href={`#usage-${audience}-${section.id}`}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                {section.title}
+              </a>
+            ))}
+            {isDevelopment && (
+              <div className="usage-sidebar-card">
+                <BookOpen size={19} />
+                <strong>{es ? "¿Buscas configurar Solara?" : "Setting up Solara?"}</strong>
+                <p>{es ? "Consulta la guía para local, staging y producción." : "Explore the local, staging, and production setup guide."}</p>
+                <Link href="/setup">
+                  {es ? "Ver configuración" : "View setup guide"} <ArrowRight size={12} />
+                </Link>
+              </div>
+            )}
+          </aside>
+          <div className="usage-content">
+            <div className="usage-content-header">
+              <div>
+                <span className="eyebrow">{es ? "TU GUÍA PASO A PASO" : "YOUR STEP-BY-STEP GUIDE"}</span>
+                <h2>{es ? "Vamos paso a paso." : "Let’s take it step by step."}</h2>
+                <p>{es ? "Consejos prácticos para sacar más provecho de Solara." : "Practical guidance for making the most of Solara."}</p>
+              </div>
+              <form name="usage-guide-search" role="search" autoComplete="off" onSubmit={(event) => event.preventDefault()} className="usage-search">
+                <Search size={16} />
+                <input
+                  name="query"
+                  type="search"
+                  autoComplete="off"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={es ? "Buscar en esta guía" : "Search this guide"}
+                  aria-label={es ? "Buscar en la guía seleccionada" : "Search the selected role guide"}
+                />
+                {query && (
+                  <button type="button" onClick={() => setQuery("")} aria-label={es ? "Limpiar búsqueda" : "Clear search"}>
+                    <X size={15} />
+                  </button>
+                )}
+              </form>
+            </div>
+            <div className="usage-permissions">
+              <div>
+                <span className="usage-permission-label">
+                  <Check size={14} />
+                  {es ? "LO QUE PUEDES HACER" : "WHAT YOU CAN DO"}
+                </span>
+                <ul>
+                  {selected.can.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <span className="usage-permission-label usage-permission-muted">
+                  <LockKeyhole size={14} />
+                  {es ? "LO QUE NO ESTÁ DISPONIBLE" : "WHAT ISN’T AVAILABLE"}
+                </span>
+                <ul>
+                  {selected.cannot.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            {filtered.length ? (
+              filtered.map((section, index) => (
+                <article className="usage-topic" id={`usage-${audience}-${section.id}`} key={`${audience}-${section.id}`}>
+                  <div className="usage-topic-header">
+                    <span className="usage-topic-number">{String(index + 1).padStart(2, "0")}</span>
+                    <div>
+                      <span className="tiny-label">{es ? "GUÍA PRÁCTICA" : "PRACTICAL GUIDE"}</span>
+                      <h3>{section.title}</h3>
+                      <p>{section.summary}</p>
+                    </div>
+                  </div>
+                  <ol>
+                    {section.steps.map((step, stepIndex) => (
+                      <li key={`${section.id}-${stepIndex}`}>
+                        <span>{stepIndex + 1}</span>
+                        <p>{step}</p>
+                      </li>
+                    ))}
+                  </ol>
+                  {section.note && (
+                    <div className="usage-topic-note">
+                      <Sparkles size={16} />
+                      <p>
+                        <strong>{es ? "Es bueno saberlo. " : "Good to know. "}</strong>
+                        {section.note}
+                      </p>
+                    </div>
+                  )}
+                  {section.link && (
+                    <Link className="usage-topic-link" href={section.link.href}>
+                      {section.link.label} <ArrowRight size={15} />
+                    </Link>
+                  )}
+                </article>
+              ))
+            ) : (
+              <div className="usage-empty">
+                <Search size={22} />
+                <h3>{es ? "No encontramos ese tema." : "No topics found."}</h3>
+                <p>
+                  {isDevelopment
+                    ? es
+                      ? "Prueba otra palabra o elige un rol diferente."
+                      : "Try another search or choose a different role."
+                    : es
+                      ? "Prueba otra palabra."
+                      : "Try another search."}
+                </p>
+                <button type="button" onClick={() => setQuery("")}>
+                  {es ? "Limpiar búsqueda" : "Clear search"}
+                </button>
+              </div>
+            )}
+            <div className="usage-footer-note">
+              <div className="usage-footer-note-icon">✳</div>
+              <div>
+                <span className="tiny-label">{es ? "UNA NOTA CON CUIDADO" : "A GENTLE REMINDER"}</span>
+                <h3>{es ? "Tu historia es tuya." : "Your story is yours."}</h3>
+                <p>{es ? "Las cartas son privadas y las interpretaciones son invitaciones a reflexionar. Los cálculos aún necesitan validación profesional independiente." : "Charts are private and interpretations are invitations to reflect. Calculations still require independent professional validation."}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
 }
