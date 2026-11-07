@@ -24,7 +24,7 @@ solara/
 ├── docs/
 │   ├── decisions.md            # ADRs 001-005 (branching, backlog, validation, reviews, prototype gate)
 │   └── setup/                  # 01-foundation, 02-stripe, 03-maps, 04-pdf, 05-i18n, 06-astro + 00-manual-setup-ui.md
-├── BACKLOG.md                  # offline index — last updated main@e779bec (PR #36)
+├── BACKLOG.md                  # offline index — last updated staging@9a57fab / main@03467bd (PR #47 sync)
 ├── .github/
 │   ├── workflows/ci.yml        # verify job: migrate → typegen → tsc → eslint → tests → audit → build → smoke
 │   ├── dependabot.yml          # npm + github-actions, target-branch: staging
@@ -139,9 +139,9 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 
 ## 6. Backlog Conventions (ADR 002)
 
-- **GitHub Issues are authoritative.** `BACKLOG.md` is an offline index — `Last updated: main@e779bec (PR #36)`. Update it only when issues are created/changed/closed.
+- **GitHub Issues are authoritative.** `BACKLOG.md` is an offline index — `Last updated: staging@9a57fab / main@03467bd (PR #47 sync)`. Update it only when issues are created/changed/closed.
 - **Labels:** `type:*`, `area:*`, `priority:p1/p2/p3`, `status:ready/blocked/needs-triage`.
-- **Open (2026-11-07):** `#1` branching (ready), `#2` deployment (ready), `#3` AGENTS.md (this), `#6` Dependabot (ready), `#10` Stripe lifecycle (blocked → #9), `#16` validation (needs-triage). Closed recent: `#4,#5,#7,#8,#9,#11,#12,#13,#14,#15,#17-#23`.
+- **Open (2026-11-07):** `#6` Dependabot (ready), `#10` Stripe lifecycle (ready — unblocked), `#16` validation (needs-triage). Closed recent: `#1 branching`, `#2 deployment`, `#3 AGENTS.md`, `#4,#5,#7,#8,#9,#11,#12,#13,#14,#15,#17-#23`.
 - **How to add work:** create GitHub Issue first, then add row to `BACKLOG.md` with link `#<n>`.
 - **How to close:** close GitHub Issue, move row to “Closed” table with closing PR/commit (e.g. `| [#5] | ... | #23 (2176a15) |`).
 
