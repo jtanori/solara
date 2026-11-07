@@ -11,6 +11,29 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+// P1 guard: verify script writes 4 users + sessions + subscriptions — never run against staging/production
+{
+  const raw = process.env.DATABASE_URL.trim();
+  let h = "";
+  try {
+    h = new URL(raw).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    console.error("ERROR DATABASE_URL is not a valid URL");
+    process.exit(1);
+  }
+  const allowed = new Set(["localhost", "127.0.0.1", "::1", "[::1]", ""]);
+  const host = h || new URL(raw).hostname;
+  if (!allowed.has(host) && !allowed.has(new URL(raw).hostname)) {
+    console.error(`ERROR Refusing non-loopback DATABASE_URL host "${new URL(raw).hostname}" — verifier writes ephemeral rows, use a disposable local DB`);
+    process.exit(1);
+  }
+  // Also allow CI's disposable DB when explicitly opted-in (mirrors seed-users.ts)
+  if ((process.env.CI || process.env.VERCEL || process.env.VERCEL_ENV) && process.env.ALLOW_LOCAL_SEED_IN_CI !== "true") {
+    console.error("ERROR Refusing to run verifier in CI/Vercel without ALLOW_LOCAL_SEED_IN_CI=true (verifier writes to DB)");
+    process.exit(1);
+  }
+}
+
 const BASE = process.env.APP_URL ?? "http://localhost:3000";
 
 function hashToken(token: string) {
@@ -25,11 +48,9 @@ async function fetchWithSession(path: string, token?: string) {
   return { status: res.status, body };
 }
 
+// Throw instead of process.exit so callers' `finally` (DB cleanup) always runs — P1
 function assert(condition: boolean, msg: string) {
-  if (!condition) {
-    console.error(`FAIL ${msg}`);
-    process.exit(1);
-  }
+  if (!condition) throw new Error(`FAIL ${msg}`);
   console.log(`PASS ${msg}`);
 }
 
