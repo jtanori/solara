@@ -1,0 +1,71 @@
+name: migrate
+
+# Remote migration runner — triggered by local scripts/deploy.sh, not auto on push.
+# Secrets stay in GitHub Environments (staging → DATABASE_URL direct, production → DATABASE_URL direct).
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Target Neon environment (must match GitHub Environment name)
+        required: true
+        type: choice
+        options: [staging, production]
+      pr:
+        description: PR number being deployed (audit trail)
+        required: true
+        type: string
+      sha:
+        description: PR head SHA to checkout and migrate (ensures PR's drizzle/ is used)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-${{ inputs.env }}
+  cancel-in-progress: false
+
+run-name: migrate ${{ inputs.env }} pr-${{ inputs.pr }} ${{ inputs.sha }}
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Show pending migrations (no secrets)
+        env:
+          TARGET_ENV: ${{ inputs.env }}
+          PR: ${{ inputs.pr }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          echo "Environment: $TARGET_ENV pr=$PR sha=$SHA"
+          cat drizzle/meta/_journal.json
+          ls -l drizzle/*.sql || true
+
+      - name: Run drizzle-kit migrate against target
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_ENV: ${{ inputs.env }}
+          PR: ${{ inputs.pr }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "ERROR: secrets.DATABASE_URL not set for environment '$TARGET_ENV' — add GitHub Environment secret DATABASE_URL (Neon direct URL)"
+            exit 1
+          fi
+          TARGET_HOST=$(echo "$DATABASE_URL" | sed -E 's|.*@||; s|/.*||')
+          echo "Migrating $TARGET_ENV (pr $PR, sha $SHA) → host $TARGET_HOST"
+          npx drizzle-kit migrate
+          echo "Migrate complete for $TARGET_ENV pr $PR"
