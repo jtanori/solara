@@ -39,7 +39,7 @@ jobs:
       - run: npx drizzle-kit migrate
       - run: npx next typegen
       - run: npm exec tsc -- --noEmit --pretty false
-      - run: npx eslint src tests --max-warnings=0
+      - run: npx eslint src tests scripts --max-warnings=0
       - run: RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run build

@@ -28,13 +28,13 @@ Branching is `feature → staging → main` (see `docs/decisions.md` ADR 001). `
 
 Public registration always creates a free `user`. After creating the intended account, a trusted operator may promote that exact account through a privileged database session; audit the change and confirm exactly one row is returned. For example, inside `psql`, set a placeholder email with `\set owner_email 'owner@example.com'` and execute `UPDATE users SET role = 'owner' WHERE email = lower(:'owner_email') RETURNING id, email, role;`. Replace the example address in the secure session, not in committed code. Then use `/admin` to assign other roles. Do not create an unauthenticated owner-bootstrap endpoint.
 
-### Local role seed scaffold (staging-only, never production)
+### Local role seed scaffold (local-only, never staging or production)
 
 For local development only, a guarded seed script creates four role accounts idempotently without touching `src/`:
 
 - `scripts/local/seed-users.ts` — inserts/updates `owner@solara.local`, `admin@solara.local`, `editor@solara.local`, `user@solara.local` with a shared hashed password from `LOCAL_SEED_PASSWORD` (scrypt, same helper as `src/lib/passwords.ts`).
 - Guard: requires `ALLOW_LOCAL_SEED=true` (must be `true` or `1`) and a non-empty `LOCAL_SEED_PASSWORD` (≥12 chars). The password is never committed; `.env.example` contains an empty placeholder.
-- Safety: refuses any `DATABASE_URL` whose host is not `localhost`, `127.0.0.1`, or `::1`. Never set `ALLOW_LOCAL_SEED` in staging/production and never use production secrets locally.
+- Safety: refuses any `DATABASE_URL` whose host is not `localhost`, `127.0.0.1`, `::1`, or `[::1]` (bracket-stripped so IPv6 loopback matches; host check is best-effort — an `ssh -L 5432:remote:5432` tunnel also appears as `127.0.0.1`). It also refuses when `CI`/`VERCEL`/`VERCEL_ENV` is set. Never set `ALLOW_LOCAL_SEED` in staging/production and never use production secrets locally; `ALLOW_LOCAL_SEED` + password is the real gate.
 - Run: `ALLOW_LOCAL_SEED=true LOCAL_SEED_PASSWORD='a-strong-local-password-12+' DATABASE_URL=postgresql://postgres:postgres@localhost:5432/app_db npm run db:seed:local` — safe to re-run; email is the unique key. Verify via `psql` or sign-in per role.
 - Excluded from deploy: `.vercelignore` lists `scripts/local` (and `tests`, `drizzle/meta`) so Vercel never ships seed/mock code; `package.json` exposes `db:seed:local` as `tsx scripts/local/seed-users.ts`.
 
