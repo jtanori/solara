@@ -10,7 +10,7 @@ set -euo pipefail
 #   ./scripts/deploy.sh --pr 43 --skip-migrate
 #
 # Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=require&channel_binding=require)
-# Note: promotions staging→main are squash under current repo settings (allow_squash:true only); see ADR 004 — owner decision pending for rebase.
+# Note: promotions staging→main are currently BLOCKED pending owner decision on ADR 004 (fast-forward/merge vs squash); see AGENTS.md & ADR 004.
 
 PR=""
 ENV=""
@@ -55,6 +55,17 @@ if [[ "$BASE" == "staging" && "$ENV" != "staging" ]]; then
 fi
 if [[ "$BASE" == "main" && "$ENV" != "production" ]]; then
   echo "ERROR: PR #$PR targets main but --env $ENV requested — use --env production" >&2; exit 1
+fi
+# Production promotion is currently blocked pending owner decision on ADR 004 — refuse before any remote calls (including migrations).
+# AGENTS.md & ADR 004 require fast-forward/merge (not squash) to preserve staging as ancestor of main; repo is currently squash-only.
+if [[ "$BASE" == "main" ]]; then
+  echo "ERROR: Production promotion (staging → main) is currently blocked pending owner decision on ADR 004." >&2
+  echo "AGENTS.md & ADR 004 require fast-forward/merge (not squash) to preserve staging as ancestor of main." >&2
+  echo "Repo is currently squash-only (allow_squash:true, allow_merge:false). To proceed:" >&2
+  echo "  1. Obtain owner approval and record decision in docs/decisions.md ADR 004" >&2
+  echo "  2. Either update repo settings to allow merge commits (Settings → General → Pull Requests) and re-run with --merge," >&2
+  echo "     or manually create/promote via GitHub UI with owner oversight." >&2
+  exit 1
 fi
 
 if [[ "$ENV" == "staging" ]]; then WORKFLOW_ENV="staging"; BASE_BRANCH="staging"; APP_URL="https://solara-stg.vercel.app"
@@ -116,17 +127,6 @@ else echo "Skipping remote migrate step."; fi
 
 echo ""
 echo "== Merge PR #$PR → $BASE_BRANCH ($ENV) =="
-# Blocker 1: production promotions (staging → main) must be fast-forward/merge per AGENTS.md & ADR 004, but repo currently allows squash-only.
-# Until owner decides and repo settings are updated, refuse to automate production promotions.
-if [[ "$BASE" == "main" ]]; then
-  echo "ERROR: Production promotion (staging → main) is currently blocked pending owner decision on ADR 004." >&2
-  echo "AGENTS.md & ADR 004 require fast-forward/merge (not squash) to preserve staging as ancestor of main." >&2
-  echo "Repo is currently squash-only (allow_squash:true, allow_merge:false). To proceed:" >&2
-  echo "  1. Obtain owner approval and record decision in docs/decisions.md ADR 004" >&2
-  echo "  2. Either update repo settings to allow merge commits (Settings → General → Pull Requests) and re-run with --merge," >&2
-  echo "     or manually create/promote via GitHub UI with owner oversight." >&2
-  exit 1
-fi
 echo "Policy: squash for feature → staging — see AGENTS.md & ADR 004. (Promotion path requires separate owner decision.)"
 if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH (squash)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
 gh pr merge "$PR" --squash --repo jtanori/solara
