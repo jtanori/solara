@@ -63,5 +63,7 @@ jobs:
           ! curl -s http://localhost:3000/ | grep -q 'href="/blueprint'
           ! curl -s http://localhost:3000/ | grep -q 'href="/setup'
           ! curl -s http://localhost:3000/ | grep -q 'href="/usage-guide'
+          # #15 — production gating: unauth 404 already above; verify signed-in role scoping, ignored ?role=, payload leakage, no internal links
+          APP_URL=http://localhost:3000 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db npx tsx scripts/verify-gating-production.ts
           kill $PID
           wait $PID || true
