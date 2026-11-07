@@ -42,9 +42,9 @@ Closes #<!-- issue number --> — <!-- title -->
 - [ ] No secrets committed (`.env` never committed; `.env.example` contains placeholders only)
 - [ ] Docs updated (`README.md`, `docs/setup/*`, `docs/decisions.md`, `BACKLOG.md` when issues change) and `BACKLOG.md` links resolve
 - [ ] No mocked/seed code in `src/` (keep in `scripts/`)
-- [ ] **Accepted for promotion** — maintainer posted deploy command as a comment (see copy below) so the deployer can run it without guessing the PR number:
+- [ ] **Accepted for promotion** — maintainer posted deploy command as a comment (feature → `staging` only for now). Production promotion is manual pending owner decision on ADR 004:
   - feature PR → `staging`: `./scripts/deploy.sh --pr <number> --env staging`
-  - promotion PR `staging → main`: `./scripts/deploy.sh --pr <number> --env production --yes`
+  - promotion PR `staging → main`: **blocked** — `scripts/deploy.sh` refuses `--env production` until owner decides squash vs fast-forward; use manual GitHub UI promotion with owner oversight.
 
 <!--
 Accepted-for-promotion comment copy — paste the one matching the target branch:
@@ -63,16 +63,10 @@ Run locally (no local DB URL needed):
 ```
 See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://solara-stg.vercel.app/api/health` → `{"ok":true}`.
 
-— Promotion staging → main (PR targets `main`) —
-✅ **Accepted for promotion — ready to deploy to production**
+— Promotion staging → main (PR targets `main`) — currently blocked —
+⚠️ **Production promotion requires owner decision on ADR 004**
 
-Staging QA done on `https://solara-stg.vercel.app` + `verify` on `staging` is green. This will trigger `migrate.yml` for Environment `production` (secret `DATABASE_URL` = Neon direct prod, with `?sslmode=require&channel_binding=require`) *before* `gh pr merge --squash` to `main`.
-
-Run locally:
-```bash
-./scripts/deploy.sh --pr <number> --env production --yes
-```
-Requires GitHub Environment `production` approval. After merge, Vercel deploys `main@<sha>` to `https://solara-production.vercel.app` — verify `curl https://solara-production.vercel.app/api/health` → `{"ok":true}` and sign-in/map/PDF/Stripe.
+Staging QA done on `https://solara-stg.vercel.app` + `verify` on `staging` is green. Per AGENTS.md & ADR 004, `staging → main` must be fast-forward/merge (not squash) to preserve ancestry, but repo is currently squash-only. `scripts/deploy.sh --env production` will refuse until the owner decides and updates repo settings. Proceed manually via GitHub UI with owner approval and ensure GitHub Environment `production` has required reviewers + branch restriction to `main` (Settings → Environments → production → Required reviewers, Deployment branches → Selected branches: `main`).
 -->
 
 ---

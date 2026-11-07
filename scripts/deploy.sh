@@ -37,7 +37,8 @@ echo "== deploy PR #$PR =="
 
 BASE=$(gh pr view "$PR" --repo jtanori/solara --json baseRefName --jq .baseRefName)
 HEAD_SHA=$(gh pr view "$PR" --repo jtanori/solara --json headRefOid --jq .headRefOid)
-echo "PR base: $BASE head: $HEAD_SHA"
+HEAD_REF=$(gh pr view "$PR" --repo jtanori/solara --json headRefName --jq .headRefName)
+echo "PR base: $BASE head: $HEAD_SHA ($HEAD_REF)"
 
 if [[ -z "$ENV" ]]; then
   case "$BASE" in
@@ -89,9 +90,9 @@ if [[ "$NEEDS_MIGRATE" == true ]]; then
   if ! git cat-file -e "$HEAD_SHA:.github/workflows/migrate.yml" 2>/dev/null; then
     echo "ERROR: .github/workflows/migrate.yml not found on PR head $HEAD_SHA — push it first" >&2; exit 1
   fi
-  echo "Triggering workflow (ref=$HEAD_SHA)..."
+  echo "Triggering workflow (ref=$HEAD_REF sha=$HEAD_SHA)..."
   BEFORE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  gh workflow run migrate.yml --repo jtanori/solara --ref "$HEAD_SHA" -f env="$WORKFLOW_ENV" -f pr="$PR" -f sha="$HEAD_SHA" || { echo "ERROR: could not trigger migrate.yml" >&2; exit 1; }
+  gh workflow run migrate.yml --repo jtanori/solara --ref "$HEAD_REF" -f env="$WORKFLOW_ENV" -f pr="$PR" -f sha="$HEAD_SHA" || { echo "ERROR: could not trigger migrate.yml" >&2; exit 1; }
   echo "Workflow dispatched. Waiting for run (run-name: migrate $WORKFLOW_ENV pr-$PR $HEAD_SHA)..."
   sleep 5
   # Poll for run with matching sha/env/pr and createdAt after dispatch — avoids picking stale run.
@@ -115,8 +116,18 @@ else echo "Skipping remote migrate step."; fi
 
 echo ""
 echo "== Merge PR #$PR → $BASE_BRANCH ($ENV) =="
-# All merges currently squash (repo allows squash only); promotion rebase requires owner decision + settings change (ADR 004).
-echo "Policy: squash (allow_squash:true only) — see AGENTS.md & ADR 004. Promotion rebase deferred pending owner decision."
+# Blocker 1: production promotions (staging → main) must be fast-forward/merge per AGENTS.md & ADR 004, but repo currently allows squash-only.
+# Until owner decides and repo settings are updated, refuse to automate production promotions.
+if [[ "$BASE" == "main" ]]; then
+  echo "ERROR: Production promotion (staging → main) is currently blocked pending owner decision on ADR 004." >&2
+  echo "AGENTS.md & ADR 004 require fast-forward/merge (not squash) to preserve staging as ancestor of main." >&2
+  echo "Repo is currently squash-only (allow_squash:true, allow_merge:false). To proceed:" >&2
+  echo "  1. Obtain owner approval and record decision in docs/decisions.md ADR 004" >&2
+  echo "  2. Either update repo settings to allow merge commits (Settings → General → Pull Requests) and re-run with --merge," >&2
+  echo "     or manually create/promote via GitHub UI with owner oversight." >&2
+  exit 1
+fi
+echo "Policy: squash for feature → staging — see AGENTS.md & ADR 004. (Promotion path requires separate owner decision.)"
 if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH (squash)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
 gh pr merge "$PR" --squash --repo jtanori/solara
 echo "Merged PR #$PR → $BASE_BRANCH"
