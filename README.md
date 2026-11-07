@@ -1,0 +1,34 @@
+# Solara
+
+A bilingual solar-return prototype with Stripe subscriptions, city search and map selection, private editorial PDFs, and role-based content editing.
+
+## Setup and deployment guides
+
+Start with the [setup guide index](docs/setup/README.md), or open `/setup` in the running application for a bilingual, environment-specific checklist. Detailed guides cover local development, staging and production for:
+
+- [Foundation, PostgreSQL, CI/CD and deployment](docs/setup/01-foundation-and-deployment.md)
+- [Stripe Checkout, webhooks, subscriptions and MXN/USD pricing](docs/setup/02-stripe.md)
+- [Geocoding and map tiles](docs/setup/03-geocoding-and-maps.md)
+- [Editorial PDF downloads](docs/setup/04-pdf.md)
+- [English and Spanish](docs/setup/05-i18n.md)
+- [Solar-return calculations and house systems](docs/setup/06-astrology-and-houses.md)
+
+## Development-only usage guide
+
+Run the application with `npm run dev` and open `/usage-guide` to explore the bilingual, role-by-role handbook. It covers visitors, free and Premium customers, editors, admins, and owners; selecting a guide does not grant permissions. The route returns 404 and its navigation links are hidden in production builds, including staging previews.
+
+## Quick local start
+
+Use Node.js 22 and a **new, empty, disposable** PostgreSQL database. Configure `DATABASE_URL` and `APP_URL` in `.env` (copy `.env.example` only if `.env` does not already exist), then run `npm ci`, `npx drizzle-kit migrate`, and `npm run dev`. Run `node scripts/check-setup.mjs local` for a secret-safe format check.
+
+Earlier prototypes may have databases created with `drizzle-kit push` and no migration history. Do not run the initial migration blindly on those databases; use a fresh development database or obtain a reviewed baseline. Never use `push` against production. The CI workflow applies versioned migrations to a disposable database and runs `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`.
+
+Public registration creates a free user. A trusted operator must provision the first owner; see the foundation guide. No Stripe keys, prices or customer data are included.
+
+## Browser autofill compatibility
+
+Personal fields use named, standard autocomplete tokens for supported browsers. As a temporary mitigation for reported Brave autofill crashes, the app asks Brave not to autofill profile fields; password fields still use `new-password` and `current-password`. Search, location and editorial fields explicitly opt out of profile autofill. Browser autocomplete is a hint and may be ignored, so this is not a guaranteed fix for a browser-process bug. Test the affected Brave release and, if it still crashes, update Brave or disable the “New Alias” hint in Brave's Email Aliases settings. See [Brave issue #60126](https://github.com/brave/brave-browser/issues/60126).
+
+## Launch limitations
+
+This is not yet production-ready. Calculations and historical time zones require independent professional validation; Placidus is not implemented. Email verification, password recovery, staff MFA, rate limiting, full CSRF protection, report-version snapshots, editorial approval, privacy/consent operations and other controls remain launch work. Review provider licensing, tax and billing policies, dependencies, backups and incident procedures before accepting real customers.
