@@ -13,13 +13,15 @@ Start with the [setup guide index](docs/setup/README.md), or in development (`np
 - [English and Spanish](docs/setup/05-i18n.md)
 - [Solar-return calculations and house systems](docs/setup/06-astrology-and-houses.md)
 
-## Development-only internal documents
+## Internal documents and usage guide
 
-The routes `/blueprint`, `/setup`, and `/usage-guide` are available only in development (`npm run dev`). Outside development each route returns 404 and its header, footer, and dashboard links are hidden — the blueprint-only footer column is removed and the footer grid compacts accordingly.
+The routes `/blueprint` and `/setup` are available only in development (`npm run dev`). Outside development each returns 404 and its header, footer, and dashboard links are hidden — the blueprint-only footer column is removed and the footer grid compacts accordingly.
+
+The route `/usage-guide` is open in development (all six role guides are rendered and `?role=` overrides the active audience for preview). Outside development it is scoped to the signed-in user: a signed-in user sees exactly one guide matching their real role (email `user` → `free`/`premium` via subscription, `editor`/`admin`/`owner` by role; `?role=` is ignored), an anonymous user receives 404, and no other role content is included in the HTML or RSC payload. Internal `/setup` and `/blueprint` section links inside the guide are also hidden outside development.
 
 ### Usage guide
 
-Run the application with `npm run dev` and open `/usage-guide` to explore the bilingual, role-by-role handbook. It covers visitors, free and Premium customers, editors, admins, and owners; selecting a guide does not grant permissions. Outside development the page is visible only to signed-in users and shows a single guide matching their real role (`?role=` is ignored); anonymous users receive 404 and no other role content is included in the HTML or RSC payload. Internal `/setup` and `/blueprint` links inside the guide are also hidden outside development.
+Run the application with `npm run dev` and open `/usage-guide` to explore the bilingual, role-by-role handbook. It covers visitors, free and Premium customers, editors, admins, and owners; selecting a guide does not grant permissions.
 
 ## Quick local start
 

@@ -1,4 +1,4 @@
-# Never deploy local-only seed and mock code
+# Never deploy local-only seed/mock code or build-time-only fixtures
 scripts/local
 tests
 drizzle/meta

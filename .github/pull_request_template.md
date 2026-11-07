@@ -44,4 +44,4 @@ Closes #<!-- issue number --> — <!-- title -->
 - [ ] No mocked/seed code in `src/` (keep in `scripts/`)
 
 ---
-Target branch for this PR is `staging`. The `main` branch is protected and deploys production via Vercel; see `docs/decisions.md` ADR 001 and `docs/setup/01-foundation-and-deployment.md`.
+Target branch for this PR is `staging`. The `main` branch is intended to be protected (target, not yet enforced) and will deploy production via Vercel once applied; see `docs/decisions.md` ADR 001 and `docs/setup/01-foundation-and-deployment.md`.
