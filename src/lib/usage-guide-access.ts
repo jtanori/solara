@@ -1,3 +1,5 @@
+// Server-only: this resolver returns internal guide content and must not be bundled to the client.
+// See P3/P4 in PR #17 review — #13 will pass only the single filtered guide to the client component.
 import { isDevelopmentMode } from "@/lib/development";
 import { isUsageAudience, usageAudienceFor, usageGuides } from "@/lib/usage-guide";
 import type { AudienceGuide, UsageAudience } from "@/lib/usage-guide";
@@ -44,8 +46,12 @@ export function resolveUsageGuideAccess(
   if (!user) return null;
 
   const audience = usageAudienceFor(user);
+  // usageGuides() is server-side static data; we load all 6 then filter to the single allowed
+  // guide. The returned `guides` array is pre-filtered and must be passed through verbatim —
+  // do not forward the full array to the client (see #13 "no other role content" criterion).
   const guides = usageGuides(locale);
   const single = guides.find((guide) => guide.id === audience);
+  // Fail closed: unknown audience means deny (should not happen with valid Role mapping)
   if (!single) return null;
   // Ignore requestedRole entirely outside development
   return { guides: [single], activeAudience: audience };

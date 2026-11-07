@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveUsageGuideAccess } from "../src/lib/usage-guide-access.js";
-import { USAGE_AUDIENCES } from "../src/lib/usage-guide.js";
+import { resolveUsageGuideAccess } from "../src/lib/usage-guide-access";
+import { USAGE_AUDIENCES } from "../src/lib/usage-guide";
 
 // Helper users
 const freeUser = { role: "user" as const, plan: "free" as const };
@@ -152,17 +152,17 @@ test("development visitor with premium ?role= still gets all guides but active i
   assert.equal(result.guides.length, 6);
 });
 
-test("no payload leakage: non-dev guide array contains only the single guide's ids", () => {
+test("no payload leakage: non-dev guide array contains only the single guide's content", () => {
   const result = resolveUsageGuideAccess({ environment: "production", user: premiumUser, locale: "en" });
   assert.ok(result);
-  const ids = result.guides.map((g) => g.id);
-  assert.deepEqual(ids, ["premium"]);
-  // Ensure stringified payload does not contain other role labels
+  assert.deepEqual(result.guides.map((g) => g.id), ["premium"]);
+  // Verify serialized payload does not contain other role's captions/headlines
   const payload = JSON.stringify(result.guides);
-  for (const other of ["visitor", "free", "editor", "admin", "owner"]) {
-    if (other === "premium") continue;
-    // The label strings for other roles should not appear
-    // We check ids only — labels are role-specific but we verify ids are exclusive
-    assert.ok(!ids.includes(other as any));
-  }
+  assert.ok(!payload.includes("Before you sign up"), "should not contain visitor caption");
+  assert.ok(!payload.includes("Your personal space"), "should not contain free caption");
+  assert.ok(!payload.includes("Shape the words"), "should not contain editor caption");
+  assert.ok(!payload.includes("Manage access"), "should not contain admin caption");
+  assert.ok(!payload.includes("Oversee the product"), "should not contain owner caption");
+  // But should contain its own caption
+  assert.ok(payload.includes("Go a little deeper"), "should contain premium caption");
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hashPassword, verifyPassword } from "../src/lib/passwords.js";
+import { hashPassword, verifyPassword } from "../src/lib/passwords";
 
 test("hashPassword produces salt:hash with expected format", () => {
   const hash = hashPassword("correct-horse-battery");
@@ -40,11 +40,11 @@ test("verifyPassword rejects malformed stored values", () => {
   assert.equal(verifyPassword("password", ":onlyhash01234567890123456789abcdef01234567890123456789abcdef01234567890123456789abcdef01234567890123456789abcdef0123456789012345"), false);
   // No colon at all
   assert.equal(verifyPassword("password", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"), false);
-  // Hash length wrong (127 instead of 128)
+  // Hash length wrong (127 instead of 128) and invalid hex
   const hash = hashPassword("test");
   const [salt] = hash.split(":");
   assert.equal(verifyPassword("test", `${salt}:${"a".repeat(127)}`), false);
-  assert.equal(verifyPassword("test", `${salt}:${"g".repeat(128)}`), false); // invalid hex still fails length check? Buffer will handle but length is ok; timingSafeEqual will compare — but g is not hex, Buffer will produce shorter buffer, so should be false due to length mismatch or exception handling
+  assert.equal(verifyPassword("test", `${salt}:${"g".repeat(128)}`), false); // explicit hex validation rejects non-hex
 });
 
 test("handles unicode and long passwords", () => {

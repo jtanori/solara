@@ -4,7 +4,7 @@ A bilingual solar-return prototype with Stripe subscriptions, city search and ma
 
 ## Setup and deployment guides
 
-Start with the [setup guide index](docs/setup/README.md), or open `/setup` in the running application for a bilingual, environment-specific checklist. Detailed guides cover local development, staging and production for:
+Start with the [setup guide index](docs/setup/README.md), or in development (`npm run dev`) open `/setup` in the running application for a bilingual, environment-specific checklist. Detailed guides cover local development, staging and production for:
 
 - [Foundation, PostgreSQL, CI/CD and deployment](docs/setup/01-foundation-and-deployment.md)
 - [Stripe Checkout, webhooks, subscriptions and MXN/USD pricing](docs/setup/02-stripe.md)
