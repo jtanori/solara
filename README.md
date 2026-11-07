@@ -13,9 +13,13 @@ Start with the [setup guide index](docs/setup/README.md), or in development (`np
 - [English and Spanish](docs/setup/05-i18n.md)
 - [Solar-return calculations and house systems](docs/setup/06-astrology-and-houses.md)
 
-## Development-only usage guide
+## Development-only internal documents
 
-Run the application with `npm run dev` and open `/usage-guide` to explore the bilingual, role-by-role handbook. It covers visitors, free and Premium customers, editors, admins, and owners; selecting a guide does not grant permissions. The route returns 404 and its navigation links are hidden in production builds, including staging previews.
+The routes `/blueprint`, `/setup`, and `/usage-guide` are available only in development (`npm run dev`). Outside development each route returns 404 and its header, footer, and dashboard links are hidden — the blueprint-only footer column is removed and the footer grid compacts accordingly.
+
+### Usage guide
+
+Run the application with `npm run dev` and open `/usage-guide` to explore the bilingual, role-by-role handbook. It covers visitors, free and Premium customers, editors, admins, and owners; selecting a guide does not grant permissions. Outside development the page is visible only to signed-in users and shows a single guide matching their real role (`?role=` is ignored); anonymous users receive 404 and no other role content is included in the HTML or RSC payload. Internal `/setup` and `/blueprint` links inside the guide are also hidden outside development.
 
 ## Quick local start
 
