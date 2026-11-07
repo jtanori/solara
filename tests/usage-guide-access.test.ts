@@ -178,9 +178,9 @@ test("non-development hides internal /setup and /blueprint section links", () =>
   for (const user of [freeUser, premiumUser]) {
     const result = resolveUsageGuideAccess({ environment: "production", user, locale: "en" });
     assert.ok(result);
-    // Free/premium guides should not have internal links originally, but check they still have no leakage
     const payload = JSON.stringify(result.guides);
-    assert.ok(!payload.includes('"/setup"') || payload.includes("/setup") === false || !payload.includes('"/blueprint"'));
+    assert.ok(!payload.includes('"/setup"'));
+    assert.ok(!payload.includes('"/blueprint"'));
   }
   // Development should preserve internal links
   const devEditor = resolveUsageGuideAccess({ environment: "development", user: editorUser, locale: "en" });

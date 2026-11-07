@@ -14,7 +14,7 @@ export function UsageGuide({
   locale,
   initialAudience,
   signedInName,
-  isDevelopment = true,
+  isDevelopment = false,
 }: {
   guides: AudienceGuide[];
   locale: Locale;
@@ -286,7 +286,15 @@ export function UsageGuide({
               <div className="usage-empty">
                 <Search size={22} />
                 <h3>{es ? "No encontramos ese tema." : "No topics found."}</h3>
-                <p>{es ? "Prueba otra palabra o elige un rol diferente." : "Try another search or choose a different role."}</p>
+                <p>
+                  {isDevelopment
+                    ? es
+                      ? "Prueba otra palabra o elige un rol diferente."
+                      : "Try another search or choose a different role."
+                    : es
+                      ? "Prueba otra palabra."
+                      : "Try another search."}
+                </p>
                 <button type="button" onClick={() => setQuery("")}>
                   {es ? "Limpiar búsqueda" : "Clear search"}
                 </button>
