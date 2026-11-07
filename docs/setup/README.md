@@ -8,6 +8,7 @@ These guides cover the current application in three separate environments. The c
 4. [Editorial PDF downloads](04-pdf.md)
 5. [English and Spanish](05-i18n.md)
 6. [Solar-return calculation and house systems](06-astrology-and-houses.md)
+7. [Platform validation checklist — pre-launch gate](07-platform-validation.md) *(owners + evidence)*
 
 ## Recommended environment separation
 
