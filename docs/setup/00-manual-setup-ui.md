@@ -98,17 +98,17 @@ After this, a test PR `feature → staging → main` is already proven by #23/`#
 
 If already imported:
 1. **Settings → Git → Production Branch:** set to `main`.
-2. **Settings → Domains:**
-   - Add `solara.vercel.app` (or your custom prod domain) → assign to **Production (`main`)**.
-   - Add `staging.solara.vercel.app` → Add → Git branch → `staging` → Preview. Docs: <https://vercel.com/docs/deployments/environments>
+2. **Settings → Domains:** (live: Production `solara-production.vercel.app` @ `039d9b6`, Staging `solara-stg.vercel.app` @ `a0454ed` — custom domains pending)
+   - Add `solara-production.vercel.app` (or your custom prod domain) → assign to **Production (`main`)**.
+   - Add `solara-stg.vercel.app` → Add → Git branch → `staging` → Preview. Docs: <https://vercel.com/docs/deployments/environments>
 3. **Settings → Environment Variables** → **Add** (pay attention to **Environment** + **Git Branch** scopes):
 
    | Variable | Value | Environment | Git Branch |
    |---|---|---|---|
    | `DATABASE_URL` | `<staging pooled>` | Preview | `staging` |
-   | `APP_URL` | `https://staging.solara.vercel.app` | Preview | `staging` |
+   | `APP_URL` | `https://solara-stg.vercel.app` | Preview | `staging` |
    | `DATABASE_URL` | `<prod pooled>` | Production | `main` |
-   | `APP_URL` | `https://solara.vercel.app` | Production | `main` |
+   | `APP_URL` | `https://solara-production.vercel.app` | Production | `main` |
    | `STRIPE_SECRET_KEY` (test) | `sk_test_...` | Preview | `staging` |
    | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (test) | `pk_test_...` | Preview | `staging` |
    | `STRIPE_WEBHOOK_SECRET` (test) | `whsec_...` | Preview | `staging` |
@@ -155,4 +155,4 @@ vercel env ls   # or check dashboard env scoping
 node scripts/check-setup.mjs local
 ```
 
-Tell me “#1 and #2 done” and I’ll immediately open **#3 `AGENTS.md`** (depends on these) from `arena/75fa5f0e-solara` targeting `staging`.
+Verify: `https://solara-stg.vercel.app/api/health` and `https://solara-production.vercel.app/api/health` should both return `{"ok":true}`.

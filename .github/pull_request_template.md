@@ -42,6 +42,32 @@ Closes #<!-- issue number --> — <!-- title -->
 - [ ] No secrets committed (`.env` never committed; `.env.example` contains placeholders only)
 - [ ] Docs updated (`README.md`, `docs/setup/*`, `docs/decisions.md`, `BACKLOG.md` when issues change) and `BACKLOG.md` links resolve
 - [ ] No mocked/seed code in `src/` (keep in `scripts/`)
+- [ ] **Accepted for promotion** — maintainer posted deploy command as a comment (feature → `staging` only for now). Production promotion is manual pending owner decision on ADR 004:
+  - feature PR → `staging`: `./scripts/deploy.sh --pr <number> --env staging`
+  - promotion PR `staging → main`: **blocked** — `scripts/deploy.sh` refuses `--env production` until owner decides squash vs fast-forward; use manual GitHub UI promotion with owner oversight.
+
+<!--
+Accepted-for-promotion comment copy — paste the one matching the target branch:
+
+— Feature → staging (PR targets `staging`) —
+✅ **Accepted for promotion — ready to deploy to staging**
+
+CI is green (`verify` 1m30s + Vercel Preview → `solara-stg.vercel.app`). Check `[x]` below then deploy — if drizzle/ changed, `deploy.sh` will trigger `.github/workflows/migrate.yml` for Environment `staging` (secret `DATABASE_URL` = Neon direct, no -pooler) *before* merging.
+
+- [ ] touches `drizzle/` — will dispatch `migrate.yml`
+- [ ] does not touch `drizzle/` — direct merge
+
+Run locally (no local DB URL needed):
+```bash
+./scripts/deploy.sh --pr <number> --env staging
+```
+See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://solara-stg.vercel.app/api/health` → `{"ok":true}`.
+
+— Promotion staging → main (PR targets `main`) — currently blocked —
+⚠️ **Production promotion requires owner decision on ADR 004**
+
+Staging QA done on `https://solara-stg.vercel.app` + `verify` on `staging` is green. Per AGENTS.md & ADR 004, `staging → main` must be fast-forward/merge (not squash) to preserve ancestry, but repo is currently squash-only. `scripts/deploy.sh --env production` will refuse until the owner decides and updates repo settings. Proceed manually via GitHub UI with owner approval and ensure GitHub Environment `production` has required reviewers + branch restriction to `main` (Settings → Environments → production → Required reviewers, Deployment branches → Selected branches: `main`).
+-->
 
 ---
-Target branch for this PR is `staging`. The `main` branch is intended to be protected (target, not yet enforced) and will deploy production via Vercel once applied; see `docs/decisions.md` ADR 001 and `docs/setup/01-foundation-and-deployment.md`.
+Target branch for this PR is `staging`. Deploy via `scripts/deploy.sh` (see `docs/setup/00-manual-setup-ui.md`); `main` deploys production via Vercel — see ADR 001/ADR 004.
