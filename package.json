@@ -6,7 +6,16 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typegen": "next typegen",
+    "test": "tsx --test tests/*.test.ts",
+    "test:integration": "RUN_BILLING_INTEGRATION_TESTS=1 tsx --test tests/*.test.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "check:setup": "node scripts/check-setup.mjs local"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.9.0",
@@ -39,6 +48,7 @@
     "eslint-config-next": "16.2.6",
     "postcss": "^8.5.32",
     "tailwindcss": "4.1.17",
+    "tsx": "^4.23.15",
     "typescript": "5.9.3"
   }
 }
