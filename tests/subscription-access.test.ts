@@ -70,7 +70,7 @@ test(
     } finally {
       if (createdSubIds.length) await db.delete(subscriptions).where(inArray(subscriptions.stripeSubscriptionId, createdSubIds));
       for (const id of createdUserIds) await db.delete(users).where(eq(users.id, id));
-      await pool.end();
+      // Do not end pool here — billing-integration.test.ts also uses the shared Pool; ending it would break subsequent billing tests in the same run.
     }
   },
 );
@@ -85,6 +85,5 @@ test("orphan user without subscription does not have Premium", { skip: process.e
     assert.equal(await hasPremiumAccess(user.id), false);
   } finally {
     await db.delete(users).where(eq(users.id, user.id));
-    await pool.end();
   }
 });

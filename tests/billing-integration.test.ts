@@ -38,6 +38,5 @@ test("subscription sync is idempotent and uses the latest Stripe state",{skip:pr
     await db.delete(stripeEvents).where(inArray(stripeEvents.id,eventIds));
     await db.delete(users).where(eq(users.id,user.id));
     if(originalPrices===undefined) delete process.env.STRIPE_PREMIUM_PRICE_IDS; else process.env.STRIPE_PREMIUM_PRICE_IDS=originalPrices;
-    await pool.end();
   }
 });
