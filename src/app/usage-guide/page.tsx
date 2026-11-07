@@ -20,7 +20,7 @@ export default async function UsageGuidePage({ searchParams }: { searchParams: P
     locale,
   });
   if (!resolved) notFound();
-  const [{ UsageGuide }] = await Promise.all([import("@/components/usage-guide")]);
+  const { UsageGuide } = await import("@/components/usage-guide");
   return (
     <>
       <SiteHeader />

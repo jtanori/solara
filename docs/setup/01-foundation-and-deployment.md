@@ -4,16 +4,16 @@
 
 Next.js App Router runs on Node.js with PostgreSQL through Drizzle. The app reads `DATABASE_URL`; `drizzle.config.ts` reads the same variable. The repository contains the initial migration in `drizzle/` and CI in `.github/workflows/ci.yml`. CI uses an isolated PostgreSQL service, applies migrations, checks types/lint, runs tests, audits production dependencies and builds.
 
-Branching is `feature → staging → main` (see `docs/decisions.md` ADR 001). `main` (production) and `staging` are long-lived protected branches at `166539f`; feature branches are short-lived from `staging` as `<type>/<issue>-<slug>`, squash-merged with auto-delete.
+Branching is `feature → staging → main` (see `docs/decisions.md` ADR 001). `main` (production) and `staging` are intended to be long-lived protected branches at `166539f` — **target, not yet protected** (see verification below); feature branches are short-lived from `staging` as `<type>/<issue>-<slug>`, squash-merged with auto-delete (target).
 
 ## Branching and merge policy
 
-- **Long-lived:** `staging` (this PR, from `main` at `166539f`) and `main`. Feature branches are short-lived from `staging`.
-- **Naming:** `<type>/<issue>-<slug>` (e.g. `feat/13-usage-guide-role-scope`). Prohibits direct pushes to `staging`/`main`.
-- **Repo settings:** squash-only merge, auto-delete head branches (Settings → General → Pull Requests). Current API shows `allow_squash_merge:true`, `allow_merge_commit:true`, `allow_rebase_merge:true`, `delete_branch_on_merge:false` — requires manual toggle to `allow_squash_merge:true` only.
-- **Protection — `staging`:** PR required, status check `verify` (migrations, `next typegen`, `tsc`, `eslint`, `tsx --test`, `audit`, `build` + smoke 404s), conversation resolution, linear history, block force-push/deletion, required approvals `0` (single collaborator).
-- **Protection — `main`:** same as `staging`, but required approvals deferred to `1` once a second maintainer exists. Today `0`; self-approval is blocked by GitHub (author cannot approve own PR) but merge is allowed because protection requires `0`.
-- **Flow:** `feature → staging` (reviewed PR) → QA on staging → promotion PR `staging → main` → Vercel production. Test PR for this model is the current `arena/*` → `staging` → `main` chain.
+- **Long-lived:** `staging` (from `main` at `166539f`) and `main` — *target: protected; **Status: not applied yet*** — no rulesets (`gh api repos/jtanori/solara/rulesets` → `[]`), `branches/staging/protection` → 403. Apply via Settings → Branches → Rulesets or `gh api` with admin PAT.
+- **Naming:** `<type>/<issue>-<slug>` (e.g. `feat/13-usage-guide-role-scope`). Target: prohibit direct pushes to `staging`/`main` (status: not applied yet).
+- **Repo settings (target, not applied):** squash-only merge, auto-delete head branches (Settings → General → Pull Requests). Current API shows `allow_squash_merge:true`, `allow_merge_commit:true`, `allow_rebase_merge:true`, `delete_branch_on_merge:false` — requires manual toggle to `allow_squash_merge:true` only.
+- **Protection — `staging` (target, not applied):** PR required, status check `verify` (migrations, `next typegen`, `tsc`, `eslint`, `tsx --test`, `audit`, `build` + smoke 404s), conversation resolution, linear history, block force-push/deletion, required approvals `0` (single collaborator).
+- **Protection — `main` (target, not applied):** same as `staging`, but required approvals deferred to `1` once a second maintainer exists. Today `0`; self-approval is blocked by GitHub (author cannot approve own PR) but merge is allowed because protection requires `0`.
+- **Flow:** `feature → staging` (reviewed PR) → QA on staging → promotion PR `staging → main` → Vercel production.
 
 ## Local setup
 
