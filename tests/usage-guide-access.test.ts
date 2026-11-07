@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveUsageGuideAccess } from "../src/lib/usage-guide-access";
+import { resolveUsageGuideAccess } from "../src/lib/usage-guide-access-core";
 import { USAGE_AUDIENCES } from "../src/lib/usage-guide";
 
 // Helper users
