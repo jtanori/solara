@@ -125,21 +125,25 @@ function describe(url: string) {
 
 function assertEnvironment(env: Target, url: string) {
   const id = describe(url);
-  const problems: string[] = [];
+  // errors = the target is wrong, refuse to continue. warnings = advisory, never fail.
+  const errors: string[] = [];
+  const warnings: string[] = [];
 
   if (env === "local") {
-    if (!LOOPBACK.has(id.host)) problems.push(`local target must be loopback, got host "${id.host}"`);
+    if (!LOOPBACK.has(id.host)) errors.push(`local target must be loopback, got host "${id.host}"`);
   } else {
-    if (LOOPBACK.has(id.host)) problems.push(`${env} target points at loopback "${id.host}"`);
-    if (id.host.includes("localhost")) problems.push(`${env} target is localhost`);
+    if (LOOPBACK.has(id.host)) errors.push(`${env} target points at loopback "${id.host}"`);
+    if (id.host.includes("localhost")) errors.push(`${env} target is localhost`);
+    if (id.pooled) errors.push(`${env} target is a pooled (-pooler) host; migrations need the direct endpoint`);
   }
 
-  if (id.sslmode === "(unset)") problems.push("sslmode is not set — use ?sslmode=verify-full for hosted databases");
-  else if (id.sslmode === "require" || id.sslmode === "prefer") {
-    problems.push(`sslmode=${id.sslmode} is treated as verify-full today but changes meaning in pg 9 — use verify-full`);
+  if (id.sslmode === "(unset)") {
+    warnings.push("sslmode is not set — add ?sslmode=verify-full for hosted databases");
+  } else if (id.sslmode === "require" || id.sslmode === "prefer") {
+    warnings.push(`sslmode=${id.sslmode} is currently treated as verify-full but changes meaning in pg 9 — prefer ?sslmode=verify-full`);
   }
 
-  return { id, problems };
+  return { id, errors, warnings };
 }
 
 // ------------------------------------------------------------------ journal
@@ -161,8 +165,22 @@ function journalHash(entry: JournalEntry, sql: string): string {
 }
 
 async function withClient<T>(url: string, fn: (c: Client) => Promise<T>): Promise<T> {
+  const { host, database } = describe(url);
   const client = new Client({ connectionString: url, connectionTimeoutMillis: 15000 });
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (err) {
+    const e = err as { code?: string; message?: string };
+    const hint =
+      e.code === "ENOTFOUND" || e.code === "EAI_AGAIN"
+        ? " — host does not resolve; check the endpoint id in the secret"
+        : /timeout|ETIMEDOUT|ECONNREFUSED/i.test(e.message ?? "")
+          ? " — nothing listening; if the Neon project has IP Allow enabled, add the runner's egress IP or disable it"
+          : /password|authentication/i.test(e.message ?? "")
+            ? " — authentication failed; the role/password in the secret is wrong"
+            : "";
+    throw new Error(`cannot connect to ${host}/${database}: ${e.code ?? ""} ${e.message ?? err}${hint}`.replace(/\s+/g, " "));
+  }
   try {
     return await fn(client);
   } finally {
@@ -177,19 +195,20 @@ async function readApplied(client: Client): Promise<{ exists: boolean; hashes: s
   return { exists: true, hashes: rows.rows.map(r => r.hash) };
 }
 
-type Resolved = { url: string; source: string; id: ReturnType<typeof describe>; problems: string[] };
+type Resolved = { url: string; source: string; id: ReturnType<typeof describe>; errors: string[]; warnings: string[] };
 
 function resolveAndCheck(env: Target): Resolved {
   const { url, source } = resolveUrl(env);
-  const { id, problems } = assertEnvironment(env, url);
-  return { url, source, id, problems };
+  const { id, errors, warnings } = assertEnvironment(env, url);
+  return { url, source, id, errors, warnings };
 }
 
 function printTarget(r: Resolved, env: Target) {
   console.log(`env      ${env}   (from ${r.source})`);
   console.log(`target   ${r.id.user}@${r.id.host}/${r.id.database}${r.id.pooled ? "  [POOLED]" : "  [direct]"}`);
   console.log(`sslmode  ${r.id.sslmode}`);
-  for (const p of r.problems) console.error(`WARN ${p}`);
+  for (const w of r.warnings) console.log(`WARN ${w}`);
+  for (const e of r.errors) console.error(`ERROR ${e}`);
 }
 
 async function pending(r: Resolved) {
@@ -204,7 +223,7 @@ async function pending(r: Resolved) {
 // ------------------------------------------------------------------ commands
 async function cmdStatus(env: Target, json: boolean) {
   const r = resolveAndCheck(env);
-  const { id, source, problems } = r;
+  const { id, source, warnings, errors } = r;
   if (!json) printTarget(r, env);
   const { applied, entries, pending: pend } = await pending(r);
   const out = {
@@ -213,19 +232,19 @@ async function cmdStatus(env: Target, json: boolean) {
     target: `${id.user}@${id.host}/${id.database}`,
     pooled: id.pooled,
     sslmode: id.sslmode,
-    problems,
+    warnings,
+    errors,
     journalEntries: entries.length,
     journalPresent: applied.exists,
     appliedHashes: applied.hashes.length,
     pending: pend.map(e => e.tag),
   };
-  if (json) { console.log(JSON.stringify(out, null, 2)); return problems.length ? 1 : 0; }
+  if (json) { console.log(JSON.stringify(out, null, 2)); return errors.length ? 1 : 0; }
 
   console.log(`journal  ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`);
   console.log(`applied  ${applied.exists ? `${applied.hashes.length} row(s)` : "no drizzle.__drizzle_migrations table"}`);
   console.log(`pending  ${pend.length ? pend.map(e => e.tag).join(", ") : "none — database is up to date"}`);
-  for (const p of problems) console.error(`WARN ${p}`);
-  return problems.length ? 1 : 0;
+  return errors.length ? 1 : 0;
 }
 
 async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
@@ -234,7 +253,7 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
     "public.subscriptions", "public.stripe_events", "public.audit_logs",
   ];
   const r = resolveAndCheck(env);
-  const { url, source, id, problems } = r;
+  const { url, source, id, warnings, errors } = r;
   if (!json) printTarget(r, env);
   const entries = loadJournal();
 
@@ -245,18 +264,17 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
     const applied = await readApplied(client);
     const pendingTags = entries.filter(e => !applied.hashes.includes(journalHash(e, readFileSync(path.resolve(process.cwd(), `drizzle/${e.tag}.sql`), "utf8")))).map(e => e.tag);
 
-    const ok = missing.length === 0 && pendingTags.length === 0;
+    const ok = missing.length === 0 && pendingTags.length === 0 && errors.length === 0;
     const out = {
       env, source,
       target: `${id.user}@${id.host}/${id.database}`,
-      problems, required: REQUIRED, missing, pending: pendingTags, ok,
+      warnings, errors, required: REQUIRED, missing, pending: pendingTags, ok,
     };
 
     if (json) console.log(JSON.stringify(out, null, 2));
     else {
       console.log(`tables   ${REQUIRED.length - missing.length}/${REQUIRED.length} present${missing.length ? ` — missing: ${missing.join(", ")}` : ""}`);
       console.log(`pending  ${pendingTags.length ? pendingTags.join(", ") : "none"}`);
-      for (const p of problems) console.error(`WARN ${p}`);
       console.log(ok ? "OK       schema and journal are up to date" : "FAIL     environment is not ready");
     }
     if (!ok && allowEmpty) { console.error("NOTE --allow-incomplete set: reporting but not failing"); return 0; }
@@ -268,7 +286,7 @@ async function cmdMigrate(env: Target, dryRun: boolean, yes: boolean) {
   const r = resolveAndCheck(env);
   const { id, source } = r;
   printTarget(r, env);
-  if (id.pooled) fail("this looks like a pooled (-pooler) host; migrations must use the direct URL (DATABASE_URL_DIRECT)");
+  if (r.errors.length) fail(`refusing to migrate: ${r.errors.join("; ")}`);
 
   const state = await pending(r);
   console.log(`pending  ${state.pending.length ? state.pending.map(e => e.tag).join(", ") : "none"}`);

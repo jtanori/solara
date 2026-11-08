@@ -111,7 +111,10 @@ jobs:
 
       # db-run.ts applies the same target checks locally and in CI: it refuses pooled hosts and
       # loopback mismatches, prints only user@host/database, and re-reads the journal afterwards.
+      # Read-only. In verify/dry-run mode a failure here is diagnostic, not fatal — let the
+      # final verify step produce the verdict so one run tells the whole story.
       - name: Inspect current state
+        continue-on-error: ${{ inputs.mode == 'verify' || inputs.dry_run }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
