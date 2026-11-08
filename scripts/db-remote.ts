@@ -62,17 +62,22 @@ GitHub Environment for the target. No local database credential is required or r
   --dry-run       print the plan and the exact workflow_dispatch payload, then exit
   --skip-wait     dispatch and return the run URL without waiting
   --timeout <s>   max seconds to wait for the run (default 900)
-  --json          machine-readable result`);
+  --json          machine-readable result
+  --branch <name> ref to dispatch against (default: current branch if it carries this workflow, else the env branch)
+
+There is no second reviewer in this repository, so production is gated by the workflow
+itself: an explicit --rehearsal-pr, a full commit sha, and a green "migrate staging pr-<n>"
+run for that PR. All three must hold or no DDL runs.`);
 }
 
 // ------------------------------------------------------------------ arguments
 type Opts = {
   pr: string; env: string; check: boolean; dryRun: boolean; skipWait: boolean;
-  timeout: number; json: boolean; branch: string;
+  timeout: number; json: boolean; branch: string; rehearsalPr: string;
 };
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { pr: "", env: "", check: false, dryRun: false, skipWait: false, timeout: 900, json: false, branch: "" };
+  const o: Opts = { pr: "", env: "", check: false, dryRun: false, skipWait: false, timeout: 900, json: false, branch: "", rehearsalPr: "" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--pr") o.pr = argv[++i] ?? "";
@@ -85,6 +90,8 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--timeout") o.timeout = Number(argv[++i] ?? 900);
     else if (a === "--json") o.json = true;
     else if (a === "--branch") o.branch = argv[++i] ?? "";
+    else if (a === "--rehearsal-pr") o.rehearsalPr = argv[++i] ?? "";
+    else if (a.startsWith("--rehearsal-pr=")) o.rehearsalPr = a.slice(15);
     else if (a === "-h" || a === "--help") { usage(); process.exit(0); }
     else { console.error(`ERROR unknown argument "${a}"`); usage(); process.exit(2); }
   }
@@ -119,6 +126,14 @@ function currentBranch(): string {
   }
 }
 
+function fullSha(sha: string): string {
+  const s = sha.trim();
+  if (!/^[0-9a-f]{40}$/.test(s)) {
+    throw new Error(`expected a full 40-character sha, got "${s}" — the production gate compares exact commits, so abbreviations are not accepted`);
+  }
+  return s;
+}
+
 function refExists(ref: string): boolean {
   try {
     gh(["api", `repos/${REPO}/commits/${ref}`, "--jq", ".sha"]);
@@ -139,7 +154,7 @@ function resolveTarget(o: Opts): Target {
     const here = currentBranch();
     const envRef = env === "staging" ? "staging" : "main";
     const ref = o.branch || (here && refExists(here) && workflowCaps(here).mode ? here : envRef);
-    const sha = gh(["api", `repos/${REPO}/commits/${ref}`, "--jq", ".sha"]);
+    const sha = fullSha(gh(["api", `repos/${REPO}/commits/${ref}`, "--jq", ".sha"]));
     return { env, sha, ref, pr: "0", base: ref };
   }
 
@@ -166,7 +181,7 @@ function resolveTarget(o: Opts): Target {
   if (pr.mergedAt) throw new Error(`PR #${o.pr} was merged at ${pr.mergedAt}; migrations run before the merge`);
   if (pr.state !== "OPEN") throw new Error(`PR #${o.pr} is ${pr.state}; expected OPEN`);
 
-  return { env, sha: pr.headRefOid, ref: pr.headRefName, pr: o.pr, base: pr.baseRefName };
+  return { env, sha: fullSha(pr.headRefOid), ref: pr.headRefName, pr: o.pr, base: pr.baseRefName };
 }
 
 // ------------------------------------------------------------------ workflow capability probe
@@ -199,12 +214,21 @@ async function dispatch(t: Target, o: Opts) {
     "-f", `sha=${t.sha}`,
   ];
   const caps = workflowCaps(t.ref);
+  if (t.env === "production" && !o.check && !o.dryRun && !o.rehearsalPr) {
+    throw new Error(`production migrations require --rehearsal-pr <n>: the PR already migrated on staging.
+       There is no second reviewer here, so this is what replaces one — see
+       docs/operations/production-migration-gate.md`);
+  }
+  if (t.env === "production" && o.rehearsalPr && !/^[0-9]+$/.test(o.rehearsalPr)) {
+    throw new Error(`--rehearsal-pr must be a PR number (got "${o.rehearsalPr}")`);
+  }
   if ((o.check || o.dryRun) && !caps.mode) {
     throw new Error(`the workflow on "${t.ref}" has no mode/dry_run inputs — GitHub would reject them with HTTP 422.
        Push this PR branch first, or dispatch against a ref that has the updated migrate.yml.`);
   }
   if (o.check) args.push("-f", "mode=verify");
   if (o.dryRun) args.push("-f", "dry_run=true");
+  if (o.rehearsalPr) args.push("-f", `rehearsal_pr=${o.rehearsalPr}`);
 
   if (o.dryRun) {
     console.log("would run: gh " + args.join(" "));
@@ -260,6 +284,8 @@ async function main() {
     credential: "GitHub Environment secret DATABASE_URL (never read locally)",
     journalTags: plan.tags,
     workflow: WORKFLOW,
+    rehearsalPr: o.rehearsalPr || null,
+    gate: t.env === "production" ? "rehearsal + full sha + green staging run (enforced in migrate.yml)" : "none",
   };
 
   if (!o.json) {

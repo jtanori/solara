@@ -54,7 +54,13 @@ connects.
 npm run db:check -- --env staging          # read-only: dispatch migrate.yml in verify mode
 npm run db:migrate:remote -- --pr 97       # migrate the DB for PR 97, wait, report the verdict
 npm run db:migrate:remote -- --pr 97 --dry-run   # print the plan + exact dispatch payload
+npm run db:migrate:remote -- --pr 98 --env production --rehearsal-pr 97
 ```
+
+**Production is gated in the workflow, not by a reviewer** — this is a solo repository, so
+required reviewers would be self-approval. A production dispatch needs `--rehearsal-pr` (the
+PR already migrated on staging), a full commit SHA, and a green `migrate staging pr-<n>` run
+for that PR. See `docs/operations/production-migration-gate.md`.
 
 It resolves the PR's head SHA, refuses an `--env` that contradicts the PR's base branch (a staging
 PR can never migrate production), dispatches `.github/workflows/migrate.yml` against that SHA, finds

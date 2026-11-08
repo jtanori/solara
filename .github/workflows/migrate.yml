@@ -9,6 +9,12 @@ name: migrate
 #   gh workflow run migrate.yml -f env=staging -f pr=0  -f sha=<sha> -f mode=verify
 #
 # `mode: verify` performs no DDL — it reports whether the database matches drizzle/.
+#
+# PRODUCTION GATE — this repository has one human maintainer and no second reviewer, so
+# GitHub Environment reviewers are not usable (a required reviewer would have to approve
+# their own run, or block forever). The gate is enforced here instead, and every clause
+# fails closed: rehearsal consent, a specific commit SHA (never a branch tip), and a
+# migration that has already been applied to staging.
 on:
   workflow_dispatch:
     inputs:
@@ -23,7 +29,7 @@ on:
         type: string
         default: "0"
       sha:
-        description: Commit SHA to checkout and migrate (ensures the intended drizzle/ is used)
+        description: Commit SHA to checkout and migrate (must be a full 40-char SHA)
         required: true
         type: string
       mode:
@@ -37,9 +43,15 @@ on:
         required: false
         type: boolean
         default: false
+      rehearsal_pr:
+        description: "PRODUCTION ONLY — the PR already migrated on staging that rehearses this change"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: migrate-${{ inputs.env }}
@@ -59,8 +71,8 @@ jobs:
           MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
-          if ! [[ "$SHA" =~ ^[0-9a-f]{7,40}$ ]]; then
-            echo "::error::sha '$SHA' is not a commit sha — migrations must run against an explicit commit"
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character commit sha (got '$SHA') — migrations must target an exact commit, never a branch tip"
             exit 1
           fi
           echo "target=$TARGET_ENV sha=$SHA mode=$MODE"
@@ -83,10 +95,72 @@ jobs:
           SHA: ${{ inputs.sha }}
           MODE: ${{ inputs.mode }}
           DRY_RUN: ${{ inputs.dry_run }}
+          REHEARSAL_PR: ${{ inputs.rehearsal_pr }}
         run: |
-          echo "Environment: $TARGET_ENV pr=$PR sha=$SHA mode=$MODE dry_run=$DRY_RUN"
+          echo "Environment: $TARGET_ENV pr=$PR sha=$SHA mode=$MODE dry_run=$DRY_RUN rehearsal_pr=$REHEARSAL_PR"
           cat drizzle/meta/_journal.json
           ls -l drizzle/*.sql
+
+      # ---------------------------------------------------------------- production gate
+      # No DDL below this point runs for production unless every check passes.
+      - name: Gate — production preconditions
+        if: ${{ inputs.env == 'production' && inputs.mode == 'migrate' && inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REHEARSAL_PR: ${{ inputs.rehearsal_pr }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "== 1. rehearsal consent =="
+          if [[ -z "${REHEARSAL_PR:-}" ]]; then
+            echo "::error::production migration requires rehearsal_pr — the PR number already migrated on staging that rehearses this change"
+            exit 1
+          fi
+          if ! [[ "$REHEARSAL_PR" =~ ^[0-9]+$ ]]; then
+            echo "::error::rehearsal_pr must be a PR number (got '$REHEARSAL_PR')"
+            exit 1
+          fi
+
+          echo "== 2. the rehearsing PR was really staged =="
+          STATE=$(gh pr view "$REHEARSAL_PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
+          if [[ "$STATE" != "OPEN" && "$STATE" != "MERGED" ]]; then
+            echo "::error::rehearsal PR #$REHEARSAL_PR is $STATE — it must be open or merged (i.e. it actually reached staging)"
+            exit 1
+          fi
+
+          echo "== 3. staging has a green migrate run for this PR =="
+          # A green `migrate staging pr-<n>` run is the proof that this exact migration already
+          # ran against a real database. Without it, production is the rehearsal.
+          FOUND=""
+          for i in 1 2 3 4 5; do
+            FOUND=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/migrate.yml/runs?per_page=100" \
+              --jq "[.workflow_runs[] | select(.conclusion==\"success\") | select(.name | contains(\"migrate staging\")) | select(.name | contains(\"pr-$REHEARSAL_PR\"))] | length" 2>/dev/null || echo 0)
+            if [[ "$FOUND" != "0" && -n "$FOUND" ]]; then break; fi
+            sleep 5
+          done
+          if [[ "${FOUND:-0}" == "0" ]]; then
+            echo "::error::no successful 'migrate staging pr-$REHEARSAL_PR' run — run: gh workflow run migrate.yml -f env=staging -f pr=$REHEARSAL_PR -f sha=<sha> -f mode=migrate"
+            exit 1
+          fi
+          echo "found $FOUND successful staging migrate run(s) for pr-$REHEARSAL_PR"
+
+          echo "== 4. exact-commit match =="
+          # The SHA below the gate must be the head of the rehearsed PR, or the rehearsal
+          # proved something about different code.
+          HEAD=$(gh pr view "$REHEARSAL_PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)
+          if [[ "$HEAD" != "$SHA" ]]; then
+            echo "::error::sha $SHA is not the head of rehearsal PR #$REHEARSAL_PR ($HEAD) — the rehearsal did not cover this commit"
+            exit 1
+          fi
+
+          echo "::notice::production gate passed — rehearsal pr-$REHEARSAL_PR, commit $SHA"
+          {
+            echo "### production gate passed"
+            echo "- rehearsal PR: #$REHEARSAL_PR"
+            echo "- commit: \`$SHA\`"
+            echo "- green staging migrate runs: $FOUND"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Guard the connection string
         env:
@@ -109,8 +183,6 @@ jobs:
             echo "::warning::DATABASE_URL has no sslmode — add ?sslmode=verify-full"
           fi
 
-      # db-run.ts applies the same target checks locally and in CI: it refuses pooled hosts and
-      # loopback mismatches, prints only user@host/database, and re-reads the journal afterwards.
       # Read-only. In verify/dry-run mode a failure here is diagnostic, not fatal — let the
       # final verify step produce the verdict so one run tells the whole story.
       - name: Inspect current state
