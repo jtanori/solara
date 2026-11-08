@@ -309,11 +309,25 @@ async function main() {
     journalTags: plan.tags,
     workflow: WORKFLOW,
     rehearsalPr: o.rehearsalPr || null,
+    localHead: localHead || null,
+    staleLocalCheckout: stale,
     gate: t.env === "production" ? "rehearsal + full sha + green staging run (enforced in migrate.yml)" : "none",
   };
 
+  // The sha below is the REF's head on GitHub; this process is whatever is on disk.
+  // When they differ, the tool that runs is not the tool that was committed — say so loudly,
+  // because a stale checkout silently reproduces old behaviour and old bugs.
+  const localHead = (() => {
+    try { return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch { return ""; }
+  })();
+  const stale = localHead !== "" && localHead !== t.sha;
+
   if (!o.json) {
     console.log(`repo      ${REPO}`);
+    if (stale) {
+      console.log(`local     ${localHead.slice(0, 7)}  ← STALE: not the commit being dispatched`);
+      console.log(`          run 'git fetch origin ${t.ref} && git reset --hard origin/${t.ref}' first`);
+    }
     console.log(`mode      ${o.check ? "verify only (no DDL)" : "migrate"}`);
     console.log(`environment ${t.env}   secret: Environment DATABASE_URL (not readable locally)`);
     console.log(`checkout  ${t.sha}  (${t.ref}${t.pr !== "0" ? `, PR #${t.pr}` : ""})`);
