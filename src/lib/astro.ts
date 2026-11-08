@@ -103,9 +103,13 @@ export function trueNodeLongitude(date: Date, halfSpanHours = 3): number {
 }
 
 /**
- * The node with a wider differentiation span as a fallback. There is deliberately no
- * "crossing-based" fallback: that approach is what produced the 2.7° error, so a failure
- * here must be a failure, not a quietly different number.
+ * The node, retried with a wider differentiation span (12h instead of 3h) if the narrow
+ * window is degenerate.
+ *
+ * There is deliberately no *crossing-based* fallback: "the Moon's longitude at the nearest
+ * ecliptic crossing" is a different quantity, 2.7° off, and keeping it as a fallback is how
+ * that error survived. Both paths here compute the same osculating quantity — only the
+ * differentiation span differs — so the method cannot silently change meaning.
  */
 export function trueNodeLongitudeWithFallback(date: Date): { longitude: number; method: "osculating" | "wide" } {
   try {

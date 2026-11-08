@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { BODIES, longitudeOf, trueNodeLongitudeWithFallback } from "../src/lib/astro";
+import { BODIES, isRetrograde, longitudeOf, trueNodeLongitudeWithFallback } from "../src/lib/astro";
 
 /**
  * Independent validation against Swiss Ephemeris (pyswisseph 2.10.03), the reference
@@ -76,16 +76,70 @@ test("the true node matches Swiss Ephemeris on every fixture", () => {
   assert.deepEqual(failures, [], `true node deviates:\n  ${failures.join("\n  ")}`);
 });
 
-test("retrograde flags agree with the reference motion", () => {
-  const when = new Date(data.cases[0].castAt);
-  const fixture = data.cases[0];
-  for (const body of BODIES) {
-    if (body === "Sun" || body === "Moon") continue;
-    const speed = fixture.bodies[body].speed;
-    const expected = speed < -0.0005 ? true : speed > 0.0005 ? false : null;
-    if (expected === null) continue; // stationary; the code deliberately reports null
-    const actual = longitudeOf(body, when);
-    assert.ok(typeof actual === "number");
+/**
+ * Every non-luminary body, on every fixture: the retrograde flag must agree with the
+ * reference velocity. This is the assertion the first version of this test was pretending
+ * to make (it computed `expected` and then never compared it to anything).
+ *
+ * The comparison is between two *independent* derivations of the same fact:
+ * `isRetrograde()` uses a ±6h central difference of its own longitudes, while the fixture
+ * `speed` comes from Swiss Ephemeris. Agreement is therefore evidence, not a tautology.
+ */
+test("retrograde flags agree with the reference velocity on every fixture", () => {
+  const failures: string[] = [];
+  for (const fixture of data.cases) {
+    const when = new Date(fixture.castAt);
+    for (const body of BODIES) {
+      if (body === "Sun" || body === "Moon") continue; // never retrograde
+      const speed = fixture.bodies[body].speed;
+      const actual = isRetrograde(body, when);
+      if (actual === null) continue; // reported as stationary; see the stationary test below
+      const expected = speed < 0;
+      if (actual !== expected) {
+        failures.push(
+          `${fixture.id} ${body}: reference speed ${speed.toFixed(4)}°/day implies ` +
+          `retrograde=${expected}, code says ${actual}`,
+        );
+      }
+    }
+  }
+  assert.deepEqual(failures, [], `retrograde flags disagree with the reference:\n  ${failures.join("\n  ")}`);
+});
+
+/**
+ * The station window: |motion| < 0.003°/day is reported as `null` rather than a guess, and
+ * any body the code calls stationary must genuinely be slow by the reference — otherwise the
+ * code is hiding a real direction behind "unknown".
+ */
+test("a body reported as stationary really is slow in the reference", () => {
+  for (const fixture of data.cases) {
+    const when = new Date(fixture.castAt);
+    for (const body of BODIES) {
+      if (body === "Sun" || body === "Moon") continue;
+      if (isRetrograde(body, when) !== null) continue;
+      const speed = Math.abs(fixture.bodies[body].speed);
+      assert.ok(speed < 0.01, `${fixture.id} ${body}: called stationary but reference speed is ${speed.toFixed(4)}°/day`);
+    }
+  }
+});
+
+test("the stationary threshold is consistent with the reference, not arbitrarily low", () => {
+  // REGRESSION GUARD for the latent threshold mismatch. `dailyMotion` reports null below
+  // 0.003°/day. Any body inside that band must be inside the reference's own "effectively
+  // stationary" band too — if a fixture ever contains a body at, say, 0.002°/day that the
+  // reference calls retrograde, the two thresholds have drifted apart and this fails.
+  const STATIONARY_DEGREES_PER_DAY = 0.003;
+  for (const fixture of data.cases) {
+    const when = new Date(fixture.castAt);
+    for (const body of BODIES) {
+      if (body === "Sun" || body === "Moon") continue;
+      const speed = fixture.bodies[body].speed;
+      if (Math.abs(speed) < STATIONARY_DEGREES_PER_DAY) {
+        assert.equal(isRetrograde(body, when), null, `${fixture.id} ${body}: slow in reference, should be null`);
+      } else {
+        assert.notEqual(isRetrograde(body, when), null, `${fixture.id} ${body}: fast in reference, must not be null`);
+      }
+    }
   }
 });
 
