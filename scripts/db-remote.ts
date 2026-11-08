@@ -323,6 +323,11 @@ async function main() {
   };
 
   if (!o.json) {
+    console.log(`repo      ${REPO}`);
+    if (stale) {
+      console.log(`local     ${localHead.slice(0, 7)}  ← STALE: not the commit being dispatched`);
+      console.log(`          git fetch origin ${t.ref} && git reset --hard origin/${t.ref}`);
+    }
     console.log(`mode      ${o.check ? "verify only (no DDL)" : "migrate"}`);
     console.log(`environment ${t.env}   secret: Environment DATABASE_URL (not readable locally)`);
     console.log(`checkout  ${t.sha}  (${t.ref}${t.pr !== "0" ? `, PR #${t.pr}` : ""})`);
