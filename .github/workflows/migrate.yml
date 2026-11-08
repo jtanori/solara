@@ -1,7 +1,14 @@
 name: migrate
 
-# Remote migration runner — triggered by local scripts/deploy.sh, not auto on push.
-# Secrets stay in GitHub Environments (staging → DATABASE_URL direct, production → DATABASE_URL direct).
+# Remote migration runner — the DATABASE_URL secret lives ONLY in GitHub Environments
+# (staging → Neon direct URL, production → Neon direct URL). It is never available to a
+# local shell, so this workflow is the supported way to migrate or to check the schema.
+#
+# Dispatch it with `npx tsx scripts/db-remote.ts --pr <n>` (preferred) or directly:
+#   gh workflow run migrate.yml -f env=staging -f pr=97 -f sha=<head-sha>
+#   gh workflow run migrate.yml -f env=staging -f pr=0  -f sha=<sha> -f mode=verify
+#
+# `mode: verify` performs no DDL — it reports whether the database matches drizzle/.
 on:
   workflow_dispatch:
     inputs:
@@ -11,13 +18,25 @@ on:
         type: choice
         options: [staging, production]
       pr:
-        description: PR number being deployed (audit trail)
+        description: PR number being deployed (audit trail; 0 for a bare schema check)
         required: true
         type: string
+        default: "0"
       sha:
-        description: PR head SHA to checkout and migrate (ensures PR's drizzle/ is used)
+        description: Commit SHA to checkout and migrate (ensures the intended drizzle/ is used)
         required: true
         type: string
+      mode:
+        description: migrate applies pending migrations; verify only inspects
+        required: false
+        type: choice
+        options: [migrate, verify]
+        default: migrate
+      dry_run:
+        description: Print the pending migrations and skip all DDL
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,6 +52,19 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.env }}
     steps:
+      - name: Validate inputs
+        env:
+          TARGET_ENV: ${{ inputs.env }}
+          SHA: ${{ inputs.sha }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SHA" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "::error::sha '$SHA' is not a commit sha — migrations must run against an explicit commit"
+            exit 1
+          fi
+          echo "target=$TARGET_ENV sha=$SHA mode=$MODE"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.sha }}
@@ -44,28 +76,69 @@ jobs:
 
       - run: npm ci
 
-      - name: Show pending migrations (no secrets)
+      - name: Show plan (no secrets)
         env:
           TARGET_ENV: ${{ inputs.env }}
           PR: ${{ inputs.pr }}
           SHA: ${{ inputs.sha }}
+          MODE: ${{ inputs.mode }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          echo "Environment: $TARGET_ENV pr=$PR sha=$SHA"
+          echo "Environment: $TARGET_ENV pr=$PR sha=$SHA mode=$MODE dry_run=$DRY_RUN"
           cat drizzle/meta/_journal.json
-          ls -l drizzle/*.sql || true
+          ls -l drizzle/*.sql
 
-      - name: Run drizzle-kit migrate against target
+      - name: Guard the connection string
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
-          PR: ${{ inputs.pr }}
-          SHA: ${{ inputs.sha }}
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "ERROR: secrets.DATABASE_URL not set for environment '$TARGET_ENV' — add GitHub Environment secret DATABASE_URL (Neon direct URL)"
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::secrets.DATABASE_URL is not set for environment '$TARGET_ENV' — add the Neon DIRECT url (no -pooler) as a GitHub Environment secret"
             exit 1
           fi
-          TARGET_HOST=$(echo "$DATABASE_URL" | sed -E 's|.*@||; s|/.*||')
-          echo "Migrating $TARGET_ENV (pr $PR, sha $SHA) → host $TARGET_HOST"
-          npx drizzle-kit migrate
-          echo "Migrate complete for $TARGET_ENV pr $PR"
+          HOST=$(printf '%s' "$DATABASE_URL" | sed -E 's|.*@||; s|[/?].*||')
+          SSL=$(printf '%s' "$DATABASE_URL" | sed -nE 's|.*[?&]sslmode=([^&]*).*|\1|p')
+          echo "host=$HOST sslmode=${SSL:-unset}"
+          case "$HOST" in
+            *-pooler.*) echo "::error::DATABASE_URL points at a POOLED host ($HOST); migrations require the direct endpoint"; exit 1 ;;
+            localhost|127.0.0.1) echo "::error::DATABASE_URL points at loopback ($HOST) for a hosted environment"; exit 1 ;;
+          esac
+          if [ -z "${SSL:-}" ]; then
+            echo "::warning::DATABASE_URL has no sslmode — add ?sslmode=verify-full"
+          fi
+
+      # db-run.ts applies the same target checks locally and in CI: it refuses pooled hosts and
+      # loopback mismatches, prints only user@host/database, and re-reads the journal afterwards.
+      - name: Inspect current state
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_ENV: ${{ inputs.env }}
+        run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" status
+
+      - name: Apply migrations
+        if: ${{ inputs.mode == 'migrate' && inputs.dry_run == false }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_ENV: ${{ inputs.env }}
+        run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" migrate --yes
+
+      - name: Confirm schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_ENV: ${{ inputs.env }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.mode }}" = "verify" ] || [ "${{ inputs.dry_run }}" = "true" ]; then
+            # a pre-migration check is allowed to find an empty database — report, do not fail
+            npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify --allow-incomplete | tee verify.txt
+          else
+            npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify | tee verify.txt
+          fi
+          {
+            echo "### migrate ${{ inputs.env }} · mode=${{ inputs.mode }} · pr #${{ inputs.pr }}"
+            echo '```'
+            cat verify.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

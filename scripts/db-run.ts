@@ -19,7 +19,7 @@
 //   --env <staging|production|local>   required
 //   --dry-run                          for `migrate`: print the plan and exit
 //   --json                             machine-readable output (status/verify)
-//   --allow-migrated                   for `verify`: do not fail when the DB is empty
+//   --allow-incomplete                 for `verify`: report drift without failing (pre-migration checks)
 //   --yes                              skip the production confirmation prompt
 //
 // Environment resolution (in order, first match wins):
@@ -49,7 +49,7 @@ function parseArgs(argv: string[]) {
     else if (a.startsWith("--env=")) opts.env = a.slice(6);
     else if (a === "--dry-run") opts.dryRun = true;
     else if (a === "--json") opts.json = true;
-    else if (a === "--allow-migrated") opts.allowMigrated = true;
+    else if (a === "--allow-incomplete" || a === "--allow-migrated") opts.allowMigrated = true;
     else if (a === "--yes" || a === "-y") opts.yes = true;
     else if (a === "-h" || a === "--help") { usage(); process.exit(0); }
     else rest.push(a);
@@ -65,7 +65,7 @@ function usage() {
   status    list pending / applied migrations without changing anything
   verify    assert the expected relations and migration journal exist
 
-Options: --dry-run  --json  --allow-migrated  --yes`);
+Options: --dry-run  --json  --allow-incomplete  --yes`);
 }
 
 function fail(msg: string): never {
@@ -229,7 +229,10 @@ async function cmdStatus(env: Target, json: boolean) {
 }
 
 async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
-  const REQUIRED = ["public.users", "public.sessions", "public.readings", "public.knowledge", "public.subscriptions"];
+  const REQUIRED = [
+    "public.users", "public.sessions", "public.readings", "public.knowledge",
+    "public.subscriptions", "public.stripe_events", "public.audit_logs",
+  ];
   const r = resolveAndCheck(env);
   const { url, source, id, problems } = r;
   if (!json) printTarget(r, env);
@@ -256,7 +259,7 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
       for (const p of problems) console.error(`WARN ${p}`);
       console.log(ok ? "OK       schema and journal are up to date" : "FAIL     environment is not ready");
     }
-    if (!ok && allowEmpty) { console.error("NOTE --allow-migrated set: reporting but not failing"); return 0; }
+    if (!ok && allowEmpty) { console.error("NOTE --allow-incomplete set: reporting but not failing"); return 0; }
     return ok ? 0 : 1;
   });
 }

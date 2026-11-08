@@ -36,7 +36,35 @@ node scripts/check-setup.mjs production --strict
 - Never set `ALLOW_LOCAL_SEED*` or `LOCAL_SEED_PASSWORD` in Vercel — the app refuses them when `VERCEL` is set.
 
 
-## Running migrations by environment (recommended)
+## Two ways to migrate — pick by where the credential lives
+
+The database URL is held in **GitHub Environment secrets** (`staging`, `production`), so the default
+is to migrate from CI. A secret can never be read back to a laptop (GitHub only allows writing), so
+"use the Environment secret locally" is not possible by design — the workflow has to be the one that
+connects.
+
+| | credential | use when |
+|---|---|---|
+| **CI (default)** — `npm run db:migrate:remote -- --pr <n>` | GitHub Environment secret | always; this is what `scripts/deploy.sh` triggers before a merge |
+| **Local** — `npx tsx scripts/db-run.ts --env <e> migrate` | `.env.<env>` on your machine | break-glass, or before the Environment secrets exist |
+
+### CI path (`scripts/db-remote.ts`)
+
+```bash
+npm run db:check -- --env staging          # read-only: dispatch migrate.yml in verify mode
+npm run db:migrate:remote -- --pr 97       # migrate the DB for PR 97, wait, report the verdict
+npm run db:migrate:remote -- --pr 97 --dry-run   # print the plan + exact dispatch payload
+```
+
+It resolves the PR's head SHA, refuses an `--env` that contradicts the PR's base branch (a staging
+PR can never migrate production), dispatches `.github/workflows/migrate.yml` against that SHA, finds
+that exact run by `run-name`, waits for it and exits non-zero unless it succeeded. Add `--json` for
+machine output, `--skip-wait` to dispatch and return the run URL.
+
+`deploy.sh` does the same dispatch inline before merging; `db-remote.ts` is the standalone,
+inspectable version used when you want to run the migration as its own step.
+
+### Local path (`scripts/db-run.ts`)
 
 `drizzle.config.ts` reads only `DATABASE_URL`, so the migration target used to depend on whichever
 URL happened to be exported. Use the runner instead — it takes the environment explicitly, resolves
