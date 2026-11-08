@@ -2,7 +2,7 @@
 
 > **Source of truth:** [GitHub Issues](https://github.com/jtanori/solara/issues) are authoritative. This file is an **offline index** only — it lists every issue with a link and a snapshot of its lifecycle at the time of the last update. Update this file only when issues are created, changed, or closed; do not duplicate status tracking here. See `docs/decisions.md` ADR 002 and `AGENTS.md`.
 
-*Last updated: 2026-11-08 from `staging` at `4490ced` — #52 incident filed, then 21 follow-up issues (#53–#73) planned from `docs/audit-database-integration.md` and `docs/plan-neon-auth-migration.md`.*
+*Last updated: 2026-11-08 from `staging` at `4490ced` — #52 incident filed, then 26 follow-up issues (#53–#79) planned from `docs/audit-database-integration.md` and `docs/plan-neon-auth-migration.md`.*
 
 ## Open
 
@@ -10,7 +10,8 @@
 |---|-------|--------|--------|
 | [#6](https://github.com/jtanori/solara/issues/6) | chore: enable Dependabot alerts and security updates | `type:deps` `area:infra` `priority:p2` `status:ready` | ready — `dependabot.yml` `target-branch: staging` landed in #23; first update run + repo Alerts/Security-update toggles to verify |
 | [#52](https://github.com/jtanori/solara/issues/52) | fix(db): apply migrations to hosted databases and gate deploys on schema verification | `type:bug` `area:db` `area:infra` `area:auth` `priority:p0` `status:ready` | ready — production auth returns `42P01 relation "users" does not exist`; `migrate.yml` has never run and `/api/health` only does `select 1`; triage staging + prod, migrate, then make health a schema gate |
-| [#73](https://github.com/jtanori/solara/issues/73) | tracking: database operations and auth hardening epic (launch gate) | `status:ready` | ready — epic index with execution order + launch gate; children #52, #53–#72 |
+| [#79](https://github.com/jtanori/solara/issues/79) | tracking: state-of-the-art migration + deployment pipeline and auth hardening (launch gate) | `type:chore` `area:infra` `priority:p1` `status:ready` | ready — **canonical epic**: children #52, #53–#72, #74–#78 |
+| [#73](https://github.com/jtanori/solara/issues/73) | tracking: database operations and auth hardening epic (superseded by #79) | `status:ready` | superseded — first-pass epic; use #79 |
 | [#53](https://github.com/jtanori/solara/issues/53) | auth: rate-limit sign-up/sign-in and make password hashing non-blocking | `type:security` `area:auth` `priority:p0` `status:ready` | ready — **launch blocker**; no limiter today, `scryptSync` blocks the event loop |
 | [#54](https://github.com/jtanori/solara/issues/54) | auth: add email transport and email verification | `type:feature` `area:auth` `priority:p0` `status:ready` | ready — **launch blocker**; no mail transport exists at all |
 | [#55](https://github.com/jtanori/solara/issues/55) | auth: add password reset flow | `type:feature` `area:auth` `priority:p0` `status:blocked` | blocked on #54 (transport + token table); **launch blocker** |
@@ -31,6 +32,11 @@
 | [#70](https://github.com/jtanori/solara/issues/70) | ops: split liveness (/api/health) from readiness (/api/ready) | `type:feature` `area:infra` `priority:p1` `status:blocked` | blocked on #52; the durable fix for the false-green class |
 | [#71](https://github.com/jtanori/solara/issues/71) | docs: make schema and readiness verification part of AGENTS.md and the PR template | `type:docs` `priority:p2` `status:blocked` | blocked on #52 + #70 |
 | [#72](https://github.com/jtanori/solara/issues/72) | docs: record ADR 006 — identity, credential ownership and the Neon Auth decision | `type:docs` `priority:p1` `status:ready` | ready — do first; unblocks the auth narrative |
+| [#74](https://github.com/jtanori/solara/issues/74) | ci: verify migration journal integrity (schema/DB parity, immutable applied migrations) | `type:ci` `area:db` `priority:p1` `status:ready` | ready — CI only runs `migrate`; schema drift and edited applied files go undetected |
+| [#75](https://github.com/jtanori/solara/issues/75) | ci: turn migrate.yml into a gated pipeline (plan, approval, advisory lock, post-verify, audit) | `type:ci` `area:infra` `priority:p1` `status:blocked` | blocked on #52/#70; envs have `protection_rules: 0`, no plan step, no DB lock, no audit |
+| [#76](https://github.com/jtanori/solara/issues/76) | infra: make deploy.sh fail-closed (pre-merge readiness, verified rollout, rollback, release records) | `type:bug` `area:infra` `priority:p1` `status:blocked` | blocked on #70; post-merge failure is a WARN/exit 0, no rollback, no tags |
+| [#77](https://github.com/jtanori/solara/issues/77) | infra: add error tracking and alerts for auth failures and readiness | `type:feature` `area:infra` `priority:p1` `status:ready` | ready — zero error tracking; #52 reached us as a user screenshot |
+| [#78](https://github.com/jtanori/solara/issues/78) | docs: record ADR 007 — migrations, deployments and rollback policy | `type:docs` `area:infra` `priority:p1` `status:ready` | ready — no written policy for migrations/rollback; do with #72 |
 | [#10](https://github.com/jtanori/solara/issues/10) | chore: validate Stripe test-mode subscription lifecycle | `type:chore` `area:billing,area:infra` `priority:p2` `status:ready` | ready — unblocked by #9; needs Stripe test keys + CLI login (Checkout → webhook → portal/renewal/cancel) |
 | [#16](https://github.com/jtanori/solara/issues/16) | chore: define independent platform validation checklist | `type:chore` `area:infra,area:content,area:astro` `priority:p3` `status:needs-triage` | needs-triage — astro fixtures, hist TZ/leap/high-lat, editorial versioning, backup/restore, MFA/rate-limit/CSRF |
 

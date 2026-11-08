@@ -141,7 +141,9 @@ Scored against that list, Solara today: **(1) partially (artifact exists, trigge
 
 ## 4. Recommended follow-ups (beyond #52's fix)
 
-These are **new, separate issues**, not part of #52. Epic index and launch gate: [#73](https://github.com/jtanori/solara/issues/73). Connection hygiene (finding D, the inert `channel_binding` flag) is tracked separately as [#61](https://github.com/jtanori/solara/issues/61). Ordered by value per hour:
+These are **new, separate issues**, not part of #52. **Canonical epic / launch gate: [#79](https://github.com/jtanori/solara/issues/79)** (supersedes the first-pass [#73](https://github.com/jtanori/solara/issues/73)).
+
+Pipeline items found while verifying the deploy path: journal integrity [#74](https://github.com/jtanori/solara/issues/74), gated `migrate.yml` [#75](https://github.com/jtanori/solara/issues/75), fail-closed `deploy.sh` with rollback and release records [#76](https://github.com/jtanori/solara/issues/76), alerting [#77](https://github.com/jtanori/solara/issues/77), and the written policy ADR 007 [#78](https://github.com/jtanori/solara/issues/78). Connection hygiene (finding D, the inert `channel_binding` flag) is tracked separately as [#61](https://github.com/jtanori/solara/issues/61). Ordered by value per hour:
 
 | Priority | Follow-up | Effort |
 |---|---|---|
