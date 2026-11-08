@@ -71,6 +71,25 @@ gh pr create --repo jtanori/solara --base staging --title "docs: database integr
 Then merge it with the normal flow (`./scripts/deploy.sh --pr <n> --env staging`), which correctly skips the
 migration step because the diff does not touch `drizzle/`.
 
+> **If the cherry-pick conflicts on `BACKLOG.md`:** your local `staging` is stale. `git pull --ff-only`
+> fails when the branch has no upstream ("There is no tracking information"), leaving you on an old
+> commit whose `BACKLOG.md` predates this work. Confirm with
+> `git rev-parse staging origin/staging` — they must match before cherry-picking.
+>
+> **Preferred alternative (no cherry-pick, one clean commit):** the four docs and three scripts are
+> *new files*, so they can be brought over wholesale without touching anything `staging` already has:
+>
+> ```bash
+> git switch staging && git merge --ff-only origin/staging
+> git switch -c docs/db-auth-audit
+> git checkout 254679b -- BACKLOG.md docs/ scripts/     # adds new files, keeps staging's docs/decisions.md
+> git add -A && git commit -m "docs: database + deep audits, fix plans, Neon Auth decision, ops runbook, 42 issues indexed"
+> git diff --stat origin/staging..HEAD                  # must list only our 12 files
+> ```
+>
+> Note `git checkout <sha> -- dir/` never deletes files that are absent from that commit, so existing
+> docs (`decisions.md`, `setup/`) are untouched.
+
 > Do **not** merge `arena/8f0da984-solara` into `staging` directly — it is based on `main` and would carry
 > unrelated history across the branching model (ADR 001/004).
 
