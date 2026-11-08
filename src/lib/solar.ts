@@ -1,6 +1,8 @@
 import { Body, Ecliptic, GeoVector, SearchSunLongitude, SiderealTime, SunPosition } from "astronomy-engine";
 import { DateTime, IANAZone } from "luxon";
 import type { ChartInput, ChartResult, Place, Placement } from "@/lib/types";
+import { castChart, type ChartFacts } from "@/lib/chart";
+import { longitudeOf, type BodyName } from "@/lib/astro";
 
 export const SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"] as const;
 const normalize = (value: number) => ((value % 360) + 360) % 360;
@@ -74,4 +76,41 @@ export function calculateSolarReturn(input: ChartInput): ChartResult {
     warnings,
     engine: "Astronomy Engine · apparent geocentric ecliptic of date",
   };
+}
+
+/**
+ * Chart v2 — the solar-return chart plus the natal chart it activates.
+ *
+ * Additive: `calculateSolarReturn` keeps its contract, so saved readings and the existing
+ * UI are untouched. Fills the gap identified in the readings audit: v1 knows three
+ * positions (Sun, Moon, ASC); v2 knows ten bodies, their houses, both angles, the true
+ * node, and the aspects within the return chart and between it and the natal chart.
+ */
+export function calculateSolarReturnChart(input: ChartInput): { result: ChartResult; facts: ChartFacts } {
+  const result = calculateSolarReturn(input);
+
+  // Natal chart, cast for the birth moment at the birth place.
+  const birthLocal = DateTime.fromISO(`${input.birthDate}T${input.birthTime}`, { zone: input.birthPlace.timezone });
+  const offsets = birthLocal.getPossibleOffsets().sort((a, b) => a.toMillis() - b.toMillis());
+  const birth = input.timeChoice === "later" && offsets.length > 1 ? offsets[offsets.length - 1] : offsets[0];
+  const natalAt = birth.toJSDate();
+
+  const when = new Date(result.exactUtc);
+  const ramc = normalize(SiderealTime(when as unknown as Parameters<typeof SiderealTime>[0]) * 15 + input.returnPlace.longitude);
+
+  const facts = castChart({
+    at: when,
+    latitude: input.returnPlace.latitude,
+    longitude: input.returnPlace.longitude,
+    ramcDegrees: ramc,
+    houseSystem: "whole-sign",
+    natal: {
+      at: natalAt,
+      bodies: [
+        "Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune", "Pluto",
+      ].map(body => ({ name: body, longitude: longitudeOf(body as BodyName, natalAt) })),
+    },
+  });
+
+  return { result, facts };
 }
