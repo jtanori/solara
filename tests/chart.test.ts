@@ -84,9 +84,11 @@ test("Placidus is refused rather than approximated", () => {
 test("the true node is derived from a real crossing and the south node is opposite", () => {
   const when = new Date("2026-05-16T11:46:50.405Z");
   const { longitude, method } = trueNodeLongitudeWithFallback(when);
-  assert.equal(method, "secant");
-  // Published ephemeris for May 2026: the true node sits near 7-9° Pisces.
+  assert.equal(method, "osculating");
+  // Swiss Ephemeris TRUE_NODE for this instant is 335.3929° -> 5.39° Pisces.
   assert.equal(signOf(longitude).sign, "Pisces");
+  const error = Math.abs((((longitude - 335.3929) % 360) + 540) % 360 - 180);
+  assert.ok(error < 0.05, `true node within 0.05° of Swiss Ephemeris (got ${longitude.toFixed(4)})`);
 
   const { facts } = calculateSolarReturnChart(base);
   const separation = Math.abs(((facts.nodes.trueNode.longitude - facts.nodes.southNode.longitude) % 360 + 360) % 360);

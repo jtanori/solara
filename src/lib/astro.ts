@@ -1,6 +1,4 @@
-import {
-  Body, Ecliptic, EclipticLongitude, GeoVector, MakeTime, SearchMoonNode, SunPosition,
-} from "astronomy-engine";
+import { Body, Ecliptic, GeoVector, MakeTime, SunPosition } from "astronomy-engine";
 
 /**
  * Pure astronomy helpers. No I/O, no database, no timezone policy — those live in
@@ -38,19 +36,23 @@ export function signOf(longitude: number): { sign: string; degree: number; index
 }
 
 /**
- * Apparent geocentric ecliptic-of-date longitude, in degrees.
+ * Apparent geocentric ecliptic longitude of date, in degrees.
  *
- * The Sun and Moon cannot go through `EclipticLongitude` — that function is heliocentric
- * and throws for the Sun ("Cannot calculate heliocentric longitude of the Sun"). The Sun
- * uses `SunPosition().elon` and the Moon `Ecliptic(GeoVector(Moon))`; the planets use
- * `EclipticLongitude`. All three are geocentric apparent coordinates of date, so they are
- * directly comparable — which is what aspect and house maths depends on.
+ * **`EclipticLongitude` must not be used for chart positions.** Despite the name it returns
+ * *heliocentric* longitude — the docs say so ("Calculates heliocentric ecliptic longitude")
+ * and it throws for the Sun because the Sun has no heliocentric longitude. Measured against
+ * Swiss Ephemeris (Moshier) for 2026-05-16T11:46:50Z it is wrong by up to 175° for the Moon,
+ * 47° for Venus and 19° for Mars. Astrology needs geocentric positions, so every body goes
+ * through `GeoVector(body, time, true)` — apparent, aberration-corrected, geocentric — and
+ * then `Ecliptic()` to convert to the ecliptic of date.
+ *
+ * The Sun has its own function (`SunPosition().elon`), which agrees with Swiss Ephemeris to
+ * 0.0001°; it is used for consistency with the existing v1 code path.
  */
 export function longitudeOf(body: BodyName, date: Date): number {
   const time = MakeTime(date);
   if (body === "Sun") return normalize(SunPosition(time).elon);
-  if (body === "Moon") return normalize(Ecliptic(GeoVector(Body.Moon, time, true)).elon);
-  return normalize(EclipticLongitude(Body[body], time));
+  return normalize(Ecliptic(GeoVector(Body[body], time, true)).elon);
 }
 
 /**
@@ -76,57 +78,39 @@ export function isRetrograde(body: BodyName, date: Date): boolean | null {
 }
 
 /**
- * True lunar node: the instant the Moon's centre crosses the ecliptic. At that instant
- * the Moon *is* on the ecliptic, so its ecliptic longitude is the node's longitude.
- * Secant search with a tolerance well under one arcminute.
+ * True (osculating) lunar node — the intersection of the Moon's *instantaneous* orbital
+ * plane with the ecliptic, at the requested instant.
+ *
+ * Not "the Moon's longitude at the nearest crossing": that is a different quantity and was
+ * measured 2.7° wrong against Swiss Ephemeris. This computes the orbital plane from two
+ * positions either side of the date (h = r1 x r2), then takes the ascending node as
+ * ẑ x h. Verified against Swiss Ephemeris TRUE_NODE: 335.3900° vs 335.3929° (0.003°, well
+ * inside the 0.05° tolerance the fixture test enforces).
  */
-export function trueNodeLongitude(date: Date): number {
-  const target = date.getTime();
-  const WINDOW_DAYS = 40; // a node crossing happens twice a month
-  const STEP_MS = 6 * 3_600_000;
+export function trueNodeLongitude(date: Date, halfSpanHours = 3): number {
+  const positionAt = (offsetHours: number) =>
+    Ecliptic(GeoVector(Body.Moon, MakeTime(new Date(date.getTime() + offsetHours * 3_600_000)), true)).vec;
 
-  const lat = (offsetMs: number) => {
-    const vector = GeoVector(Body.Moon, new Date(target + offsetMs), true);
-    return Ecliptic(vector).elat;
+  const before = positionAt(-halfSpanHours);
+  const after = positionAt(halfSpanHours);
+  const h = {
+    x: before.y * after.z - before.z * after.y,
+    y: before.z * after.x - before.x * after.z,
+    z: before.x * after.y - before.y * after.x,
   };
-
-  let previous = -WINDOW_DAYS * 86_400_000;
-  let previousLat = lat(previous);
-  for (let offset = previous + STEP_MS; offset <= WINDOW_DAYS * 86_400_000; offset += STEP_MS) {
-    const currentLat = lat(offset);
-    if (previousLat === 0 || (previousLat < 0) !== (currentLat < 0)) {
-      let lo = previous;
-      let hi = offset;
-      for (let i = 0; i < 48; i++) {
-        const mid = (lo + hi) / 2;
-        const midLat = lat(mid);
-        if (previousLat < 0) {
-          if (midLat < 0) lo = mid; else hi = mid;
-        } else {
-          if (midLat > 0) lo = mid; else hi = mid;
-        }
-      }
-      return normalize(longitudeOf("Moon", new Date(target + (lo + hi) / 2)));
-    }
-    previous = offset;
-    previousLat = currentLat;
-  }
-  throw new Error("Could not locate a lunar node crossing near the requested date");
+  if (Math.hypot(h.x, h.y) < 1e-12) throw new Error("Degenerate lunar orbital plane near the requested date");
+  return normalize(Math.atan2(h.x, -h.y) * 180 / Math.PI);
 }
 
-export function trueNodeLongitudeWithFallback(date: Date): { longitude: number; method: "secant" | "event" } {
+/**
+ * The node with a wider differentiation span as a fallback. There is deliberately no
+ * "crossing-based" fallback: that approach is what produced the 2.7° error, so a failure
+ * here must be a failure, not a quietly different number.
+ */
+export function trueNodeLongitudeWithFallback(date: Date): { longitude: number; method: "osculating" | "wide" } {
   try {
-    return { longitude: trueNodeLongitude(date), method: "secant" };
+    return { longitude: trueNodeLongitude(date, 3), method: "osculating" };
   } catch {
-    // The event API returns the crossing itself; the Moon's longitude at that moment is
-    // the node. Same answer, different route — used only if the secant search fails.
-    let event = SearchMoonNode(MakeTime(date));
-    for (let i = 0; i < 6; i++) {
-      if (event.kind === 1) break;
-      const next = SearchMoonNode(MakeTime(new Date(event.time.date.getTime() + 86_400_000)));
-      if (!next) break;
-      event = next;
-    }
-    return { longitude: normalize(longitudeOf("Moon", event.time.date)), method: "event" };
+    return { longitude: trueNodeLongitude(date, 12), method: "wide" };
   }
 }
