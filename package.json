@@ -12,6 +12,10 @@
     "test:integration": "RUN_BILLING_INTEGRATION_TESTS=1 tsx --test tests/*.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:status": "tsx scripts/db-run.ts status --env",
+    "db:verify": "tsx scripts/db-run.ts verify --env",
+    "db:migrate:remote": "tsx scripts/db-remote.ts",
+    "db:check": "tsx scripts/db-remote.ts --check",
     "check:setup": "node scripts/check-setup.mjs local",
     "db:seed:local": "tsx scripts/local/seed-users.ts"
   },
