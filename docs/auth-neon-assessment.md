@@ -1,5 +1,8 @@
 # Assessment: moving Solara auth to Neon Managed Better Auth
 
+> **Superseded for planning purposes by `docs/plan-neon-auth-migration.md`** (2026-11-08).
+> This file is kept as the research appendix: product capabilities, limits, SDK shape and pricing.
+
 **Status:** decision pending — report only, no code written.
 **Date:** 2026-11-08 · **Branch:** `arena/8f0da984-solara`
 **Prerequisite:** [#52](https://github.com/jtanori/solara/issues/52) (schema never applied to hosted DBs).
