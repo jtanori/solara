@@ -101,6 +101,33 @@ function localPlan(): { entries: JournalEntry[]; tags: string[] } {
   return { entries, tags: entries.map(e => e.tag) };
 }
 
+function currentBranch(): string {
+  // Prefer the upstream branch name: a local branch can be pushed under a different name,
+  // and workflow_dispatch --ref must match a ref that actually exists on the remote.
+  try {
+    const up = execFileSync("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (up.startsWith("origin/")) return up.slice("origin/".length);
+  } catch {
+    /* no upstream configured */
+  }
+  try {
+    return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function refExists(ref: string): boolean {
+  try {
+    gh(["api", `repos/${REPO}/commits/${ref}`, "--jq", ".sha"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ------------------------------------------------------------------ resolve target
 type Target = { env: Env; sha: string; ref: string; pr: string; base: string };
 
@@ -108,7 +135,10 @@ function resolveTarget(o: Opts): Target {
   if (o.check) {
     const env = (o.env || "staging") as Env;
     if (env !== "staging" && env !== "production") throw new Error(`--env must be staging or production (got "${env}")`);
-    const ref = o.branch || (env === "staging" ? "staging" : "main");
+    // Prefer the branch you are on (it carries this tooling); fall back to the env's branch.
+    const here = currentBranch();
+    const envRef = env === "staging" ? "staging" : "main";
+    const ref = o.branch || (here && refExists(here) && workflowCaps(here).mode ? here : envRef);
     const sha = gh(["api", `repos/${REPO}/commits/${ref}`, "--jq", ".sha"]);
     return { env, sha, ref, pr: "0", base: ref };
   }
@@ -139,6 +169,23 @@ function resolveTarget(o: Opts): Target {
   return { env, sha: pr.headRefOid, ref: pr.headRefName, pr: o.pr, base: pr.baseRefName };
 }
 
+// ------------------------------------------------------------------ workflow capability probe
+// `gh workflow run` dispatches the workflow file that exists on <ref>. A ref without the
+// mode/dry_run inputs rejects them with HTTP 422 "Unexpected inputs provided", so probe first
+// and degrade to the legacy input set instead of failing opaquely.
+type Caps = { mode: boolean; dryRun: boolean };
+
+function workflowCaps(ref: string): Caps {
+  try {
+    const b64 = gh(["api", `repos/${REPO}/contents/.github/workflows/${WORKFLOW}?ref=${ref}`, "--jq", ".content"]);
+    const body = Buffer.from(b64.replace(/\n/g, ""), "base64").toString("utf8");
+    return { mode: /^\s{6}mode:/m.test(body), dryRun: /^\s{6}dry_run:/m.test(body) };
+  } catch {
+    // cannot read the file (permissions/offline) — assume modern and let dispatch speak
+    return { mode: true, dryRun: true };
+  }
+}
+
 // ------------------------------------------------------------------ dispatch + watch
 type Run = { databaseId: number; displayTitle: string; status: string; conclusion: string | null; createdAt: string; url: string };
 
@@ -151,6 +198,11 @@ async function dispatch(t: Target, o: Opts) {
     "-f", `pr=${t.pr}`,
     "-f", `sha=${t.sha}`,
   ];
+  const caps = workflowCaps(t.ref);
+  if ((o.check || o.dryRun) && !caps.mode) {
+    throw new Error(`the workflow on "${t.ref}" has no mode/dry_run inputs — GitHub would reject them with HTTP 422.
+       Push this PR branch first, or dispatch against a ref that has the updated migrate.yml.`);
+  }
   if (o.check) args.push("-f", "mode=verify");
   if (o.dryRun) args.push("-f", "dry_run=true");
 
