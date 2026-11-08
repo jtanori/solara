@@ -14,8 +14,9 @@ import {
 /**
  * Whole-sign only for now. Placidus is *not* stubbed as a silent no-op: `castChart` refuses
  * it with a notice, because a plausible-but-wrong house system would corrupt every paid
- * reading built on it. The implementation lands in #101 together with the ephemeris
- * comparison in #102 that makes it trustworthy.
+ * reading built on it. The whole-sign angles and cusps are pinned against Swiss Ephemeris
+ * (#102, `tests/ephemeris.test.ts`); Placidus is what remains of #101, and it lands only
+ * with the same validation.
  */
 export type HouseSystem = "whole-sign" | "placidus";
 
@@ -53,7 +54,7 @@ export type ChartFacts = {
   chartVersion: "chart/2";
   at: string;                 // ISO instant the chart is cast for
   houseSystem: HouseSystem;
-  /** Placidus cusps are implemented but NOT yet validated against a trusted ephemeris. */
+  /** False until Placidus is implemented in #101 and its cusps pass the Swiss Ephemeris fixtures. */
   placidusValidated: false;
   notice: string | null;
   bodies: BodyPlacement[];
@@ -203,7 +204,9 @@ export function castChart(options: CastOptions): ChartFacts {
       // Refuse rather than approximate: see the note on HouseSystem.
       throw new Error(
         "Placidus is not implemented yet (#101) — it must not be approximated, because a wrong " +
-        "house system silently changes what every reading says. Use whole-sign until #101/#102 land.",
+        "house system silently changes what every reading says. Whole-sign and both angles are " +
+        "validated against Swiss Ephemeris (#102); use whole-sign until Placidus lands with the " +
+        "same validation.",
       );
     }
     cusps = wholeSignCusps(ascendantLongitude);
