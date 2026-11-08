@@ -71,6 +71,16 @@ gh pr create --repo jtanori/solara --base staging --title "docs: database integr
 Then merge it with the normal flow (`./scripts/deploy.sh --pr <n> --env staging`), which correctly skips the
 migration step because the diff does not touch `drizzle/`.
 
+> **Automated path (recommended):** `scripts/land-audit-docs.sh` performs the port with guardrails —
+> names every file explicitly, refuses a dirty tree, aborts if anything outside the allowlist is staged,
+> aborts if the diff deletes more than one line (the `BACKLOG.md` header), verifies the final diff against
+> `origin/staging`, then pushes and opens the PR. `--dry-run` shows the plan without touching anything.
+>
+> ```bash
+> bash scripts/land-audit-docs.sh --dry-run        # preflight + plan only
+> bash scripts/land-audit-docs.sh --yes            # branch, commit, push, open PR
+> ```
+>
 > **If the cherry-pick conflicts on `BACKLOG.md`:** your local `staging` is stale. `git pull --ff-only`
 > fails when the branch has no upstream ("There is no tracking information"), leaving you on an old
 > commit whose `BACKLOG.md` predates this work. Confirm with
