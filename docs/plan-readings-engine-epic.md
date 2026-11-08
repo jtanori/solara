@@ -286,9 +286,47 @@ Mechanically:
    occurrence. With whole-sign houses the free tier's key space is small (12⁴ ≈ 20k for the four
    positions, and far fewer in practice), so the free tier converges to a mostly-cached corpus.
 
-**The number I need from you is the ceiling**: a per-paid-reading cost you are comfortable with
-(e.g. "5 MXN"), and whether a monthly global spend cap should exist as a backstop. From that, the
-model choice follows — it is a lookup, not an architecture decision.
+### Cost ceilings (decided 2026-11-08)
+
+| Tier | Ceiling per reading | Volume rule |
+|---|---|---|
+| Free | **≤ 5 MXN** | **one free reading per user, ever** |
+| Paid | **≤ 10 MXN** | per reading, within the subscription |
+
+These replace the monthly per-user cap in §9b.6 for the free tier — "one reading" is a cleaner
+constraint than "N per month", and it is what makes the free tier cheap: the population of free
+readings is bounded by the number of signed-up users, not by their activity.
+
+### Does 5/10 MXN make sense? Rough arithmetic
+
+At today's rates ~5 MXN ≈ US$0.27 and ~10 MXN ≈ US$0.55. A 1,000-word English section is roughly
+1,300–1,500 output tokens; a twelve-section paid document therefore lands near **15k output tokens**
+plus ~2k input if the digest is not cached. Frontier pricing is on the order of US$10–15 per
+million output tokens, so:
+
+- a twelve-section document on a frontier model ≈ US$0.15–0.25 ≈ **3–5 MXN**, and on a
+  mid-tier model a fraction of that;
+- a two-section free reading ≈ US$0.03–0.05 ≈ **0.5–1 MXN**.
+
+So both ceilings are **comfortable with headroom, not tight** — good. Two consequences worth
+recording:
+
+1. **The cheap/strong split matters less than expected.** At 10 MXN you can afford the strong
+   model for the whole paid document. Keep the per-section mapping anyway (§9b.1), because it is
+   what makes a cost overrun a one-line fix, but do not design around forcing sections onto a
+   weak model.
+2. **Cache still matters**, not for unit cost but for latency and determinism: a cache hit is
+   instant and identical, which is worth more than the cents.
+3. **Spanish costs a little more** than English per word for most providers; both budget numbers
+   already absorb that, but the corpus test should assert per-locale cost separately.
+4. Prices move. The ceiling is expressed in MXN on purpose: the test asserts **cost in currency**,
+   computed from a token count × a configured price table, so a provider price change is a config
+   edit plus a test failure — not a silent margin leak.
+
+**Free reading = one per user, ever.** Implementation notes for #104/#108: enforce on the *user*
+(not the session), make it explicit in the UI ("your free reading"), and make a second request
+return the existing reading rather than an error. Abuse control beyond that belongs with #53
+(rate limiting) — an email-verified account is the natural unit (see #54).
 
 ## 9c. Free-tier size — the recommendation
 
@@ -310,6 +348,12 @@ model choice follows — it is a lookup, not an architecture decision.
 
 This is a testable hypothesis, not a certainty: ship two, measure conversion, and the section
 registry makes "add `moon` back to free" a config change rather than a rewrite.
+
+**Cliffhanger is a prompt requirement, not an editorial hope.** The `overview` and `sun` prompts
+must instruct the model to end on a specific, chart-grounded, still-open question — and the
+section schema carries a `closingQuestion` field so the renderer can present it deliberately rather
+than hoping the last paragraph reads that way. #109's review rubric already scores "does the free
+tier end on an unmet question"; #104 must add the schema field and #103 the prompt clause.
 
 ## 10. Risks
 
