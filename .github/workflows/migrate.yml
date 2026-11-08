@@ -244,6 +244,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: schema-verdict-${{ inputs.env }}-${{ inputs.sha }}
-          path: verify.json
+          path: |
+            verify.json
+            migrate.log
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: ignore

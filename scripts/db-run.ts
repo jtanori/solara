@@ -28,7 +28,7 @@
 //   3. .env for `local`
 // Never prints a credential: only `user@host/database`.
 
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
@@ -158,10 +158,12 @@ function loadJournal(): JournalEntry[] {
   return entries;
 }
 
-// same statement Drizzle's migrator uses, so the hash matches what `migrate` records
-function journalHash(entry: JournalEntry, sql: string): string {
-  const raw = `${entry.idx}\n${entry.tag}\n${sql}`;
-  return createHash("sha256").update(raw).digest("hex");
+// EXACTLY what drizzle-orm's migrator records:
+//   crypto.createHash("sha256").update(query).digest("hex")   // query = the .sql file
+// (node_modules/drizzle-orm/migrator.js). Anything else — including idx or tag — makes every
+// migration look permanently pending.
+function journalHash(_entry: JournalEntry, sql: string): string {
+  return createHash("sha256").update(sql).digest("hex");
 }
 
 async function withClient<T>(url: string, fn: (c: Client) => Promise<T>): Promise<T> {
@@ -305,10 +307,16 @@ async function cmdMigrate(env: Target, dryRun: boolean, yes: boolean) {
   const { spawnSync } = await import("node:child_process");
   console.log("running drizzle-kit migrate…");
   const res = spawnSync("npx", ["drizzle-kit", "migrate"], {
-    stdio: "inherit",
+    encoding: "utf8",
     env: { ...process.env, DATABASE_URL: r.url },
   });
-  if (res.status !== 0) fail(`drizzle-kit migrate exited ${res.status}`);
+  // Keep the full output: it is uploaded as an artifact when a run fails, so the next
+  // failure is diagnosable instead of "exit code 1".
+  const log = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+  appendFileSync("migrate.log", `$ npx drizzle-kit migrate (DATABASE_URL -> ${id.host}/${id.database})\n${log}\n`);
+  process.stdout.write(log);
+  console.log(`exit code ${res.status}`);
+  if (res.status !== 0) fail(`drizzle-kit migrate exited ${res.status} — see migrate.log`);
 
   const after = await pending(r);
   console.log(`applied  ${after.applied.hashes.length} row(s) in drizzle.__drizzle_migrations`);
