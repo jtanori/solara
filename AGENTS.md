@@ -125,6 +125,8 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 ## 5. PR & Commit Protocol (ADR 004)
 
 - **Reviews:** COMMENT-only until 2nd maintainer (author cannot approve own PR — GitHub blocks it). Protection requires `0` approvals but **conversation resolution** — all review comments must be resolved.
+- **A review exists only if it is on the PR** — a `COMMENT`-event review via `POST /pulls/<n>/reviews`, anchored inline comments, and the reviewed SHA in the body. A review pasted into chat, held in another workspace, or applied as uncommitted fixes is **not a review**: it cannot be resolved, audited or enforced. Fixes land as commits on the PR branch so CI runs on them. Mechanics, checklist (SEC-01…SEC-07), severity levels and suggestion-block format: [`docs/CODE_REVIEW.md`](docs/CODE_REVIEW.md).
+- **Test quality (SEC-07):** for any test that claims to guard a defect, break the code deliberately and watch it fail. A test that passes under mutation is decoration — this is the failure mode that produced #97 and #112.
 - **Merge:** **squash** for `feature → staging` (one commit per feature, `Closes #X` on its own line each — GitHub only closes the first if comma-separated). Promotions `staging → main` are **merge commit** (preserves `staging` ancestor — see ADR 004).
 - **Commits:** Conventional style, no secrets, `DATABASE_URL` never in message. Example:
   ```
@@ -133,7 +135,8 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
   Closes #3
   ```
 - **Template:** use `.github/pull_request_template.md` (Summary, Linked issues, Evidence `tsc`/`eslint`/`tests`/`build`/smoke, Risk, Rollout/Rollback).
-- **CI gate:** `mergeStateStatus` must be `CLEAN`, `verify` green (1m15s-1m38s) + GitGuardian pass.
+- **CI gate:** `mergeStateStatus` must be `CLEAN`, `verify` green (1m15s-1m38s) + GitGuardian pass. Vercel and GitGuardian are **advisory** — only `verify` is a required status check, so a failing preview does not block a merge.
+- **Evidence, not adjectives:** the PR body's Evidence section takes command output or a CI link. **Never claim a check passed that was not run**; a check that could not run is reported as unrunnable, not omitted.
 
 ---
 
@@ -155,7 +158,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - **ADR 004** COMMENT-only reviews + squash (promotions excepted).
 - **ADR 005** Prototype gate — not production-ready; no live billing/real data until checklists green.
 
-Full text: [`docs/decisions.md`](docs/decisions.md).
+Full text: [`docs/decisions.md`](docs/decisions.md). Review mechanics: [`docs/CODE_REVIEW.md`](docs/CODE_REVIEW.md).
 
 ---
 
@@ -167,5 +170,7 @@ Full text: [`docs/decisions.md`](docs/decisions.md).
 - [ ] `BACKLOG.md` updated if issues opened/closed.
 - [ ] PR body: `Closes #X` per line, Evidence, Risk, Rollout/Rollback.
 - [ ] CI green (`verify` + GitGuardian) and `mergeStateStatus: CLEAN`.
+- [ ] Any review is **posted to the PR** (`COMMENT` event, inline findings, reviewed SHA named) — not pasted into chat.
+- [ ] For each test guarding a defect: mutation run, and the result recorded in the PR body.
 
 *Keep this file current — it is the contract for the next agent.*
