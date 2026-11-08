@@ -7,6 +7,7 @@ research appendix; this file is the plan of record.
 **Prerequisite:** [#52](https://github.com/jtanori/solara/issues/52) must be closed. Auth tables in a
 database that never receives migrations are just as invisible as `public.users` is today.
 **Date:** 2026-11-08 · **Branch:** `arena/8f0da984-solara`
+**Issues:** gaps S1–S10 are filed as #53 (S1), #54 (S3/S4), #55 (S2), #56 (S7), #57 (S8), #58 (S9), #67 (S5), #68 (S6), #69 (S10) — see #73 for the epic and launch gate.
 
 ---
 
@@ -45,16 +46,16 @@ not.** Concretely, in code (`src/lib/passwords.ts`, `src/lib/auth.ts`, `src/app/
 
 | # | Gap | Why it matters | Fix (local) |
 |---|---|---|---|
-| S1 | **No rate limiting, lockout, or CAPTCHA on `/api/auth`** | Unlimited password guessing is viable against a *known email* — the very thing the enumeration-resistant message hides. Also enables account-spam sign-ups and scrypt CPU exhaustion (each attempt costs 16 MB + ~30 ms) | Token-bucket per IP + per email in Postgres (or Upstash), exponential backoff, 429 with `Retry-After`; optional Turnstile on signup |
-| S2 | **No password reset** | Users who forget their password are permanently locked out (support burden + churn). The UI admits this. | `password_reset` table (hashed token, 1 h TTL, single use) + `POST /api/auth/reset/request` & `/confirm` + email provider |
-| S3 | **No email verification** | Anyone can register someone else's email; no proof of ownership; no channel for S2 | `email_verified_at` + signed token + resend endpoint (same transport as S2) |
-| S4 | **No email transport at all** | Blocks S2, S3, and account notifications | Pick one (Resend/SES/Postmark), add a single `sendMail()` seam |
-| S5 | **No password change** (email is read-only, name only) | A leaked password cannot be rotated by the user | `POST /api/auth/password` requiring current password |
-| S6 | **Only one session per device is not modelled** — logout deletes one token, there is no "sign out everywhere", expired rows are never purged | Stolen cookie cannot be revoked globally; `sessions` grows forever | `sessions` already keyed per token: add `signOutAll` (delete by `user_id`) and a periodic purge of expired rows |
-| S7 | **`sameOrigin()` allows a missing `Origin` header** (`if (!origin) return true`) | CSRF defence relies on browsers always sending `Origin` on `POST`. Practical risk is low (SameSite=Lax blocks cross-site POSTs), but it is defence-in-depth that silently degrades | Require `Origin` (or `Sec-Fetch-Site: same-origin`) on state-changing routes |
-| S8 | **No security headers** — no CSP/HSTS/`X-Frame-Options`/`Referrer-Policy`, no `middleware.ts` | Clickjacking, downgrade, and referrer leakage are unmitigated; Next has first-class support for this | `headers()` in `next.config.ts` (or a `proxy.ts` in Next 16) with a strict CSP |
-| S9 | **No MFA for staff (owner/admin)** | An admin account compromise = full control of roles and knowledge content | TOTP (`otplib`-style) + recovery codes, enforced by role |
-| S10 | **No session rotation / idle timeout** | 30-day absolute session with no re-auth for sensitive actions (role change, account deletion, password change) | Re-auth (password prompt) before sensitive mutations; optional 7-day idle cap |
+| S1 | **[#53](https://github.com/jtanori/solara/issues/53)** — **No rate limiting, lockout, or CAPTCHA on `/api/auth`** | Unlimited password guessing is viable against a *known email* — the very thing the enumeration-resistant message hides. Also enables account-spam sign-ups and scrypt CPU exhaustion (each attempt costs 16 MB + ~30 ms) | Token-bucket per IP + per email in Postgres (or Upstash), exponential backoff, 429 with `Retry-After`; optional Turnstile on signup |
+| S2 | **[#55](https://github.com/jtanori/solara/issues/55)** — **No password reset** | Users who forget their password are permanently locked out (support burden + churn). The UI admits this. | `password_reset` table (hashed token, 1 h TTL, single use) + `POST /api/auth/reset/request` & `/confirm` + email provider |
+| S3 | **[#54](https://github.com/jtanori/solara/issues/54)** — **No email verification** | Anyone can register someone else's email; no proof of ownership; no channel for S2 | `email_verified_at` + signed token + resend endpoint (same transport as S2) |
+| S4 | **[#54](https://github.com/jtanori/solara/issues/54)** — **No email transport at all** | Blocks S2, S3, and account notifications | Pick one (Resend/SES/Postmark), add a single `sendMail()` seam |
+| S5 | **[#67](https://github.com/jtanori/solara/issues/67)** — **No password change** (email is read-only, name only) | A leaked password cannot be rotated by the user | `POST /api/auth/password` requiring current password |
+| S6 | **[#66](https://github.com/jtanori/solara/issues/66)**, **[#68](https://github.com/jtanori/solara/issues/68)** — **No global revocation** — logout deletes one token, there is no "sign out everywhere", expired rows are never purged | Stolen cookie cannot be revoked globally; `sessions` grows forever | `sessions` already keyed per token: add `signOutAll` (delete by `user_id`) and a periodic purge of expired rows |
+| S7 | **[#56](https://github.com/jtanori/solara/issues/56)** — **`sameOrigin()` allows a missing `Origin` header** (`if (!origin) return true`) | CSRF defence relies on browsers always sending `Origin` on `POST`. Practical risk is low (SameSite=Lax blocks cross-site POSTs), but it is defence-in-depth that silently degrades | Require `Origin` (or `Sec-Fetch-Site: same-origin`) on state-changing routes |
+| S8 | **[#57](https://github.com/jtanori/solara/issues/57)** — **No security headers** — no CSP/HSTS/`X-Frame-Options`/`Referrer-Policy`, no `middleware.ts` | Clickjacking, downgrade, and referrer leakage are unmitigated; Next has first-class support for this | `headers()` in `next.config.ts` (or a `proxy.ts` in Next 16) with a strict CSP |
+| S9 | **[#58](https://github.com/jtanori/solara/issues/58)** — **No MFA for staff (owner/admin)** | An admin account compromise = full control of roles and knowledge content | TOTP (`otplib`-style) + recovery codes, enforced by role |
+| S10 | **[#69](https://github.com/jtanori/solara/issues/69)** — **No session rotation / idle timeout** | 30-day absolute session with no re-auth for sensitive actions (role change, account deletion, password change) | Re-auth (password prompt) before sensitive mutations; optional 7-day idle cap |
 
 ### 2.3 Not a gap (call out explicitly so it is not re-litigated)
 

@@ -141,19 +141,19 @@ Scored against that list, Solara today: **(1) partially (artifact exists, trigge
 
 ## 4. Recommended follow-ups (beyond #52's fix)
 
-These are **new, separate issues**, not part of #52. Ordered by value per hour:
+These are **new, separate issues**, not part of #52. Epic index and launch gate: [#73](https://github.com/jtanori/solara/issues/73). Connection hygiene (finding D, the inert `channel_binding` flag) is tracked separately as [#61](https://github.com/jtanori/solara/issues/61). Ordered by value per hour:
 
 | Priority | Follow-up | Effort |
 |---|---|---|
-| P1 | **Separate migration role from runtime role** (least privilege) + document grants | 0.5 d |
-| P1 | **Readiness contract**: keep `/api/health` for liveness, add `/api/ready` (DB + schema + migration journal) and point uptime monitors at it | 0.5 d |
-| P1 | **One source of truth for `DATABASE_URL`** (e.g. Neon → Vercel integration, or a script that reconciles both sides and compares hosts) | 0.5 d |
-| P2 | **Pool hardening**: `max`, `idleTimeoutMillis`, `pool.on('error')`, optional `statement_timeout` | 2 h |
-| P2 | **Backup/PITR + one recorded restore drill** | 0.5 d |
-| P2 | **Fix or delete `drizzle-kit check`**; add a real drift check to CI | 2 h |
-| P3 | **Indexes** (`readings.user_id+created_at`, `sessions.expires_at`, `audit_logs.created_at`) | 2 h + migration |
-| P3 | **Expired-session cleanup** (scheduled function or opportunistic delete) | 2 h |
-| P3 | **Preview database strategy**: per-PR Neon branch *or* explicitly no DB (no third option) | 0.5 d |
+| P1 | **Separate migration role from runtime role** (least privilege) + document grants — [#59](https://github.com/jtanori/solara/issues/59) | 0.5 d |
+| P1 | **Readiness contract**: `/api/health` (liveness) + `/api/ready` (DB, schema, journal) — [#70](https://github.com/jtanori/solara/issues/70) | 0.5 d |
+| P1 | **One source of truth for `DATABASE_URL`** + preview policy — [#63](https://github.com/jtanori/solara/issues/63) | 0.5 d |
+| P2 | **Pool hardening**: `max`, `idleTimeoutMillis`, `pool.on('error')`, `statement_timeout` — [#60](https://github.com/jtanori/solara/issues/60) | 2 h |
+| P2 | **Backup/PITR + one recorded restore drill** — [#62](https://github.com/jtanori/solara/issues/62) | 0.5 d |
+| P2 | **Fix or delete `drizzle-kit check`**; real drift check in CI — [#64](https://github.com/jtanori/solara/issues/64) | 2 h |
+| P3 | **Indexes** (`readings.user_id+created_at`, `sessions.expires_at`, `audit_logs.created_at`) — [#65](https://github.com/jtanori/solara/issues/65) | 2 h + migration |
+| P3 | **Expired-session cleanup** — [#66](https://github.com/jtanori/solara/issues/66) | 2 h |
+| P3 | **Preview database strategy**: per-PR Neon branch *or* explicitly no DB — [#63](https://github.com/jtanori/solara/issues/63) | 0.5 d |
 
 ---
 
