@@ -199,21 +199,51 @@ jobs:
           TARGET_ENV: ${{ inputs.env }}
         run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" migrate --yes
 
+      # The verdict is DATA, not the job conclusion. A verify run is allowed to find an empty
+      # database (that is useful information before a migration), so it must not turn the run
+      # red — but it must not claim success either. `--json` is always written to verify.json;
+      # the step marker and summary say which of the two happened, and db-remote.ts reads it.
       - name: Confirm schema
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          MODE: ${{ inputs.mode }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          if [ "${{ inputs.mode }}" = "verify" ] || [ "${{ inputs.dry_run }}" = "true" ]; then
-            # a pre-migration check is allowed to find an empty database — report, do not fail
-            npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify --allow-incomplete | tee verify.txt
+          ALLOW=""
+          if [ "$MODE" = "verify" ] || [ "$DRY_RUN" = "true" ]; then ALLOW="--allow-incomplete"; fi
+          npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify --json $ALLOW > verify.json || true
+          npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify $ALLOW 2>&1 | tee verify.txt || true
+
+          IN_SYNC=$(node -e 'const j=require("./verify.json");process.stdout.write(String(j.ok))')
+          if [ "$IN_SYNC" = "true" ]; then
+            echo "::notice::IN SYNC — $TARGET_ENV schema and drizzle journal match"
+            echo "schema_verdict=in-sync" >> "$GITHUB_OUTPUT"
           else
-            npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify | tee verify.txt
+            echo "::warning::OUT OF SYNC — $TARGET_ENV does not match drizzle/ (see below)"
+            echo "schema_verdict=out-of-sync" >> "$GITHUB_OUTPUT"
+          fi
+          # A real (non-dry-run) migrate that leaves the schema out of sync is a hard failure.
+          if [ "$MODE" = "migrate" ] && [ "$DRY_RUN" != "true" ] && [ "$IN_SYNC" != "true" ]; then
+            echo "::error::$TARGET_ENV is still out of sync after applying migrations"
+            exit 1
           fi
           {
-            echo "### migrate ${{ inputs.env }} · mode=${{ inputs.mode }} · pr #${{ inputs.pr }}"
+            echo "### migrate $TARGET_ENV · mode=$MODE · pr #${{ inputs.pr }}"
+            echo ""
+            echo "**schema verdict: $([ "$IN_SYNC" = "true" ] && echo "in sync" || echo "OUT OF SYNC")**"
+            echo ""
             echo '```'
             cat verify.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish verdict artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-verdict-${{ inputs.env }}-${{ inputs.sha }}
+          path: verify.json
+          retention-days: 30
+          if-no-files-found: warn

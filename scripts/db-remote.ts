@@ -26,7 +26,8 @@
 // Exit codes: 0 success · 1 the run failed / out of sync · 2 bad usage
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const REPO = process.env.SOLARA_REPO ?? "jtanori/solara";
@@ -255,6 +256,29 @@ async function findRun(t: Target, before: string): Promise<string> {
   throw new Error(`no ${WORKFLOW} run appeared for ${t.env} sha ${t.sha} — check 'gh run list --workflow=${WORKFLOW}'`);
 }
 
+// Read the schema verdict the workflow published as an artifact. The job conclusion is NOT the
+// verdict: a verify run exits 0 even when the database is empty, by design.
+type Verdict = { ok: boolean; missing: string[]; pending: string[]; tables?: string[] };
+
+function readVerdict(runId: string, env: string, sha: string): Verdict | null {
+  const dir = mkdtempSync(path.join(tmpdir(), "solara-verdict-"));
+  try {
+    execFileSync("gh", ["run", "download", runId, "--repo", REPO, "--dir", dir], { stdio: "ignore" });
+    const found = (readdirSync(dir, { recursive: true }) as string[])
+      .map(f => String(f))
+      .find(f => f.endsWith("verify.json"));
+    if (!found) return null;
+    const raw = JSON.parse(readFileSync(path.join(dir, found), "utf8")) as {
+      ok?: boolean; missing?: string[]; pending?: string[];
+    };
+    return { ok: raw.ok === true, missing: raw.missing ?? [], pending: raw.pending ?? [] };
+  } catch {
+    return null; // artifact unavailable (expired, or gh lacks artifact read) — degrade, do not lie
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function wait(runId: string, timeoutSec: number) {
   const deadline = Date.now() + timeoutSec * 1000;
   let last = "";
@@ -313,17 +337,42 @@ async function main() {
   }
 
   const run = await wait(runId, o.timeout);
-  const ok = run.conclusion === "success";
+  const verdict = readVerdict(runId, t.env, t.sha);
+
+  // A dry run / verify dispatch is expected to report drift without failing the pipeline.
+  const expectsDrift = o.check || o.dryRun;
+  const jobOk = run.conclusion === "success";
+  // Where a verdict exists it decides. Where it does not, fall back to the conclusion but say so.
+  const ok = verdict ? jobOk && verdict.ok : jobOk;
 
   if (o.json) {
-    console.log(JSON.stringify({ ...summary, runId, conclusion: run.conclusion, ok, url: run.url }, null, 2));
+    console.log(JSON.stringify({
+      ...summary, runId, conclusion: run.conclusion, jobOk,
+      verdict: verdict ?? "unavailable", ok, url: run.url,
+    }, null, 2));
   } else {
     console.log("");
-    console.log(`result    ${run.conclusion}${ok ? "" : `  ← gh run view ${runId} --log`}`);
-    console.log(ok
-      ? `OK        ${t.env} schema and drizzle journal are in sync`
-      : `FAIL      ${t.env} did not reach a consistent state`);
+    console.log(`result    ${run.conclusion}${jobOk ? "" : `  ← gh run view ${runId} --log`}`);
+    if (!verdict) {
+      console.log(`verdict   unavailable (artifact schema-verdict-${t.env}-${t.sha.slice(0, 7)} not readable)`);
+      console.log(jobOk ? "UNKNOWN   the job passed but the schema could not be read" : `FAIL      ${t.env} run failed`);
+    } else if (verdict.ok) {
+      console.log("verdict   in sync");
+      console.log(`OK        ${t.env} schema and drizzle journal are in sync`);
+    } else {
+      console.log("verdict   OUT OF SYNC");
+      if (verdict.missing.length) console.log(`missing   ${verdict.missing.join(", ")}`);
+      if (verdict.pending.length) console.log(`pending   ${verdict.pending.join(", ")}`);
+      if (expectsDrift) {
+        console.log(`EXPECTED  a ${o.check ? "verify" : "dry-run"} dispatch may find drift — no DDL was run`);
+        console.log(`NEXT      migrate it: npx tsx scripts/db-remote.ts --pr <n>${t.env === "production" ? " --env production --rehearsal-pr <n>" : ""}`);
+      } else {
+        console.log(`FAIL      ${t.env} did not reach a consistent state after migrating`);
+      }
+    }
   }
+
+  if (!verdict) return jobOk ? 1 : 1; // never report success on a missing verdict
   return ok ? 0 : 1;
 }
 
