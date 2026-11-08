@@ -222,7 +222,27 @@ commitments.
 **Critical path to a paid-quality reading: 1 → 2 → 4 → 5 → 7 ≈ 2 weeks**, assuming #10 can take a
 test payment. Items 3, 8, 9 should not slip past the first paying user; 11 and 12 follow.
 
-## 9. Decisions I need from you
+## 9. Decisions taken (2026-11-08)
+
+| # | Decision | Consequence |
+|---|---|---|
+| 1 | Chiron, asteroids and Lilith are **out of MVP, in scope later** | MVP ships on `astronomy-engine` alone; no Swiss Ephemeris licence question yet, no second ephemeris dependency. Reopens only if the astrologer calls one load-bearing. |
+| 2 | **Whole-sign at launch, Placidus after payment** | Free readings use whole-sign (already implemented and defensible). Placidus becomes a paid-tier calculation, which means the entitlement check happens at chart level, not only at prose level — see the amendment below. |
+| 3 | **True node** (mean node deferred) | Derived from `SearchMoonNode`, verified: the ascending crossing on 2026-11-17T11:47Z gives the node at 25.1° Aquarius, matching published ephemerides. Mean node is a displayed variant if the astrologer wants it. |
+| 4 | Provider and budget — see §9b | Model tiering and a hard per-reading ceiling. |
+| 5 | **PDF is in scope for launch** | The renderer must build the same `ReadingDocument` into a PDF; generation stays synchronous for the page, with a job path when PDF assembly exceeds the request budget (#81, #83). |
+| 6 | **Two-section free reading** (`overview` + `sun`) | Reasoning and the measurement plan in §9c. |
+
+### Amendment required by decision 2
+
+"Placidus after payment" could be read as "computed but not shown", which contradicts decision 3
+of the audit answer (paid data is *not produced* until purchase). **Paid means not computed**: the
+free reading is generated from a whole-sign chart, the paid reading recomputes a Placidus chart
+first and generates from that. This keeps the paywall structural rather than cosmetic, and it
+means the paid path must be able to regenerate prose — which is the same mechanism as a
+`contentVersion` bump, so no extra machinery.
+
+## 10. Decisions I need from you
 
 1. **Chiron / asteroids / Lilith** — excluded from MVP (my recommendation), or is one of them
    load-bearing for the astrologer? Excluding costs nothing; including needs a new ephemeris and a
@@ -237,6 +257,59 @@ test payment. Items 3, 8, 9 should not slip past the first paying user; 11 and 1
    the renderer and implies an asynchronous job (#83).
 6. **Free tier size** — are four sections right, or should `overview` alone carry the free reading?
    This is the main conversion lever and the main cost lever.
+
+## 9b. How provider and budget would work
+
+Three numbers decide the provider, all measurable in a day with a fixture set:
+
+- **cost per reading** (free tier and paid tier separately),
+- **latency** for the paid document (does it fit a request, or does it need a job?),
+- **quality delta** between a cheap and a strong model on `overview` and `guidance` specifically.
+
+Mechanically:
+
+1. **Two models, chosen per section.** Short formulaic sections (`overview`, `sun`, `moon`,
+   `ascendant`) use a cheap fast model; `guidance` and any synthesis section use the strong one.
+   Section→model mapping lives in configuration, not code.
+2. **Digest budget.** The chart digest is capped (target: under ~2k tokens) by summarising rather
+   than dumping — a table of 10 bodies × sign/house is compact; aspects are filtered to the
+   configured orb set. The digest is asserted against a size budget in the corpus test so it
+   cannot silently grow.
+3. **Per-reading ceiling.** A hard token ceiling per document, enforced before dispatch; exceeding
+   it is a configuration error that fails the run rather than a surprise invoice.
+4. **Per-user monthly cap.** Counted per generation, with the free tier counted separately from
+   paid. Exceeding it degrades to chart-only rendering, never to an error page.
+5. **Global kill switch.** One flag disables generation and leaves the deterministic chart and its
+   computed facts rendering. This is the provider-outage path as well.
+6. **Cache first.** Identical `(digestHash, section, contentVersion, locale)` reuses prose, so the
+   common case — sun sign × moon sign × ascendant × house — costs nothing after the first
+   occurrence. With whole-sign houses the free tier's key space is small (12⁴ ≈ 20k for the four
+   positions, and far fewer in practice), so the free tier converges to a mostly-cached corpus.
+
+**The number I need from you is the ceiling**: a per-paid-reading cost you are comfortable with
+(e.g. "5 MXN"), and whether a monthly global spend cap should exist as a backstop. From that, the
+model choice follows — it is a lookup, not an architecture decision.
+
+## 9c. Free-tier size — the recommendation
+
+**Two sections: `overview` + `sun`.** Reasoning:
+
+- The free reading should answer "what is this?" convincingly, not "what is my year?" A year-long
+  reading that is fully satisfying removes the reason to buy; a reading that is specific but
+  visibly incomplete creates it.
+- `lockedSections` can honestly name what exists — the aspects, the houses, the planet-by-planet
+  year, the nodes, the profections, the transit picture, the closing synthesis. Nine named
+  sections is a stronger incentive than four long ones.
+- You can now compute Placidus, natal cross-aspects and transits **only for paid**, so the paid
+  tier is not merely "more prose" — it is a *different, more precise chart*. That is a better
+  product story than a longer version of the same thing.
+- Commercially, the constraint is usually the reverse of the fear: a free reading that is too good
+  converts worse than one that ends on a specific, unmet question. Two sections ending on "the
+  year's theme" is a natural cliffhanger; four sections ending on the ascendant is a complete
+  reading.
+
+This is a testable hypothesis, not a certainty: ship two, measure conversion, and the section
+registry makes "add `moon` back to free" a config change rather than a rewrite.
 
 ## 10. Risks
 
