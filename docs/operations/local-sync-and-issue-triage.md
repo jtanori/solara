@@ -112,10 +112,25 @@ git pull --rebase origin <branch>           # preferred when someone else pushed
 
 | Milestone | Use for |
 |---|---|
-| `M3 - Launch readiness` | **everything that must be true before public sign-up** — the 8 database/pipeline items, the 5 auth blockers, staff MFA, ADRs |
-| `M1 - Foundation` | the ten *hardening* issues that improve the platform but do not gate launch (#60, #61, #65, #66, #67, #68, #69, #71) |
-| `Final - Platform validation` | #16-adjacent operational evidence: backup drill (#62), preview policy (#63) |
-| `M2 - Billing` | untouched (#9, #10) |
+| `M3 - Launch readiness` | **S1 findings only** — anything that must be true before public sign-up |
+| `M1 - Foundation` | S2/S3 hardening that improves the platform but does not gate launch |
+| `Final - Platform validation` | cross-cutting platform-validation evidence (the #16 family). Currently empty |
+| `M2 - Billing` | billing work (#9, #10) |
+
+**Routing rule:** the *audit severity* decides, not the priority label. An `S1` finding goes to `M3`
+even when its effort is small; an `S2` goes to `M1` even when its `priority:p1`. This is what keeps
+`M3` honest — if everything is a launch blocker, nothing is.
+
+**Corrections applied 2026-11-08** (a first pass routed four issues incorrectly):
+
+| Issue | Was | Now | Why |
+|---|---|---|---|
+| #62 backup/PITR + restore drill | Final | **M3** | `S1` (DB-03) — unrecoverable data blocks launch |
+| #63 `DATABASE_URL` single source of truth + preview policy | Final | **M1** | `S2` (DE-06/SH-03) — hygiene, mitigated by #90's inventory |
+| #94 incident runbook + kill-switches | Final | **M1** | `S2` — operational maturity, not a launch gate |
+| #69 re-auth for destructive actions | M3 | **M1** | `S2` — matches its siblings #67/#68 |
+
+Apply with `bash scripts/fix-milestone-routing.sh` (idempotent).
 
 Keep `M3` honest: it should contain only true launch blockers, otherwise the milestone stops meaning
 anything. Everything else goes to `M1` (or `Final`) and the epic #79 carries the sequencing.

@@ -8,7 +8,9 @@
 # Milestone routing (keep M3 honest — only true launch blockers):
 #   M3 - Launch readiness      → must be true before public sign-up
 #   M1 - Foundation            → hardening that improves but does not gate launch
-#   Final - Platform validation→ operational evidence (backup drill, preview policy)
+#   Final - Platform validation→ reserved for cross-cutting platform validation evidence (#16 family)
+#
+# Routing rationale lives in docs/audit/deep-audit-2026-11.md: M3 gets S1 items only.
 set -uo pipefail
 
 M3="M3 - Launch readiness"
@@ -16,9 +18,10 @@ M1="M1 - Foundation"
 FINAL="Final - Platform validation"
 
 # Issues that belong to M1 even though they are p1/p2 (not launch-gating).
-M1_ISSUES=" 60 61 65 66 67 68 71 83 86 91 92 "
-# Issues that belong to Final - Platform validation.
-FINAL_ISSUES=" 62 63 94 "
+M1_ISSUES=" 60 61 63 65 66 67 68 69 71 83 86 91 92 94 "
+# Final - Platform validation is intentionally empty: #62 (S1 backup drill) moved to M3
+# because data recoverability gates launch, and #63/#94 are M1 hygiene.
+FINAL_ISSUES=" "
 # Post-launch cleanup.
 P3_ISSUES=" 93 "
 

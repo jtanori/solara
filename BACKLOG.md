@@ -2,6 +2,8 @@
 
 > **Source of truth:** [GitHub Issues](https://github.com/jtanori/solara/issues) are authoritative. This file is an **offline index** only — it lists every issue with a link and a snapshot of its lifecycle at the time of the last update. Update this file only when issues are created, changed, or closed; do not duplicate status tracking here. See `docs/decisions.md` ADR 002 and `AGENTS.md`.
 
+*Milestone routing corrected 2026-11-08 (#62→M3, #63/#94/#69→M1; audit severity decides).*
+
 *Last updated: 2026-11-08 from `staging` at `4490ced` — #52 incident filed, then 40 follow-up issues (#53–#94) incl. the deep-audit set (#81–#94) planned from `docs/audit-database-integration.md` and `docs/plan-neon-auth-migration.md`.*
 
 ## Open
@@ -21,8 +23,8 @@
 | [#59](https://github.com/jtanori/solara/issues/59) | db: separate application and migration roles (least privilege) | `type:security` `area:db` `priority:p1` `status:blocked` | blocked on #52; runtime role can currently DDL |
 | [#60](https://github.com/jtanori/solara/issues/60) | db: explicit pool configuration and TLS verification | `type:bug` `area:db` `priority:p1` `status:ready` | ready — no `max`/timeouts/`pool.on("error")`; `sslmode=require` semantics change in pg 9 |
 | [#61](https://github.com/jtanori/solara/issues/61) | security: remove inert channel_binding guidance, add safe URL helper and secret scan | `type:security` `area:docs` `priority:p2` `status:ready` | ready — flag is a no-op in `pg`; no secret scan in CI |
-| [#62](https://github.com/jtanori/solara/issues/62) | infra: configure and test database backup/restore (one recorded drill) | `type:chore` `area:infra` `priority:p1` `status:ready` | ready — no backup/PITR/restore evidence anywhere |
-| [#63](https://github.com/jtanori/solara/issues/63) | infra: single source of truth for DATABASE_URL and an explicit preview-database policy | `type:chore` `area:infra` `priority:p1` `status:ready` | ready — Vercel and GitHub Environments hold the same secret, never compared |
+| [#62](https://github.com/jtanori/solara/issues/62) | infra: configure and test database backup/restore (one recorded drill) | `type:chore` `area:infra` `priority:p1` `status:ready` | ready — **M3 (S1)**: data recoverability gates launch |
+| [#63](https://github.com/jtanori/solara/issues/63) | infra: single source of truth for DATABASE_URL and an explicit preview-database policy | `type:chore` `area:infra` `priority:p1` `status:ready` | ready — **M1 (S2)**: mitigated by #90; not a launch gate |
 | [#64](https://github.com/jtanori/solara/issues/64) | db: make the migration drift check work and enforce it in CI | `type:bug` `area:ci` `priority:p1` `status:blocked` | blocked on #52; `drizzle-kit check` exits 1 in this repo |
 | [#65](https://github.com/jtanori/solara/issues/65) | db: add indexes for dashboard, session and audit queries | `type:chore` `area:db` `priority:p2` `status:blocked` | blocked on #52; only one non-PK index in the schema |
 | [#66](https://github.com/jtanori/solara/issues/66) | db: purge expired sessions and share revocation helpers | `type:chore` `area:db` `priority:p2` `status:ready` | ready — expired sessions never deleted |
@@ -51,7 +53,7 @@
 | [#91](https://github.com/jtanori/solara/issues/91) | quality: validate environment configuration at boot | `type:bug` `area:backend` `priority:p2` `status:ready` | ready — no env schema; staging values can reach prod |
 | [#92](https://github.com/jtanori/solara/issues/92) | quality: e2e smoke journey, coverage floor, performance budgets | `type:test` `area:infra` `priority:p2` `status:ready` | ready — no e2e; #52 class undetectable by tests |
 | [#93](https://github.com/jtanori/solara/issues/93) | db: remove users.plan as a source of entitlement | `type:refactor` `area:db` `priority:p3` `status:ready` | ready — dead column decides PDF entitlement (real bug) |
-| [#94](https://github.com/jtanori/solara/issues/94) | ops: incident response runbook, kill-switches, status communication | `type:docs` `area:infra` `priority:p2` `status:ready` | ready — #52 had no timeline, no detection, no comms |
+| [#94](https://github.com/jtanori/solara/issues/94) | ops: incident response runbook, kill-switches, status communication | `type:docs` `area:infra` `priority:p2` `status:ready` | ready — **M1 (S2)**: #52 had no timeline, no detection, no comms |
 | [#10](https://github.com/jtanori/solara/issues/10) | chore: validate Stripe test-mode subscription lifecycle | `type:chore` `area:billing,area:infra` `priority:p2` `status:ready` | ready — unblocked by #9; needs Stripe test keys + CLI login (Checkout → webhook → portal/renewal/cancel) |
 | [#16](https://github.com/jtanori/solara/issues/16) | chore: define independent platform validation checklist | `type:chore` `area:infra,area:content,area:astro` `priority:p3` `status:needs-triage` | needs-triage — astro fixtures, hist TZ/leap/high-lat, editorial versioning, backup/restore, MFA/rate-limit/CSRF |
 
