@@ -54,6 +54,23 @@
 | [#92](https://github.com/jtanori/solara/issues/92) | quality: e2e smoke journey, coverage floor, performance budgets | `type:test` `area:infra` `priority:p2` `status:ready` | ready — no e2e; #52 class undetectable by tests |
 | [#93](https://github.com/jtanori/solara/issues/93) | db: remove users.plan as a source of entitlement | `type:refactor` `area:db` `priority:p3` `status:ready` | ready — dead column decides PDF entitlement (real bug) |
 | [#94](https://github.com/jtanori/solara/issues/94) | ops: incident response runbook, kill-switches, status communication | `type:docs` `area:infra` `priority:p2` `status:ready` | ready — **M1 (S2)**: #52 had no timeline, no detection, no comms |
+| [#95](https://github.com/jtanori/solara/pull/95) | docs: database + deep audits, fix plans, Neon Auth decision, ops runbook, 42 issues indexed (#95) | — | merged — `staging:7fa372b` |
+| [#96](https://github.com/jtanori/solara/pull/96) | chore(process): add land-audit-docs.sh guardrails script (#96) | — | merged — `staging:7b0450b` |
+| [#97](https://github.com/jtanori/solara/pull/97) | feat(db): migrate through GitHub Environment secrets, with verification (#97) | — | merged — `staging:e5eebcb`; staging DB provisioned, #52 closed |
+| [#98](https://github.com/jtanori/solara/pull/98) | docs(audit): readings engine assessment + epic design (#98) | — | merged — `staging:dc815ef` |
+| [#99](https://github.com/jtanori/solara/issues/99) | epic: the reading document — full solar-revolution interpretation | `type:feature` `area:astro` `area:content` `priority:p1` `status:ready` | ready — epic; design in `docs/plan-readings-engine-epic.md` |
+| [#100](https://github.com/jtanori/solara/issues/100) | readings: domain model + chart digest types | `type:feature` `area:backend` `area:astro` `priority:p1` `status:ready` | in progress — types + digest landed in the chart v2 PR |
+| [#101](https://github.com/jtanori/solara/issues/101) | engine: chart v2 — ten bodies, houses, MC, aspects, nodes, cross-aspects | `type:feature` `area:astro` `area:backend` `priority:p1` `status:ready` | in progress — calculation landed; Placidus refused until #102 |
+| [#102](https://github.com/jtanori/solara/issues/102) | engine: fixture charts verified against a trusted ephemeris | `type:test` `area:astro` `priority:p0` `status:ready` | ready — **blocks paid reads**; regression fixture only, no independent ephemeris yet |
+| [#103](https://github.com/jtanori/solara/issues/103) | readings: generation pipeline (prompt registry, schema validation, cache, freeze) | `type:feature` `area:backend` `area:content` `priority:p1` `status:ready` | ready — no LLM dependency exists yet |
+| [#104](https://github.com/jtanori/solara/issues/104) | readings: free-tier sections and locked teasers | `type:feature` `area:content` `area:ui` `priority:p1` `status:ready` | ready — free = overview + sun; needs `closingQuestion` field |
+| [#105](https://github.com/jtanori/solara/issues/105) | readings: consent capture and privacy copy for AI generation | `type:security` `area:auth` `area:docs` `priority:p0` `status:ready` | ready — digest is PII-free and test-asserted; consent not built |
+| [#106](https://github.com/jtanori/solara/issues/106) | readings: renderer for page and PDF | `type:feature` `area:ui` `area:backend` `priority:p2` `status:ready` | ready — PDF in scope at launch |
+| [#107](https://github.com/jtanori/solara/issues/107) | billing: generate paid sections on entitlement | `type:feature` `area:billing` `area:backend` `priority:p1` `status:ready` | ready — paid means not computed; Placidus recompute on purchase |
+| [#108](https://github.com/jtanori/solara/issues/108) | readings: cost guards, per-reading budget ceiling and kill switch | `type:feature` `area:infra` `area:backend` `priority:p1` `status:ready` | ready — ceilings 5 MXN free / 10 MXN paid |
+| [#109](https://github.com/jtanori/solara/issues/109) | readings: eval harness and astrologer review gate | `type:test` `area:content` `area:astro` `priority:p1` `status:ready` | ready — no corpus, no review gate |
+| [#110](https://github.com/jtanori/solara/issues/110) | engine: profections and transits | `type:feature` `area:astro` `priority:p2` `status:ready` | ready — paid-tier layer |
+| [#111](https://github.com/jtanori/solara/issues/111) | readings: astrologer review and override tooling | `type:feature` `area:content` `area:ui` `priority:p3` `status:ready` | ready — deliberately not a CMS |
 | [#10](https://github.com/jtanori/solara/issues/10) | chore: validate Stripe test-mode subscription lifecycle | `type:chore` `area:billing,area:infra` `priority:p2` `status:ready` | ready — unblocked by #9; needs Stripe test keys + CLI login (Checkout → webhook → portal/renewal/cancel) |
 | [#16](https://github.com/jtanori/solara/issues/16) | chore: define independent platform validation checklist | `type:chore` `area:infra,area:content,area:astro` `priority:p3` `status:needs-triage` | needs-triage — astro fixtures, hist TZ/leap/high-lat, editorial versioning, backup/restore, MFA/rate-limit/CSRF |
 
@@ -98,5 +115,7 @@
 - To add work: create a GitHub Issue first, then add a row here with a link.
 - To close work: close the GitHub Issue, then move the row to the appropriate “Closed” table with the closing PR/commit.
 - Never treat this file as the assignment source — always open the linked issue for acceptance criteria.
+
+*17 entries added 2026-11-08 (readings epic and the migrations/audit PRs).*
 
 *This index is intentionally minimal — it does not duplicate labels beyond a snapshot, assignees, or milestones. All lifecycle state lives in GitHub.*
