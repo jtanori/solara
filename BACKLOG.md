@@ -2,7 +2,7 @@
 
 > **Source of truth:** [GitHub Issues](https://github.com/jtanori/solara/issues) are authoritative. This file is an **offline index** only — it lists every issue with a link and a snapshot of its lifecycle at the time of the last update. Update this file only when issues are created, changed, or closed; do not duplicate status tracking here. See `docs/decisions.md` ADR 002 and `AGENTS.md`.
 
-*Last updated: 2026-11-08 from `staging` at `4490ced` — #52 incident filed, then 26 follow-up issues (#53–#79) planned from `docs/audit-database-integration.md` and `docs/plan-neon-auth-migration.md`.*
+*Last updated: 2026-11-08 from `staging` at `4490ced` — #52 incident filed, then 40 follow-up issues (#53–#94) incl. the deep-audit set (#81–#94) planned from `docs/audit-database-integration.md` and `docs/plan-neon-auth-migration.md`.*
 
 ## Open
 
@@ -37,6 +37,21 @@
 | [#76](https://github.com/jtanori/solara/issues/76) | infra: make deploy.sh fail-closed (pre-merge readiness, verified rollout, rollback, release records) | `type:bug` `area:infra` `priority:p1` `status:blocked` | blocked on #70; post-merge failure is a WARN/exit 0, no rollback, no tags |
 | [#77](https://github.com/jtanori/solara/issues/77) | infra: add error tracking and alerts for auth failures and readiness | `type:feature` `area:infra` `priority:p1` `status:ready` | ready — zero error tracking; #52 reached us as a user screenshot |
 | [#78](https://github.com/jtanori/solara/issues/78) | docs: record ADR 007 — migrations, deployments and rollback policy | `type:docs` `area:infra` `priority:p1` `status:ready` | ready — no written policy for migrations/rollback; do with #72 |
+| [#80](https://github.com/jtanori/solara/pull/80) | PR: database integration audit, #52 fix plan, Neon Auth decision, ops runbook | — | open — docs only, based on `main` |
+| [#81](https://github.com/jtanori/solara/issues/81) | storage: decide and implement the PDF artefact and file storage architecture | `type:feature` `area:backend` `area:infra` `priority:p1` `status:ready` | ready — **no storage layer exists**; PDFs re-render per request |
+| [#82](https://github.com/jtanori/solara/issues/82) | data: retention, export and erasure policy for user PII | `type:security` `area:backend` `area:docs` `priority:p1` `status:ready` | ready — no retention, no export, `audit_logs` write-only |
+| [#83](https://github.com/jtanori/solara/issues/83) | realtime: decide and implement the state-update channel | `type:feature` `area:backend` `priority:p2` `status:ready` | ready — no SSE/WS/polling decision recorded |
+| [#84](https://github.com/jtanori/solara/issues/84) | security: harden /api/places (unauthenticated keyed proxy) | `type:security` `area:backend` `priority:p1` `status:ready` | ready — no origin check, no rate limit, quota theft |
+| [#85](https://github.com/jtanori/solara/issues/85) | productization: legal pages, sign-up consent, SEO metadata | `type:feature` `area:ui` `area:content` `priority:p1` `status:ready` | ready — no /privacy or /terms; no robots/sitemap/OG |
+| [#86](https://github.com/jtanori/solara/issues/86) | reliability: add app-router error boundaries, 404 and loading states | `type:bug` `area:ui` `priority:p2` `status:ready` | ready — no error.tsx/not-found/loading anywhere |
+| [#87](https://github.com/jtanori/solara/issues/87) | security: redact PII from server logs and add structured logging | `type:security` `area:backend` `priority:p1` `status:ready` | ready — auth errors log the query params (emails) |
+| [#88](https://github.com/jtanori/solara/issues/88) | security: supply-chain controls + dependency triage | `type:security` `area:infra` `priority:p1` `status:ready` | ready — actions unpinned, 12 Dependabot PRs unreviewed |
+| [#89](https://github.com/jtanori/solara/issues/89) | governance: CODEOWNERS, required approvals and branch hygiene | `type:chore` `area:infra` `priority:p1` `status:ready` | ready — both rulesets allow 0 approvals, no CODEOWNERS |
+| [#90](https://github.com/jtanori/solara/issues/90) | security: secret inventory, target assignment and rotation policy | `type:security` `area:infra` `priority:p1` `status:ready` | ready — no inventory/rotation; matrix in the audit §9.2 |
+| [#91](https://github.com/jtanori/solara/issues/91) | quality: validate environment configuration at boot | `type:bug` `area:backend` `priority:p2` `status:ready` | ready — no env schema; staging values can reach prod |
+| [#92](https://github.com/jtanori/solara/issues/92) | quality: e2e smoke journey, coverage floor, performance budgets | `type:test` `area:infra` `priority:p2` `status:ready` | ready — no e2e; #52 class undetectable by tests |
+| [#93](https://github.com/jtanori/solara/issues/93) | db: remove users.plan as a source of entitlement | `type:refactor` `area:db` `priority:p3` `status:ready` | ready — dead column decides PDF entitlement (real bug) |
+| [#94](https://github.com/jtanori/solara/issues/94) | ops: incident response runbook, kill-switches, status communication | `type:docs` `area:infra` `priority:p2` `status:ready` | ready — #52 had no timeline, no detection, no comms |
 | [#10](https://github.com/jtanori/solara/issues/10) | chore: validate Stripe test-mode subscription lifecycle | `type:chore` `area:billing,area:infra` `priority:p2` `status:ready` | ready — unblocked by #9; needs Stripe test keys + CLI login (Checkout → webhook → portal/renewal/cancel) |
 | [#16](https://github.com/jtanori/solara/issues/16) | chore: define independent platform validation checklist | `type:chore` `area:infra,area:content,area:astro` `priority:p3` `status:needs-triage` | needs-triage — astro fixtures, hist TZ/leap/high-lat, editorial versioning, backup/restore, MFA/rate-limit/CSRF |
 
