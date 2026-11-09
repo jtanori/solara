@@ -18,8 +18,10 @@ import {
  * an entitlement decision (#107, decision 2: paid means not computed) — the engine
  * computes either on request and defaults to whole-sign. The 66° Ascendant cutoff is
  * product policy and applies to both — the reference still returns an Ascendant there —
- * regression-tested at its boundary from both hemispheres; and a cusp that would turn
- * circumpolar is refused exactly where Swiss Ephemeris refuses it, never approximated.
+ * regression-tested at its boundary from both hemispheres. A circumpolar cusp — one
+ * whose semi-arc stops existing — is refused rather than approximated, mirroring the
+ * reference's behaviour without claiming its exact failure region (that region is
+ * instant-dependent; below the cutoff, where the product serves charts, both compute).
  */
 export type HouseSystem = "whole-sign" | "placidus";
 
@@ -107,9 +109,13 @@ export function houseOf(longitude: number, cusps: number[]): number {
  * opposes 11, 12, 2, 3 — in Placidus, opposite cusps are exactly 180° apart.
  *
  * An ecliptic point can only turn circumpolar above 90° − obliquity ≈ 66.56°, so below
- * the 66° product cutoff every semi-arc exists and the iteration contracts; the guard is
- * kept regardless and throws the way Swiss Ephemeris raises — a wrong cusp would
- * silently change what every reading built on it says.
+ * the 66° product cutoff every semi-arc exists and the iteration contracts. The guard is
+ * kept regardless and refuses rather than approximate — a wrong cusp would silently
+ * change what every reading built on it says. It mirrors the reference's *behaviour*
+ * (raising on non-computable cases), not its exact failure region: that region is
+ * instant-dependent, and review of #122 found polar cases where the reference refuses
+ * while this solver converges. Every chart the product serves is below the 66° cutoff,
+ * where both compute.
  */
 export function placidusCusps(
   ascendantLongitude: number,
@@ -160,11 +166,11 @@ export function placidusCusps(
   };
 
   // Round the four computed cusps and the two fixed angles to the 4 decimals every
-  // recorded longitude carries, then derive the opposites from the rounded values — so
-  // cusp 1 is *exactly* the recorded Ascendant and opposite cusps are *exactly* 180°
-  // apart. A house boundary is the one place a rounding hair can flip a house: the
-  // rounded Ascendant landing a decimal below its own unrounded cusp would read as
-  // house 12.
+  // recorded longitude carries, and round the opposites too — *every* entry in the array
+  // is a recorded longitude, and an un-rounded `normalize(x + 180)` carries floating-
+  // point noise past the 4th decimal that flips the house of a point placed exactly on
+  // the cusp (found in review of #122). Because the primaries are rounded first and 180
+  // is exact, each opposite pair still differs by exactly 180° at the recorded precision.
   const round = (value: number) => Number(normalize(value).toFixed(4));
   const ascendant = round(ascendantLongitude);
   const midheaven = round(midheavenLongitude);
@@ -177,12 +183,12 @@ export function placidusCusps(
     ascendant,                       // 1
     c2,                              // 2
     c3,                              // 3
-    normalize(midheaven + 180),      // 4 — the IC
-    normalize(c11 + 180),            // 5
-    normalize(c12 + 180),            // 6
-    normalize(ascendant + 180),      // 7 — the descendant
-    normalize(c2 + 180),             // 8
-    normalize(c3 + 180),             // 9
+    round(midheaven + 180),          // 4 — the IC
+    round(c11 + 180),                // 5
+    round(c12 + 180),                // 6
+    round(ascendant + 180),          // 7 — the descendant
+    round(c2 + 180),                 // 8
+    round(c3 + 180),                 // 9
     midheaven,                       // 10
     c11,                             // 11
     c12,                             // 12

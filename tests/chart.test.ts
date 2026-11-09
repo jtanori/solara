@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MakeTime, SiderealTime } from "astronomy-engine";
 import { calculateSolarReturn, calculateSolarReturnChart } from "../src/lib/solar";
-import { castChart, chartDigest, elementAndModality, findAspects, findCrossAspects, houseOf, placidusCusps, wholeSignCusps } from "../src/lib/chart";
+import { castChart, chartDigest, elementAndModality, findAspects, findCrossAspects, houseOf, placidusCusps, SUPPORTED_HOUSE_SYSTEMS, wholeSignCusps } from "../src/lib/chart";
 import { longitudeOf, normalize, signOf, trueNodeLongitudeWithFallback } from "../src/lib/astro";
 import type { ChartInput } from "../src/lib/types";
 
@@ -112,6 +112,11 @@ test("Placidus is computed at mid-latitudes, and its cusps obey the system's inv
     const span = normalize(chart.houses[(i + 1) % 12] - chart.houses[i]);
     assert.ok(span > 0 && span < 180, `house ${i + 1} spans ${span}° — cusps out of order`);
   }
+  // Every cusp is recorded at the 4 decimals all recorded longitudes carry — a cusp with
+  // floating-point noise beyond that flips the house of a point placed exactly on it.
+  for (let i = 0; i < 12; i++) {
+    assert.ok(chart.houses[i] === Number(chart.houses[i].toFixed(4)), `cusp ${i + 1} is ${chart.houses[i]} — 4-decimal convention`);
+  }
   // The angles fall in their own houses through the irregular spacing.
   assert.equal(houseOf(chart.angles.ascendant!.longitude, chart.houses), 1);
   assert.equal(houseOf(chart.angles.midheaven.longitude, chart.houses), 10);
@@ -133,10 +138,17 @@ test("Placidus is omitted at polar latitude by the same policy as whole-sign", (
   assert.ok(chart.placidusValidated, "the omission is policy, not a missing implementation");
 });
 
+test("SUPPORTED_HOUSE_SYSTEMS pins the exported contract", () => {
+  // The list is what #107's entitlement wiring will validate against; dropping a system
+  // from it must fail here, not surface as a 404 when the wiring lands.
+  assert.deepEqual(SUPPORTED_HOUSE_SYSTEMS, ["whole-sign", "placidus"]);
+});
+
 test("the Placidus solver refuses circumpolar cusps instead of approximating them", () => {
   // 89° latitude: any ecliptic point more than 1° from the equator is circumpolar, so the
-  // iterated cusps have no semi-arc — the same condition under which Swiss Ephemeris
-  // raises. The guard must fire rather than return a number.
+  // iterated cusps have no semi-arc — a condition that also makes Swiss Ephemeris refuse,
+  // though its exact failure region is instant-dependent and not claimed to coincide
+  // (review of #122). The guard must fire rather than return a number.
   assert.throws(
     () => placidusCusps(10, 0, 0, 89, 23.4393),
     /circumpolar/,
