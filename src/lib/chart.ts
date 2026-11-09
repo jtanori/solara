@@ -14,10 +14,11 @@ import {
 /**
  * Whole-sign only for now. Placidus is *not* stubbed as a silent no-op: `castChart` refuses
  * it with a notice, because a plausible-but-wrong house system would corrupt every paid
- * reading built on it. The whole-sign angles, cusps and the 66° cutoff are pinned against
- * Swiss Ephemeris (#102, `tests/ephemeris.test.ts`); #101 still owes Placidus, the modality
- * half of the element/modality balance, and a correct cross-aspect implementation (#117) —
- * each with the same validation.
+ * reading built on it. The whole-sign angles and cusps are pinned against Swiss Ephemeris
+ * (#102, `tests/ephemeris.test.ts`); the 66° Ascendant cutoff is product policy — the
+ * reference still returns an Ascendant there — regression-tested at its boundary from both
+ * hemispheres. #101 still owes Placidus, the modality half of the element/modality balance,
+ * and a correct cross-aspect implementation (#117) — each with the same validation.
  */
 export type HouseSystem = "whole-sign" | "placidus";
 
@@ -252,10 +253,11 @@ export function castChart(options: CastOptions): ChartFacts {
   // KNOWN DEFECT (#117, surfaced by the #115 review): this runs `findAspects` over
   // *differences* of longitudes (return − natal), which asks "are two differences in aspect
   // to each other?" — not "is this return point in aspect to that natal point?". On the
-  // baseline fixture it reports 2457 cross-aspects where the true pairwise count is 43,
-  // including return Moon → natal Neptune as all five aspect types at once (their real
-  // separation is 139.8°). Nothing consumes these values yet; the rework is tracked in
-  // #117 and must not be built upon.
+  // baseline fixture it reports 2457 cross-aspects versus 40 true pairwise matches under
+  // the configured per-body orbs. Synthetic Moon/natal-Mercury and Moon/natal-Neptune
+  // are reported as a trine, although return Moon and natal Neptune are 139.8135° apart.
+  // Nothing consumes these values yet; the rework is tracked in #117 and must not be
+  // built upon.
   const crossAspects = options.natal
     ? findAspects(
         points.flatMap(p => options.natal!.bodies.map(n => ({ name: `${p.name}/natal-${n.name}`, longitude: p.longitude - n.longitude }))),
