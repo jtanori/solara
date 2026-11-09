@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MakeTime, SiderealTime } from "astronomy-engine";
 import { calculateSolarReturn, calculateSolarReturnChart } from "../src/lib/solar";
-import { castChart, chartDigest, findAspects, houseOf, wholeSignCusps } from "../src/lib/chart";
+import { castChart, chartDigest, elementAndModality, findAspects, findCrossAspects, houseOf, wholeSignCusps } from "../src/lib/chart";
 import { longitudeOf, signOf, trueNodeLongitudeWithFallback } from "../src/lib/astro";
 import type { ChartInput } from "../src/lib/types";
 
@@ -144,7 +144,110 @@ test("cross-aspects link the return chart to the natal chart and are flagged", (
   const { facts } = calculateSolarReturnChart(base);
   assert.ok(facts.crossAspects.length > 0, "there is at least one return-to-natal aspect");
   assert.ok(facts.crossAspects.every(aspect => aspect.cross === true));
-  assert.ok(facts.crossAspects.every(aspect => aspect.a.includes("/natal-")));
+  assert.ok(facts.crossAspects.every(aspect => !aspect.a.includes("natal-")), "the return side is the bare point name");
+  assert.ok(facts.crossAspects.every(aspect => aspect.b.startsWith("natal-")), "the natal side is namespaced");
+});
+
+// ------------------------------------------------------------------ cross-aspects, pairwise (#117)
+
+test("cross-aspects classify the separation of one return point against one natal point", () => {
+  // Known answers: each pair is a single separation against the exact angles, with the
+  // configured per-body orbs (square/trine 7°, +1 when a luminary is involved). Mars and
+  // Venus carry no bonus, so the boundary cases below are unwidened.
+  const ret = [{ name: "Mars", longitude: 10 }];
+  const classify = (natalLongitude: number, natalName = "Venus") =>
+    findCrossAspects(ret, [{ name: natalName, longitude: natalLongitude }]);
+
+  const conj = classify(10.2);        // 0.2° apart
+  assert.equal(conj.length, 1);
+  assert.equal(conj[0].type, "conjunction");
+  assert.ok(Math.abs(conj[0].orb - 0.2) < 1e-9);
+
+  assert.equal(classify(70)[0].type, "sextile");     // exactly 60°
+  assert.equal(classify(100)[0].type, "square");     // exactly 90°
+  assert.equal(classify(130.5)[0].type, "trine");    // 120.5°, orb 0.5
+  assert.equal(classify(190)[0].type, "opposition"); // exactly 180°
+
+  assert.equal(classify(108).length, 0, "98° from a square is outside the 7° orb");
+  assert.equal(classify(137.9).length, 0, "127.9° separation: trine orb 7.9° > 7° without a luminary");
+  const widened = findCrossAspects(
+    [{ name: "Sun", longitude: 10 }],
+    [{ name: "Moon", longitude: 137.9 }],
+  );
+  assert.equal(widened[0]?.type, "trine", "the luminary bonus widens the trine orb");
+
+  // The wrap-around: a natal point "behind" the return point is still 60° away.
+  assert.equal(classify(310)[0].type, "sextile");
+});
+
+test("every cross-aspect is a real pair: at most one aspect per pair, and the separation backs it", () => {
+  const { facts } = calculateSolarReturnChart(base);
+  const seen = new Set<string>();
+  for (const aspect of facts.crossAspects) {
+    const key = `${aspect.a}|${aspect.b}`;
+    assert.ok(!seen.has(key), `pair ${key} reported more than once — a pair has one separation, one aspect`);
+    seen.add(key);
+    const p = facts.bodies.find(b => b.body === aspect.a)?.longitude
+      ?? (aspect.a === "Ascendant" ? facts.angles.ascendant!.longitude
+        : aspect.a === "Midheaven" ? facts.angles.midheaven.longitude
+        : aspect.a === "TrueNode" ? facts.nodes.trueNode.longitude : undefined);
+    const n = facts.natal.bodies.find(b => `natal-${b.body}` === aspect.b)?.longitude;
+    assert.ok(p !== undefined && n !== undefined, `${key} must name a real return point and natal body`);
+    const separation = Math.abs((((p - n) % 360) + 540) % 360 - 180);
+    const exact = { conjunction: 0, sextile: 60, square: 90, trine: 120, opposition: 180 }[aspect.type];
+    assert.ok(Math.abs(aspect.angle - separation) < 1e-3,
+      `${key}: reported angle ${aspect.angle} but the pair is ${separation.toFixed(4)}° apart`);
+    assert.ok(Math.abs(aspect.orb - Math.abs(separation - exact)) < 1e-3,
+      `${key}: reported ${aspect.type} at orb ${aspect.orb}, but the separation says ${Math.abs(separation - exact).toFixed(4)}`);
+    assert.ok(aspect.orb <= 10, `${key}: orb ${aspect.orb} exceeds the widest configured orb`);
+  }
+});
+
+test("the baseline reports 40 cross-aspects — not 2457 differences of differences", () => {
+  // Regression anchor for #117: 13 return points × 10 natal bodies = 130 possible pairs,
+  // of which 40 fall inside the configured orbs on the Swiss-Ephemeris-pinned baseline.
+  // The defective implementation reported 2457. If positions move, the ephemeris suite
+  // fails first; if this number moves on its own, the classification changed.
+  const { facts } = calculateSolarReturnChart(base);
+  assert.equal(facts.crossAspects.length, 40);
+  // The example that proved the defect: return Moon and natal Neptune are 139.8135° apart,
+  // outside every orb — no aspect between them may be reported.
+  assert.ok(
+    !facts.crossAspects.some(a => a.a === "Moon" && a.b === "natal-Neptune"),
+    "return Moon vs natal Neptune is 139.8135° apart — no aspect applies",
+  );
+});
+
+// ------------------------------------------------------------------ balance
+
+test("the balance counts ten bodies plus the Ascendant", () => {
+  const { facts } = calculateSolarReturnChart(base);
+  const total = facts.balance.fire + facts.balance.earth + facts.balance.air + facts.balance.water;
+  assert.equal(total, facts.angles.ascendant ? 11 : 10);
+  const modalities = facts.balance.cardinal + facts.balance.fixed + facts.balance.mutable;
+  assert.equal(modalities, total, "every counted point has exactly one modality");
+});
+
+test("element and modality counts come from the sign cycle", () => {
+  assert.deepEqual(
+    elementAndModality([0, 30, 60, 90]),
+    { fire: 1, earth: 1, air: 1, water: 1, cardinal: 2, fixed: 1, mutable: 1 },
+    "Aries fire/cardinal, Taurus earth/fixed, Gemini air/mutable, Cancer water/cardinal",
+  );
+  assert.deepEqual(
+    elementAndModality([359.9, 0.1]),
+    { fire: 1, earth: 0, air: 0, water: 1, cardinal: 1, fixed: 0, mutable: 1 },
+    "the wrap-around: 359.9° is Pisces (water/mutable), 0.1° is Aries (fire/cardinal)",
+  );
+});
+
+test("at polar latitude the balance counts ten bodies and no Ascendant", () => {
+  const { facts } = calculateSolarReturnChart({
+    ...base,
+    returnPlace: { name: "Tromsø, Norway", latitude: 69.65, longitude: 18.96, timezone: "Europe/Oslo" },
+  });
+  assert.equal(facts.balance.fire + facts.balance.earth + facts.balance.air + facts.balance.water, 10);
+  assert.equal(facts.balance.cardinal + facts.balance.fixed + facts.balance.mutable, 10);
 });
 
 // ------------------------------------------------------------------ digest
@@ -167,10 +270,4 @@ test("casting is deterministic for a fixed instant", () => {
   const a = calculateSolarReturnChart(base).facts;
   const b = calculateSolarReturnChart(base).facts;
   assert.deepEqual(a, b, "the same input must produce byte-identical facts");
-});
-
-test("the balance counts ten bodies plus the Ascendant", () => {
-  const { facts } = calculateSolarReturnChart(base);
-  const total = facts.balance.fire + facts.balance.earth + facts.balance.air + facts.balance.water;
-  assert.equal(total, facts.angles.ascendant ? 11 : 10);
 });
