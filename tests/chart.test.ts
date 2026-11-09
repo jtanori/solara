@@ -138,6 +138,12 @@ test("orb boundaries: inside is detected, outside is not", () => {
   assert.ok(inside.some(a => a.type === "trine"));
   const outside = findAspects([{ name: "Sun", longitude: 0 }, { name: "Mars", longitude: 128.5 }]);
   assert.ok(!outside.some(a => a.type === "trine"), "8.5° is outside the widened trine orb");
+  // Exactly at the limit is still in orb — the boundary is inclusive, on both the
+  // unwidened (Mars/Venus, orb 7.0) and luminary-widened (Sun/Mars, orb 8.0) sides.
+  const unwidenedLimit = findAspects([{ name: "Mars", longitude: 0 }, { name: "Venus", longitude: 127 }]);
+  assert.ok(unwidenedLimit.some(a => a.type === "trine"), "orb 7.0 exactly is inside the unwidened trine orb");
+  const widenedLimit = findAspects([{ name: "Sun", longitude: 0 }, { name: "Mars", longitude: 128 }]);
+  assert.ok(widenedLimit.some(a => a.type === "trine"), "orb 8.0 exactly is inside the luminary-widened orb");
 });
 
 test("cross-aspects link the return chart to the natal chart and are flagged", () => {
@@ -178,6 +184,30 @@ test("cross-aspects classify the separation of one return point against one nata
 
   // The wrap-around: a natal point "behind" the return point is still 60° away.
   assert.equal(classify(310)[0].type, "sextile");
+});
+
+test("cross-aspect orbs are inclusive: a pair exactly at the limit is still in orb", () => {
+  // Mars/Venus carry no luminary bonus, so the square orb is exactly 7°: separation 97°
+  // gives orb 7.0 on the nose. A strict comparison would drop this pair.
+  const ret = [{ name: "Mars", longitude: 10 }];
+  const atLimit = findCrossAspects(ret, [{ name: "Venus", longitude: 107 }]);
+  assert.equal(atLimit.length, 1, "orb 7.0 exactly is inside the square orb");
+  assert.equal(atLimit[0].type, "square");
+  assert.equal(atLimit[0].orb, 7);
+  assert.equal(findCrossAspects(ret, [{ name: "Venus", longitude: 107.1 }]).length, 0,
+    "0.1° past the limit is outside");
+  // With a luminary on one side the limit moves to 7 + 1 = 8: separation 98°, orb 8.0 exactly.
+  const widenedLimit = findCrossAspects(
+    [{ name: "Sun", longitude: 10 }],
+    [{ name: "Mars", longitude: 108 }],
+  );
+  assert.equal(widenedLimit.length, 1, "orb 8.0 exactly (luminary bonus) is inside");
+  assert.equal(widenedLimit[0].type, "square");
+  assert.equal(widenedLimit[0].orb, 8);
+  assert.equal(
+    findCrossAspects([{ name: "Sun", longitude: 10 }], [{ name: "Mars", longitude: 108.1 }]).length,
+    0, "0.1° past the widened limit is outside",
+  );
 });
 
 test("every cross-aspect is a real pair: at most one aspect per pair, and the separation backs it", () => {
@@ -264,6 +294,26 @@ test("the digest stays inside its token budget", () => {
   const { facts } = calculateSolarReturnChart(base);
   const characters = JSON.stringify(chartDigest(facts)).length;
   assert.ok(characters < 8000, `digest is ${characters} chars, budget is 8000 (~2k tokens)`);
+});
+
+test("the digest's cross-aspects are the 24 tightest pairs, in orb order", () => {
+  // The digest slices the (orb-sorted) cross-aspect list to 24 and strips the natal-
+  // namespace. Pin all three properties against an independently sorted copy: the
+  // selection must be the 24 smallest orbs, ascending, with the natal- prefix removed.
+  const { facts } = calculateSolarReturnChart(base);
+  const digest = chartDigest(facts);
+  assert.ok(facts.crossAspects.length > 24,
+    `the baseline must have more than 24 pairs for the slice to do work (has ${facts.crossAspects.length})`);
+  const expected = [...facts.crossAspects]
+    .sort((x, y) => x.orb - y.orb)
+    .slice(0, 24)
+    .map(a => ({ a: a.a, b: a.b.replace(/^natal-/, ""), type: a.type, orb: Number(a.orb.toFixed(1)) }));
+  assert.equal(digest.crossAspects.length, 24, "the digest carries exactly 24 cross-aspects");
+  assert.deepEqual(digest.crossAspects, expected);
+  for (let i = 1; i < digest.crossAspects.length; i++) {
+    assert.ok(digest.crossAspects[i - 1].orb <= digest.crossAspects[i].orb,
+      `digest cross-aspects must be orb-ascending (position ${i}: ${digest.crossAspects[i - 1].orb} > ${digest.crossAspects[i].orb})`);
+  }
 });
 
 test("casting is deterministic for a fixed instant", () => {

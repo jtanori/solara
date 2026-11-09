@@ -17,8 +17,9 @@ import {
  * reading built on it. The whole-sign angles and cusps are pinned against Swiss Ephemeris
  * (#102, `tests/ephemeris.test.ts`); the 66° Ascendant cutoff is product policy — the
  * reference still returns an Ascendant there — regression-tested at its boundary from both
- * hemispheres. Cross-aspects (#117) and the modality balance have landed; **Placidus is the
- * only remaining scope of #101**, and it lands with the same validation.
+ * hemispheres. Cross-aspects (#117) and the modality balance have landed; Placidus is the
+ * only item left on #101's own checklist — design §3's chart ruler and applying/separating
+ * stay open beyond it as epic follow-ups — and it lands with the same validation.
  */
 export type HouseSystem = "whole-sign" | "placidus";
 
