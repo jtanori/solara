@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MakeTime, SiderealTime } from "astronomy-engine";
 import { calculateSolarReturn, calculateSolarReturnChart } from "../src/lib/solar";
-import { castChart, chartDigest, elementAndModality, findAspects, findCrossAspects, houseOf, wholeSignCusps } from "../src/lib/chart";
-import { longitudeOf, signOf, trueNodeLongitudeWithFallback } from "../src/lib/astro";
+import { castChart, chartDigest, elementAndModality, findAspects, findCrossAspects, houseOf, placidusCusps, wholeSignCusps } from "../src/lib/chart";
+import { longitudeOf, normalize, signOf, trueNodeLongitudeWithFallback } from "../src/lib/astro";
 import type { ChartInput } from "../src/lib/types";
 
 const base: ChartInput = {
@@ -92,12 +92,54 @@ test("whole-sign houses: each sign is a house and the Ascendant is the first cus
   assert.equal(houseOf(89.99, cusps), 12);
 });
 
-test("Placidus is refused rather than approximated", () => {
+test("Placidus is computed at mid-latitudes, and its cusps obey the system's invariants", () => {
   const when = new Date("2026-05-16T11:46:50.405Z");
   const ramc = SiderealTime(MakeTime(when)) * 15 - 74.006;
+  const chart = castChart({ at: when, latitude: 40.7, longitude: -74, ramcDegrees: ramc, houseSystem: "placidus" });
+  const angularError = (a: number, b: number) => Math.abs((((a - b) % 360) + 540) % 360 - 180);
+  assert.equal(chart.houseSystem, "placidus");
+  assert.ok(chart.placidusValidated, "the build claims Placidus is validated — the ephemeris suite is that claim's proof");
+  assert.equal(chart.houses.length, 12);
+  // Fixed cusps: 1 is the Ascendant, 10 the Midheaven.
+  assert.ok(angularError(chart.houses[0], chart.angles.ascendant!.longitude) < 1e-6, "cusp 1 = Ascendant");
+  assert.ok(angularError(chart.houses[9], chart.angles.midheaven.longitude) < 1e-6, "cusp 10 = Midheaven");
+  // Opposite cusps are exactly 180° apart — the system's defining symmetry.
+  for (let i = 0; i < 6; i++) {
+    assert.ok(angularError(chart.houses[i] + 180, chart.houses[i + 6]) < 1e-6, `cusp ${i + 1} must oppose cusp ${i + 7} by exactly 180°`);
+  }
+  // The cusps run in cyclic order and no house spans half the zodiac or more.
+  for (let i = 0; i < 12; i++) {
+    const span = normalize(chart.houses[(i + 1) % 12] - chart.houses[i]);
+    assert.ok(span > 0 && span < 180, `house ${i + 1} spans ${span}° — cusps out of order`);
+  }
+  // The angles fall in their own houses through the irregular spacing.
+  assert.equal(houseOf(chart.angles.ascendant!.longitude, chart.houses), 1);
+  assert.equal(houseOf(chart.angles.midheaven.longitude, chart.houses), 10);
+  // And this is really Placidus, not whole-sign with a different label.
+  assert.ok(
+    chart.houses.some(cusp => normalize(cusp) % 30 !== 0),
+    "Placidus cusps are not sign boundaries — a whole-sign fallback must not pass silently",
+  );
+});
+
+test("Placidus is omitted at polar latitude by the same policy as whole-sign", () => {
+  const when = new Date("1975-06-20T03:45:00.000Z");
+  const ramc = SiderealTime(MakeTime(when)) * 15 + 18.96;
+  const chart = castChart({ at: when, latitude: 69.65, longitude: 18.96, ramcDegrees: ramc, houseSystem: "placidus" });
+  assert.equal(chart.angles.ascendant, null, "no Ascendant at |latitude| >= 66° — policy, for either system");
+  assert.deepEqual(chart.houses, [], "no houses without an Ascendant");
+  assert.ok(chart.bodies.every(body => body.house === null), "no body may claim a house");
+  assert.ok(chart.warnings.some(warning => warning.includes("high latitude")), "the omission must be explained, not silent");
+  assert.ok(chart.placidusValidated, "the omission is policy, not a missing implementation");
+});
+
+test("the Placidus solver refuses circumpolar cusps instead of approximating them", () => {
+  // 89° latitude: any ecliptic point more than 1° from the equator is circumpolar, so the
+  // iterated cusps have no semi-arc — the same condition under which Swiss Ephemeris
+  // raises. The guard must fire rather than return a number.
   assert.throws(
-    () => castChart({ at: when, latitude: 40.7, longitude: -74, ramcDegrees: ramc, houseSystem: "placidus" }),
-    /not implemented/,
+    () => placidusCusps(10, 0, 0, 89, 23.4393),
+    /circumpolar/,
   );
 });
 

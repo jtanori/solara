@@ -12,18 +12,18 @@ import {
  */
 
 /**
- * Whole-sign only for now. Placidus is *not* stubbed as a silent no-op: `castChart` refuses
- * it with a notice, because a plausible-but-wrong house system would corrupt every paid
- * reading built on it. The whole-sign angles and cusps are pinned against Swiss Ephemeris
- * (#102, `tests/ephemeris.test.ts`); the 66° Ascendant cutoff is product policy — the
- * reference still returns an Ascendant there — regression-tested at its boundary from both
- * hemispheres. Cross-aspects (#117) and the modality balance have landed; Placidus is the
- * only item left on #101's own checklist — design §3's chart ruler and applying/separating
- * stay open beyond it as epic follow-ups — and it lands with the same validation.
+ * Both systems are implemented and pinned against Swiss Ephemeris (#102,
+ * `tests/ephemeris.test.ts`): whole-sign cusps exactly as the reference draws them,
+ * Placidus cusps within 0.05° on every non-polar fixture. Which system a reading uses is
+ * an entitlement decision (#107, decision 2: paid means not computed) — the engine
+ * computes either on request and defaults to whole-sign. The 66° Ascendant cutoff is
+ * product policy and applies to both — the reference still returns an Ascendant there —
+ * regression-tested at its boundary from both hemispheres; and a cusp that would turn
+ * circumpolar is refused exactly where Swiss Ephemeris refuses it, never approximated.
  */
 export type HouseSystem = "whole-sign" | "placidus";
 
-export const SUPPORTED_HOUSE_SYSTEMS: HouseSystem[] = ["whole-sign"];
+export const SUPPORTED_HOUSE_SYSTEMS: HouseSystem[] = ["whole-sign", "placidus"];
 
 export type Placement = {
   sign: string;
@@ -60,8 +60,8 @@ export type ChartFacts = {
   chartVersion: "chart/2";
   at: string;                 // ISO instant the chart is cast for
   houseSystem: HouseSystem;
-  /** False until Placidus is implemented in #101 and its cusps pass the Swiss Ephemeris fixtures. */
-  placidusValidated: false;
+  /** True since the Placidus cusps pass the Swiss Ephemeris fixtures (tests/ephemeris.test.ts, 0.05°). */
+  placidusValidated: true;
   notice: string | null;
   bodies: BodyPlacement[];
   angles: { ascendant: AnglePlacement | null; midheaven: AnglePlacement };
@@ -94,6 +94,99 @@ export function houseOf(longitude: number, cusps: number[]): number {
     if (offset < span || span === 0) return i + 1;
   }
   return 1;
+}
+
+/**
+ * Placidus house cusps 1–12. The system's definition is the trisection of each cusp
+ * point's own semi-arc, which is what makes it iterative: the point's declination sets
+ * its semi-arc, the semi-arc sets the right ascension the cusp must sit at, and that
+ * right ascension maps back to a new ecliptic longitude. Cusps 11 and 12 trisect the
+ * diurnal semi-arc between the Midheaven and the Ascendant; cusps 2 and 3 the nocturnal
+ * semi-arc between the Ascendant and the IC. The other eight are fixed by construction:
+ * 1 = the Ascendant, 10 = the Midheaven, 4 and 7 their opposites, and each of 5, 6, 8, 9
+ * opposes 11, 12, 2, 3 — in Placidus, opposite cusps are exactly 180° apart.
+ *
+ * An ecliptic point can only turn circumpolar above 90° − obliquity ≈ 66.56°, so below
+ * the 66° product cutoff every semi-arc exists and the iteration contracts; the guard is
+ * kept regardless and throws the way Swiss Ephemeris raises — a wrong cusp would
+ * silently change what every reading built on it says.
+ */
+export function placidusCusps(
+  ascendantLongitude: number,
+  midheavenLongitude: number,
+  ramcDegrees: number,
+  latitude: number,
+  obliquityDegrees: number,
+): number[] {
+  const theta = normalize(ramcDegrees);
+  const eps = obliquityDegrees * DEG;
+  const tanPhi = Math.tan(latitude * DEG);
+
+  // Right ascension and declination of the ecliptic point at `longitude`, and the
+  // inverse map (tan α = cos ε · tan λ, same quadrant).
+  const raOf = (longitude: number) =>
+    normalize(Math.atan2(Math.sin(longitude * DEG) * Math.cos(eps), Math.cos(longitude * DEG)) / DEG);
+  const declinationOf = (longitude: number) =>
+    Math.asin(Math.sin(eps) * Math.sin(longitude * DEG)) / DEG;
+  const longitudeAtRa = (ra: number) =>
+    normalize(Math.atan2(Math.sin(ra * DEG), Math.cos(ra * DEG) * Math.cos(eps)) / DEG);
+
+  // One cusp: `fraction` of the point's own semi-arc — diurnal for 11 and 12
+  // (α = θ + f·SDA; the Ascendant itself is the f = 1 case), nocturnal for 2 and 3
+  // (α = θ + SDA + f·SNA; the IC is the f = 1 case).
+  const cusp = (fraction: number, nocturnal: boolean, guessOffset: number): number => {
+    let longitude = longitudeAtRa(theta + guessOffset);
+    for (let step = 0; step < 100; step++) {
+      const declination = declinationOf(longitude);
+      if (Math.abs(tanPhi * Math.tan(declination * DEG)) >= 1) {
+        throw new Error(
+          `Placidus cusps are not computable at latitude ${latitude}°: the iterated point is ` +
+          "circumpolar and its semi-arc does not exist — Swiss Ephemeris refuses here too. " +
+          "Refusing rather than approximating.",
+        );
+      }
+      const semiDiurnalArc = Math.acos(-tanPhi * Math.tan(declination * DEG)) / DEG;
+      const ra = nocturnal
+        ? theta + semiDiurnalArc + fraction * (180 - semiDiurnalArc)
+        : theta + fraction * semiDiurnalArc;
+      const next = longitudeAtRa(ra);
+      const drift = normalize(next - longitude);
+      if (Math.min(drift, 360 - drift) < 1e-9) return next;
+      longitude = next;
+    }
+    throw new Error(
+      `Placidus iteration did not converge at latitude ${latitude}° — refusing rather than approximating.`,
+    );
+  };
+
+  // Round the four computed cusps and the two fixed angles to the 4 decimals every
+  // recorded longitude carries, then derive the opposites from the rounded values — so
+  // cusp 1 is *exactly* the recorded Ascendant and opposite cusps are *exactly* 180°
+  // apart. A house boundary is the one place a rounding hair can flip a house: the
+  // rounded Ascendant landing a decimal below its own unrounded cusp would read as
+  // house 12.
+  const round = (value: number) => Number(normalize(value).toFixed(4));
+  const ascendant = round(ascendantLongitude);
+  const midheaven = round(midheavenLongitude);
+  const c11 = round(cusp(1 / 3, false, 30));
+  const c12 = round(cusp(2 / 3, false, 60));
+  const c2 = round(cusp(1 / 3, true, 120));
+  const c3 = round(cusp(2 / 3, true, 150));
+
+  return [
+    ascendant,                       // 1
+    c2,                              // 2
+    c3,                              // 3
+    normalize(midheaven + 180),      // 4 — the IC
+    normalize(c11 + 180),            // 5
+    normalize(c12 + 180),            // 6
+    normalize(ascendant + 180),      // 7 — the descendant
+    normalize(c2 + 180),             // 8
+    normalize(c3 + 180),             // 9
+    midheaven,                       // 10
+    c11,                             // 11
+    c12,                             // 12
+  ];
 }
 
 // ------------------------------------------------------------------ angles
@@ -264,16 +357,9 @@ export function castChart(options: CastOptions): ChartFacts {
       ) / DEG,
     );
 
-    if (houseSystem === "placidus") {
-      // Refuse rather than approximate: see the note on HouseSystem.
-      throw new Error(
-        "Placidus is not implemented yet (#101) — it must not be approximated, because a wrong " +
-        "house system silently changes what every reading says. Whole-sign and both angles are " +
-        "validated against Swiss Ephemeris (#102); use whole-sign until Placidus lands with the " +
-        "same validation.",
-      );
-    }
-    cusps = wholeSignCusps(ascendantLongitude);
+    cusps = houseSystem === "placidus"
+      ? placidusCusps(ascendantLongitude, mcLongitude, ramcDegrees, latitude, eps)
+      : wholeSignCusps(ascendantLongitude);
   } else {
     warnings.push("The Ascendant and houses are omitted at high latitudes.");
   }
@@ -325,7 +411,7 @@ export function castChart(options: CastOptions): ChartFacts {
     chartVersion: "chart/2",
     at: at.toISOString(),
     houseSystem,
-    placidusValidated: false,
+    placidusValidated: true,
     notice,
     bodies,
     angles,
