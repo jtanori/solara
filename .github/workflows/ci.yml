@@ -27,6 +27,9 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+      APP_URL: http://localhost:3000
+      MAIL_TRANSPORT: outbox
+      CSP_MODE: report-only
       NEXT_TELEMETRY_DISABLED: 1
     steps:
       - uses: actions/checkout@v4
@@ -40,12 +43,13 @@ jobs:
       - run: npx next typegen
       - run: npm exec tsc -- --noEmit --pretty false
       - run: npx eslint src tests scripts --max-warnings=0
-      - run: RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
+      - run: RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run build
       # Smoke-check internal-document gating: blueprint/setup/usage-guide must be 404 outside development
       - env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+          APP_URL: http://localhost:3000
         run: |
           PORT=3000 npx next start &
           PID=$!
@@ -54,6 +58,17 @@ jobs:
             sleep 2
           done
           curl -s http://localhost:3000/api/health | grep -q '"ok":true' || { echo "Health check did not become ready"; kill $PID; exit 1; }
+          # Security headers and proxy origin guard (#56, #57)
+          HEADERS="$(curl -sSI http://localhost:3000/)"
+          echo "$HEADERS" | grep -qi '^x-content-type-options: nosniff'
+          echo "$HEADERS" | grep -qi '^x-frame-options: DENY'
+          echo "$HEADERS" | grep -qi '^referrer-policy: strict-origin-when-cross-origin'
+          echo "$HEADERS" | grep -qi '^permissions-policy: camera=(), microphone=(), geolocation=()'
+          echo "$HEADERS" | grep -qi '^content-security-policy-report-only:'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/api/auth -H 'Content-Type: application/json' -d '{}')" = "403"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH http://localhost:3000/api/profile -H 'Content-Type: application/json' -d '{}')" = "403"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/api/readings -H 'Content-Type: application/json' -d '{}')" = "403"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/api/auth -H 'Content-Type: application/json' -H 'Origin: http://localhost:3000' -H 'Sec-Fetch-Site: same-origin' -d '{}')" = "400"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/blueprint)" = "404"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/setup)" = "404"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/usage-guide)" = "404"

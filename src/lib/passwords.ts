@@ -2,20 +2,37 @@
 // Next.js `import "server-only"` would enforce this at build, but it breaks plain `tsx --test`
 // imports, so we document the invariant here and rely on the build-time check.
 // See P3 in PR #17 review.
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
 
-export function hashPassword(password: string): string {
+const scryptAsync = promisify(scrypt) as (
+  password: string,
+  salt: string,
+  keylen: number,
+) => Promise<Buffer>;
+
+export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
-  return `${salt}:${scryptSync(password, salt, 64).toString("hex")}`;
+  try {
+    const hash = await scryptAsync(password, salt, 64);
+    return `${salt}:${hash.toString("hex")}`;
+  } catch {
+    throw new Error("Password hashing failed.");
+  }
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [salt, hash] = stored.split(":");
   if (!salt || !hash) return false;
   // Explicit hex/length checks so failure is intentional, not an accident of Buffer truncation.
   if (!/^[0-9a-f]{32}$/.test(salt)) return false;
   if (!/^[0-9a-f]{128}$/.test(hash)) return false;
   const expected = Buffer.from(hash, "hex");
-  const actual = scryptSync(password, salt, 64);
+  let actual: Buffer;
+  try {
+    actual = await scryptAsync(password, salt, 64);
+  } catch {
+    return false;
+  }
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }

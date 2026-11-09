@@ -17,9 +17,10 @@ Closes #<!-- issue number --> — <!-- title -->
 - [ ] `npx next typegen`
 - [ ] `npm exec tsc -- --noEmit --pretty false`
 - [ ] `npx eslint src tests --max-warnings=0`
-- [ ] `npx tsx --test tests/*.test.ts` (or `RUN_BILLING_INTEGRATION_TESTS=1` when touching billing)
+- [ ] `RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`
 - [ ] `npm run build` succeeds
 - [ ] Smoke checks (CI `verify` job): `GET /blueprint` → 404, `GET /setup` → 404, `GET /usage-guide` → 404 outside development, and no internal-doc content leaked (`EL PROYECTO DE SOLARA` absent). For internal-doc link gating also verify homepage/dashboard/footer contain no `/blueprint`, `/setup`, `/usage-guide` links outside development.
+- [ ] Security smoke: HTML carries `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, and the CSP header; mutating `/api/*` without `Origin`/`Sec-Fetch-Site` → 403; same-origin request passes.
 - Paste local command output or CI run link:
 
 ## Test plan

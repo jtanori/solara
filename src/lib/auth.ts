@@ -28,7 +28,7 @@ export async function hasPremiumAccess(userId: string) {
 export async function currentUser() {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!token) return null;
-  const [user] = await db.select({ id: users.id, name: users.name, email: users.email, role: users.role, stripeCustomerId: users.stripeCustomerId })
+  const [user] = await db.select({ id: users.id, name: users.name, email: users.email, role: users.role, stripeCustomerId: users.stripeCustomerId, emailVerifiedAt: users.emailVerifiedAt })
     .from(sessions).innerJoin(users, eq(users.id, sessions.userId))
     .where(and(eq(sessions.tokenHash, hashToken(token)), gt(sessions.expiresAt, new Date()))).limit(1);
   if (!user) return null;
@@ -36,8 +36,3 @@ export async function currentUser() {
 }
 export function canManageUsers(role: Role) { return role === "owner" || role === "admin"; }
 export function canEditKnowledge(role: Role) { return role === "owner" || role === "editor"; }
-export function sameOrigin(request: Request) {
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
-  try { const host = request.headers.get("host"); return !!host && new URL(origin).host === host; } catch { return false; }
-}

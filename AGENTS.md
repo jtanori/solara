@@ -11,19 +11,22 @@
 ```
 solara/
 ├── src/
-│   ├── app/                    # Next.js App Router (/, /blueprint, /setup, /usage-guide, /api/*)
-│   ├── components/             # UI, site-header/footer, usage-guide.tsx
-│   ├── lib/                    # passwords.ts, usage-guide-access*.ts, billing.ts, development.ts
+│   ├── app/                    # Next.js App Router (/, /blueprint, /setup, /usage-guide, /verify-email, /api/*)
+│   ├── components/             # UI, site-header/footer, usage-guide.tsx, verify-email-*
+│   ├── lib/                    # passwords, rate-limit, mail, email-verification, request-security, security-headers, billing
+│   ├── proxy.ts                # central origin guard + CSP nonce
 │   └── db/                     # Drizzle schema, pg client
 ├── drizzle/                    # versioned migrations + meta (never push to prod)
 ├── tests/                      # tsx --test suites (usage-guide-access, passwords, billing, geocoding, solar)
 ├── scripts/
 │   ├── check-setup.mjs         # secret-safe format check: node scripts/check-setup.mjs [local|staging|production] [--strict]
+│   ├── report-rate-limits.ts   # hashed rate-limit state for operators (npm run rate-limits:report)
+│   ├── cleanup-rate-limits.ts  # delete expired rate-limit rows (npm run rate-limits:cleanup)
 │   ├── local/seed-users.ts     # local-only guarded seed: 9 accounts + subscriptions (ALLOW_LOCAL_SEED)
 │   └── verify-gating-production.ts # prod-mode gating verifier: 404 + role scoping + payload leak checks
 ├── docs/
-│   ├── decisions.md            # ADRs 001-005 (branching, backlog, validation, reviews, prototype gate)
-│   └── setup/                  # 01-foundation, 02-stripe, 03-maps, 04-pdf, 05-i18n, 06-astro + 00-manual-setup-ui.md
+│   ├── decisions.md            # ADRs 001-007 (006 reserved for #72 identity decision; 007 auth hardening)
+│   └── setup/                  # 01-foundation, 02-stripe, 03-maps, 04-pdf, 05-i18n, 06-astro, 07-validation, 08-auth-security
 ├── BACKLOG.md                  # offline index — last updated staging@9a57fab / main@03467bd (PR #47 sync)
 ├── .github/
 │   ├── workflows/ci.yml        # verify job: migrate → typegen → tsc → eslint → tests → audit → build → smoke
@@ -31,7 +34,7 @@ solara/
 │   └── pull_request_template.md
 ├── .env.example                # never commit real secrets (.gitignore: .env, .env.*)
 ├── .env.staging.example / .env.production.example # templates for Vercel Preview/Production
-└── package.json                # scripts: dev, build, start, lint, typecheck, test, db:seed:local
+└── package.json                # scripts: dev, build, start, lint, typecheck, test, db:seed:local, rate-limits:report/cleanup
 ```
 
 **Where to look first:**
@@ -64,8 +67,12 @@ node scripts/check-setup.mjs local
 npx next typegen
 npm run typecheck                # tsc --noEmit
 npm run lint                     # eslint src tests scripts --max-warnings=0
-RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
+RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
 npm run build                    # next build — run before any PR
+# Local email defaults to MAIL_TRANSPORT=outbox and writes .mail-outbox/*.eml.
+# Rate-limit state is hashed; inspect or prune it with:
+npm run rate-limits:report
+npm run rate-limits:cleanup
 
 # 5. Local seed (never in staging/prod, never set these in Vercel)
 ALLOW_LOCAL_SEED=true LOCAL_SEED_PASSWORD='a-strong-local-password-12+' \
@@ -79,7 +86,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
   npx tsx scripts/verify-gating-production.ts  # unauth 404s, role-scoped single guide, ?role= ignored, no payload leak
 ```
 
-**Never:** `drizzle-kit push` on staging/prod, commit real `DATABASE_URL`/`STRIPE_*`, set `ALLOW_LOCAL_SEED*` in Vercel, or reuse prod secrets locally.
+**Never:** `drizzle-kit push` on staging/prod, commit real `DATABASE_URL`/`STRIPE_*`/mail keys, set `ALLOW_LOCAL_SEED*` in Vercel, use `MAIL_TRANSPORT=outbox` outside local development, or reuse prod secrets locally.
 
 ---
 
@@ -92,6 +99,10 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
   UPDATE users SET role='owner' WHERE email=lower(:'owner_email') RETURNING id,email,role;
   ```
   No bootstrap endpoint. All `hasPremiumAccess` checks are server-side via `src/lib/billing.ts` (active/trialing = true, past_due/expired/canceled = false).
+- **Auth throttling:** `/api/auth` uses Postgres-backed per-IP and per-email limits plus exponential backoff for failed logins (`src/lib/rate-limit.ts`). Returns `429` + `Retry-After`; never reveal whether an email exists. Password hashing is async scrypt. Rate-limit keys are SHA-256 hashes; logs must never contain emails, IPs, or passwords.
+- **Email verification:** tokens are SHA-256 hashed at rest, single-use, 24h TTL, with a resend cooldown (`src/lib/email-verification.ts`). Local mail uses `MAIL_TRANSPORT=outbox` and `.mail-outbox/`; staging/production require Resend or Postmark. Never log a token. Sign-in stays available, but checkout and account deletion require `email_verified_at`.
+- **Mutating routes:** `src/proxy.ts` centrally rejects cookie-authenticated `POST/PUT/PATCH/DELETE` under `/api/*` unless `Origin` matches `APP_URL`/`Host` or `Sec-Fetch-Site: same-origin`. Exemptions: Stripe webhook (signature), CSP reports, and `Authorization: Bearer` clients. New mutating routes inherit this automatically; do not add per-route duplicates.
+- **Security headers/CSP:** `src/lib/security-headers.ts` owns HSTS, frame/referrer/permissions/nosniff headers, authenticated `Cache-Control: private, no-store`, and the nonce CSP allowlist. `CSP_MODE=report-only` until a clean observation window, then `enforce`. Extend the allowlist in code and document it in `docs/setup/08-auth-security-hardening.md`.
 - **Seed guard:** `scripts/local/seed-users.ts` and `scripts/verify-gating-production.ts` refuse non-loopback `DATABASE_URL` and `CI/VERCEL/VERCEL_ENV` unless `ALLOW_LOCAL_SEED_IN_CI=true` (CI disposable `127.0.0.1`).
 - **Internal documents:** `/blueprint` and `/setup` → `404` outside `NODE_ENV=development` (guarded by `src/lib/development.ts`). `/usage-guide` outside dev: unauth → `404`; signed-in sees only their role's single guide (`free`/`premium`/`editor`/`admin`/`owner`), `?role=` ignored, header/footer/dashboard links hidden (see `src/app/usage-guide/page.tsx`, `src/lib/usage-guide-access-core.ts`).
 - **Customer data:** Never use real data, live Stripe keys, or prod DBs in previews/local. Managed prod DB requires TLS, backups, PITR, least-privilege creds (see ADR 005).

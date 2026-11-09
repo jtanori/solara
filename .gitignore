@@ -8,4 +8,5 @@ node_modules/
 !.env.production.example
 *.tsbuildinfo
 coverage/
+.mail-outbox/
 .DS_Store

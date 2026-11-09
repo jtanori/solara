@@ -8,6 +8,8 @@ These guides cover the current application in three separate environments. The c
 4. [Editorial PDF downloads](04-pdf.md)
 5. [English and Spanish](05-i18n.md)
 6. [Solar-return calculation and house systems](06-astrology-and-houses.md)
+7. [Platform validation checklist](07-platform-validation.md)
+8. [Auth and security hardening](08-auth-security-hardening.md)
 7. [Platform validation checklist — pre-launch gate](07-platform-validation.md) *(owners + evidence)*
 
 ## Recommended environment separation
@@ -27,9 +29,10 @@ A single Vercel project with branch-specific Preview variables is the recommenda
 - Node.js 22, npm, Git and PostgreSQL 16 or later. Install the Stripe CLI for local billing tests.
 - Copy `.env.example` to `.env` **only if `.env` does not already exist**. Fill in values locally; never commit real keys. `.gitignore` protects new environment files, but it does not remove secrets already tracked by Git—remove and rotate any previously exposed secret.
 - `DATABASE_URL` is required by the app and Drizzle. `APP_URL` should be the canonical origin. Stripe values are needed only to activate billing. Optional map and commercial geocoding settings are documented in the map guide.
+- Local email defaults to `MAIL_TRANSPORT=outbox` and writes `.mail-outbox/*.eml`; staging/production require a Resend or Postmark provider. Security headers and CSP rollout are documented in [08-auth-security-hardening](08-auth-security-hardening.md).
 - Next.js loads its normal environment files; `drizzle.config.ts` and `scripts/check-setup.mjs` load `.env` via dotenv and also honor already-exported variables. Do not assume `.env.local` is loaded by those two commands; export the intended variables in a secure shell or runner.
 - Run `node scripts/check-setup.mjs local` for a format-only check that never prints values. Use `staging --strict` or `production --strict` in a secure environment after configuration. This does **not** verify credentials, licensing, webhook delivery, data isolation, or readiness for launch.
 
 ## Important launch gate
 
-The app is a prototype, not yet ready for real customer data or live billing. Before production, complete independent astronomical and historical-time-zone validation; email verification and recovery; staff MFA; rate limiting and a full CSRF strategy; privacy/consent, export and retention processes; editorial review and report versioning; tested backups, monitoring and incident response; tax, refund and cancellation policies; provider terms and a security review. Do not treat a successful build or configuration check as launch approval.
+The app is a prototype, not yet ready for real customer data or live billing. Before production, complete independent astronomical and historical-time-zone validation; password recovery; staff MFA; CSP enforcement after the observation window; privacy/consent, export and retention processes; editorial review and report versioning; tested backups, monitoring and incident response; tax, refund and cancellation policies; provider terms and a security review. Do not treat a successful build or configuration check as launch approval.

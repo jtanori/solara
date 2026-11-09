@@ -4,7 +4,7 @@
 
 *Milestone routing corrected 2026-11-08 (#62→M3, #63/#94/#69→M1; audit severity decides).*
 
-*Last updated: 2026-11-08 from `staging` at `4490ced` — #52 incident filed, then 40 follow-up issues (#53–#94) incl. the deep-audit set (#81–#94) planned from `docs/audit-database-integration.md` and `docs/plan-neon-auth-migration.md`.*
+*Last updated: 2026-11-08 from `staging` at `c938569` — auth/security hardening in progress on `feat/53-54-56-57-auth-security-hardening` (#53, #54, #56, #57).*
 
 ## Open
 
@@ -14,11 +14,11 @@
 | [#52](https://github.com/jtanori/solara/issues/52) | fix(db): apply migrations to hosted databases and gate deploys on schema verification | `type:bug` `area:db` `area:infra` `area:auth` `priority:p0` `status:ready` | ready — production auth returns `42P01 relation "users" does not exist`; `migrate.yml` has never run and `/api/health` only does `select 1`; triage staging + prod, migrate, then make health a schema gate |
 | [#79](https://github.com/jtanori/solara/issues/79) | tracking: state-of-the-art migration + deployment pipeline and auth hardening (launch gate) | `type:chore` `area:infra` `priority:p1` `status:ready` | ready — **canonical epic**: children #52, #53–#72, #74–#78 |
 | [#73](https://github.com/jtanori/solara/issues/73) | tracking: database operations and auth hardening epic (superseded by #79) | `status:ready` | superseded — first-pass epic; use #79 |
-| [#53](https://github.com/jtanori/solara/issues/53) | auth: rate-limit sign-up/sign-in and make password hashing non-blocking | `type:security` `area:auth` `priority:p0` `status:ready` | ready — **launch blocker**; no limiter today, `scryptSync` blocks the event loop |
-| [#54](https://github.com/jtanori/solara/issues/54) | auth: add email transport and email verification | `type:feature` `area:auth` `priority:p0` `status:ready` | ready — **launch blocker**; no mail transport exists at all |
-| [#55](https://github.com/jtanori/solara/issues/55) | auth: add password reset flow | `type:feature` `area:auth` `priority:p0` `status:blocked` | blocked on #54 (transport + token table); **launch blocker** |
-| [#56](https://github.com/jtanori/solara/issues/56) | security: enforce strict same-origin/CSRF checks on mutating routes | `type:security` `area:auth` `priority:p1` `status:ready` | ready — `sameOrigin()` returns true when `Origin` is absent; **launch blocker** |
-| [#57](https://github.com/jtanori/solara/issues/57) | security: add security headers and a Content-Security-Policy | `type:security` `area:ui` `priority:p1` `status:ready` | ready — zero security headers today; **launch blocker** |
+| [#53](https://github.com/jtanori/solara/issues/53) | auth: rate-limit sign-up/sign-in and make password hashing non-blocking | `type:security` `area:auth` `priority:p0` `status:ready` | in progress — Postgres limiter + async scrypt on `feat/53-54-56-57-auth-security-hardening`; staging verification pending |
+| [#54](https://github.com/jtanori/solara/issues/54) | auth: add email transport and email verification | `type:feature` `area:auth` `priority:p0` `status:ready` | in progress — mail seam, hashed tokens, soft gating on `feat/53-54-56-57-auth-security-hardening`; staging delivery pending |
+| [#55](https://github.com/jtanori/solara/issues/55) | auth: add password reset flow | `type:feature` `area:auth` `priority:p0` `status:blocked` | unblocked by #54 transport/token work; still needs reset endpoints |
+| [#56](https://github.com/jtanori/solara/issues/56) | security: enforce strict same-origin/CSRF checks on mutating routes | `type:security` `area:auth` `priority:p1` `status:ready` | in progress — central `src/proxy.ts` origin guard on `feat/53-54-56-57-auth-security-hardening` |
+| [#57](https://github.com/jtanori/solara/issues/57) | security: add security headers and a Content-Security-Policy | `type:security` `area:ui` `priority:p1` `status:ready` | in progress — headers + report-only CSP on `feat/53-54-56-57-auth-security-hardening`; enforce after observation |
 | [#58](https://github.com/jtanori/solara/issues/58) | auth: add TOTP MFA for owner and admin accounts | `type:security` `area:auth` `priority:p1` `status:ready` | ready — staff MFA pre-launch requirement |
 | [#59](https://github.com/jtanori/solara/issues/59) | db: separate application and migration roles (least privilege) | `type:security` `area:db` `priority:p1` `status:blocked` | blocked on #52; runtime role can currently DDL |
 | [#60](https://github.com/jtanori/solara/issues/60) | db: explicit pool configuration and TLS verification | `type:bug` `area:db` `priority:p1` `status:ready` | ready — no `max`/timeouts/`pool.on("error")`; `sslmode=require` semantics change in pg 9 |

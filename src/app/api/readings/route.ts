@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { readings } from "@/db/schema";
-import { currentUser, sameOrigin } from "@/lib/auth";
+import { currentUser } from "@/lib/auth";
 import { calculateSolarReturn } from "@/lib/solar";
 import type { ChartInput, ChartResult } from "@/lib/types";
 
 export async function POST(request: Request) {
-  if (!sameOrigin(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
   const user = await currentUser();
   if (!user) return NextResponse.json({ error: "Please sign in to save your chart." }, { status: 401 });
   let raw: ChartInput;

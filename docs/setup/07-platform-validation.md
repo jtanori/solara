@@ -55,11 +55,11 @@ Move an item to `pass` only when its evidence is committed or linked and a revie
 
 | # | Item | Owner | Evidence | Status |
 |---|---:|---|---|---|
-| 5.1 | Email verification on signup (prevent stale/typo owners) | @eng | Issue + implementation PR | todo |
+| 5.1 | Email verification on signup (prevent stale/typo owners) | @eng | `src/lib/email-verification.ts`, `tests/email-verification.test.ts`, `/verify-email`, PR pending | in-progress |
 | 5.2 | Password recovery flow | @eng | Issue + PR | todo |
 | 5.3 | Staff MFA for `admin`/`owner` (and rate-limited owner promotion) | @eng | `src/lib/billing.ts` + Neon RLS + docs | todo |
-| 5.4 | Rate limiting on `/api/auth` and `/api/billing/*` | @eng | Middleware + `tests/rate-limit.test.ts` | todo |
-| 5.5 | Full CSRF strategy for cookie-authenticated POSTs (not just Next.js defaults) | @eng | Design doc + test | todo |
+| 5.4 | Rate limiting on `/api/auth` and `/api/billing/*` | @eng | `src/lib/rate-limit.ts`, `tests/rate-limit.test.ts`, `npm run rate-limits:report`; auth endpoints covered, billing follow-up | in-progress |
+| 5.5 | Full CSRF strategy for cookie-authenticated POSTs (not just Next.js defaults) | @eng | `src/proxy.ts`, `src/lib/request-security.ts`, `tests/request-security.test.ts` | in-progress |
 | 5.6 | Data retention / export / deletion (GDPR-style) + privacy notice | @content/@eng | `docs/setup/README.md` + legal page | todo |
 | 5.7 | Secrets hygiene: no `DATABASE_URL` in logs, Vercel env separation verified (`check-setup.mjs --strict` + `check-remote-setup.mjs`) | @infra | `scripts/check-remote-setup.mjs` output | pass (tooling) |
 | 5.8 | Dependency / vulnerability alerts: Dependabot PRs + GitHub Alerts enabled, first run verified | @infra | `settings → Code security` screenshots + PRs #24-35 | in-progress |
@@ -69,6 +69,7 @@ Move an item to `pass` only when its evidence is committed or linked and a revie
 ## Current evidence summary (2026-11-07)
 
 - **Pass (tooling only):** 2.1 regression, 5.7 secrets hygiene — CI `verify` includes `next typegen`, `tsc`, `eslint`, `tests`, `audit`, `build` + smoke 404s for internal-doc gating.
+- **In-progress:** 5.1 email verification, 5.4 auth rate limiting, 5.5 strict origin/CSRF — implemented on `feat/53-54-56-57-auth-security-hardening` with unit/integration tests and staging verification pending. Billing rate limiting remains a follow-up under 5.4.
 - **In-progress:** 5.8 — ` .github/dependabot.yml` (npm + github-actions, `target-branch: staging`, weekly Mon 09:00 America/Hermosillo, limits 10/5) landed in #20; 12 Dependabot PRs #24-35 are open on `staging` = first run succeeded. Repo toggle `Dependabot alerts` + `Dependabot security updates` must be enabled in `Settings → Code security` (requires owner UI click — cannot be done via `GITHUB_TOKEN`); verify with `gh api repos/jtanori/solara/dependabot/alerts` → 200 when enabled.
 - **Todo:** owner assignment for every `todo` above — set in the next refinement of #16.
 

@@ -110,4 +110,31 @@ Launch limitations are listed in `README.md` and `docs/setup/README.md`: calcula
 
 ---
 
+> **ADR 006 is reserved** for #72 (identity, credential ownership and the Neon Auth decision).
+
+## ADR 007 — Auth and transport hardening for launch
+
+**Date:** 2026-11-08
+**Status:** Accepted
+**Issues:** #53, #54, #56, #57
+
+### Context
+The prototype had unlimited auth attempts, synchronous scrypt, no email channel, a same-origin check that accepted a missing `Origin`, and no security headers or CSP. These are launch blockers under the ADR 003 platform-validation gate.
+
+### Decision
+- Password hashing uses async `scrypt` so auth bursts cannot block the event loop.
+- `/api/auth`, verification resends, and verification attempts are rate-limited in Postgres per IP and per email, with an IP+email failure backoff. Responses use `429` + `Retry-After` and do not reveal whether an email exists.
+- Email delivery is a provider seam (`src/lib/mail.ts`): Resend and Postmark in hosted environments, a local outbox in development, and a hard failure when production has no provider.
+- Email verification uses hashed, single-use, 24-hour tokens. Sign-in stays available, but checkout and account deletion require `email_verified_at`. Existing accounts are backfilled as verified.
+- `src/proxy.ts` centrally rejects cookie-authenticated mutating API requests unless `Origin` matches `APP_URL`/`Host` or `Sec-Fetch-Site: same-origin`. Stripe webhooks, CSP reports, and Bearer clients are exempt.
+- `src/lib/security-headers.ts` owns the security headers and the nonce CSP allowlist. CSP starts in `report-only` mode and moves to `enforce` only after a clean observation window.
+
+### Consequences
+- New mutating routes inherit the origin guard; do not duplicate it per route.
+- New third-party origins must be added to the CSP allowlist and documented in `docs/setup/08-auth-security-hardening.md`.
+- Rate-limit keys are hashed; operational inspection uses `npm run rate-limits:report`, never raw emails or IPs.
+- #57 remains open until CSP enforcement is verified after the observation window.
+
+---
+
 *This file is the canonical rationale; update it when a decision changes and link to the superseding PR.*

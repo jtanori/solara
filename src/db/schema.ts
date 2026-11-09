@@ -10,6 +10,7 @@ export const users = pgTable("users", {
   // Legacy display field only; paid access is derived from verified subscriptions.
   plan: text("plan").$type<"free" | "paid">().notNull().default("free"),
   stripeCustomerId: text("stripe_customer_id").unique(),
+  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -61,3 +62,22 @@ export const auditLogs = pgTable("audit_logs", {
   target: text("target").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const emailTokens = pgTable("email_tokens", {
+  tokenHash: text("token_hash").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  purpose: text("purpose").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => [index("email_tokens_user_idx").on(table.userId)]);
+
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").primaryKey(),
+  windowStart: timestamp("window_start", { withTimezone: true }).notNull().defaultNow(),
+  count: integer("count").notNull().default(0),
+  failureCount: integer("failure_count").notNull().default(0),
+  blockedUntil: timestamp("blocked_until", { withTimezone: true }),
+  lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, table => [index("rate_limits_expires_idx").on(table.expiresAt)]);

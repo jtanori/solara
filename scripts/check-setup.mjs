@@ -94,7 +94,7 @@ function shouldReportForFilter(msg, level) {
   if (!keysInFile) return true;
   // Always show DB/APP_URL and summary, even if not in file? But spec says "only for secrets set"
   // So we filter: if message mentions a specific env var, only show if that var is in file
-  const knownKeys = ["DATABASE_URL", "APP_URL", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID_MXN", "STRIPE_PRICE_ID_USD", "STRIPE_PREMIUM_PRICE_IDS", "OPEN_METEO_API_KEY", "NEXT_PUBLIC_MAP_TILE_URL", "NEXT_PUBLIC_MAP_ATTRIBUTION", "LOCAL_SEED_PASSWORD", "ALLOW_LOCAL_SEED"];
+  const knownKeys = ["DATABASE_URL", "APP_URL", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID_MXN", "STRIPE_PRICE_ID_USD", "STRIPE_PREMIUM_PRICE_IDS", "OPEN_METEO_API_KEY", "NEXT_PUBLIC_MAP_TILE_URL", "NEXT_PUBLIC_MAP_ATTRIBUTION", "MAIL_TRANSPORT", "MAIL_FROM", "MAIL_REPLY_TO", "RESEND_API_KEY", "POSTMARK_SERVER_TOKEN", "CSP_MODE", "LOCAL_SEED_PASSWORD", "ALLOW_LOCAL_SEED"];
   for (const k of knownKeys) {
     if (msg.includes(k)) return keysInFile.has(k);
   }
@@ -158,5 +158,31 @@ if (tiles) {
   if (!value("NEXT_PUBLIC_MAP_ATTRIBUTION")) report("WARN", "Add the tile provider's required attribution as plain text.");
 } else if (profile === "production") report("WARN", "Default OpenStreetMap tiles have limited capacity; choose an appropriate production provider and verify its policy.");
 else report("OK", "The default OpenStreetMap tile endpoint is used for evaluation.");
+
+const mailTransport = value("MAIL_TRANSPORT").toLowerCase();
+const mailFrom = value("MAIL_FROM");
+const resendKey = value("RESEND_API_KEY");
+const postmarkToken = value("POSTMARK_SERVER_TOKEN");
+if (!mailTransport) {
+  if (profile === "local") report("OK", "MAIL_TRANSPORT is unset; local development will use the outbox transport.");
+  else report("ERROR", "MAIL_TRANSPORT is required for hosted environments (resend or postmark).");
+} else if (!["resend", "postmark", "outbox"].includes(mailTransport)) {
+  report("ERROR", "MAIL_TRANSPORT must be resend, postmark, or outbox.");
+} else if (profile !== "local" && mailTransport === "outbox") {
+  report("ERROR", "MAIL_TRANSPORT=outbox is not allowed outside local development.");
+} else {
+  report("OK", `MAIL_TRANSPORT is set to ${mailTransport}.`);
+}
+if (mailTransport && mailTransport !== "outbox") {
+  const address = mailFrom.replace(/^.*<|>.*$/g, "");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) report("ERROR", "MAIL_FROM must contain a valid sender address.");
+  else report("OK", "MAIL_FROM has an email address format.");
+  if (mailTransport === "resend" && !resendKey.startsWith("re_")) report("ERROR", "RESEND_API_KEY must start with re_.");
+  if (mailTransport === "postmark" && !postmarkToken) report("ERROR", "POSTMARK_SERVER_TOKEN is required for postmark.");
+}
+const cspMode = value("CSP_MODE").toLowerCase();
+if (cspMode && !["report-only", "enforce"].includes(cspMode)) report("ERROR", "CSP_MODE must be report-only or enforce.");
+else report("OK", `CSP_MODE is ${cspMode || "report-only (default)"}.`);
+
 console.log("This is a format check only: it does not connect to providers, verify licenses, or confirm webhook delivery.");
 if (errors || (strict && warnings)) process.exitCode = 1;

@@ -1,7 +1,10 @@
 # Never deploy local-only seed/mock code or build-time-only fixtures
 scripts/local
+scripts/report-rate-limits.ts
+scripts/cleanup-rate-limits.ts
 tests
 drizzle/meta
+.mail-outbox
 .env
 .env.*
 !.env.example

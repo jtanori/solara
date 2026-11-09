@@ -2,11 +2,10 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { auditLogs, users } from "@/db/schema";
-import { canManageUsers, currentUser, sameOrigin } from "@/lib/auth";
+import { canManageUsers, currentUser } from "@/lib/auth";
 import type { Role } from "@/lib/types";
 
 export async function PATCH(request: Request) {
-  if (!sameOrigin(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
   const actor = await currentUser();
   if (!actor || !canManageUsers(actor.role)) return NextResponse.json({ error: "Not authorized." }, { status: 403 });
   const data = await request.json().catch(() => null) as { userId?: string; role?: Role } | null;
