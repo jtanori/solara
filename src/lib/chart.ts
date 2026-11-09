@@ -14,8 +14,11 @@ import {
 /**
  * Whole-sign only for now. Placidus is *not* stubbed as a silent no-op: `castChart` refuses
  * it with a notice, because a plausible-but-wrong house system would corrupt every paid
- * reading built on it. The implementation lands in #101 together with the ephemeris
- * comparison in #102 that makes it trustworthy.
+ * reading built on it. The whole-sign angles and cusps are pinned against Swiss Ephemeris
+ * (#102, `tests/ephemeris.test.ts`); the 66° Ascendant cutoff is product policy — the
+ * reference still returns an Ascendant there — regression-tested at its boundary from both
+ * hemispheres. #101 still owes Placidus, the modality half of the element/modality balance,
+ * and a correct cross-aspect implementation (#117) — each with the same validation.
  */
 export type HouseSystem = "whole-sign" | "placidus";
 
@@ -53,7 +56,7 @@ export type ChartFacts = {
   chartVersion: "chart/2";
   at: string;                 // ISO instant the chart is cast for
   houseSystem: HouseSystem;
-  /** Placidus cusps are implemented but NOT yet validated against a trusted ephemeris. */
+  /** False until Placidus is implemented in #101 and its cusps pass the Swiss Ephemeris fixtures. */
   placidusValidated: false;
   notice: string | null;
   bodies: BodyPlacement[];
@@ -203,7 +206,9 @@ export function castChart(options: CastOptions): ChartFacts {
       // Refuse rather than approximate: see the note on HouseSystem.
       throw new Error(
         "Placidus is not implemented yet (#101) — it must not be approximated, because a wrong " +
-        "house system silently changes what every reading says. Use whole-sign until #101/#102 land.",
+        "house system silently changes what every reading says. Whole-sign and both angles are " +
+        "validated against Swiss Ephemeris (#102); use whole-sign until Placidus lands with the " +
+        "same validation.",
       );
     }
     cusps = wholeSignCusps(ascendantLongitude);
@@ -245,6 +250,14 @@ export function castChart(options: CastOptions): ChartFacts {
   ];
 
   const aspects = findAspects(points);
+  // KNOWN DEFECT (#117, surfaced by the #115 review): this runs `findAspects` over
+  // *differences* of longitudes (return − natal), which asks "are two differences in aspect
+  // to each other?" — not "is this return point in aspect to that natal point?". On the
+  // baseline fixture it reports 2457 cross-aspects versus 40 true pairwise matches under
+  // the configured per-body orbs. Synthetic Moon/natal-Mercury and Moon/natal-Neptune
+  // are reported as a trine, although return Moon and natal Neptune are 139.8135° apart.
+  // Nothing consumes these values yet; the rework is tracked in #117 and must not be
+  // built upon.
   const crossAspects = options.natal
     ? findAspects(
         points.flatMap(p => options.natal!.bodies.map(n => ({ name: `${p.name}/natal-${n.name}`, longitude: p.longitude - n.longitude }))),

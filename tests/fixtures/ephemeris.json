@@ -1,7 +1,87 @@
 {
  "generated": "2026-11-08",
  "ephemeris": "Swiss Ephemeris 2.10.03 (pyswisseph)",
+ "houses": "Swiss Ephemeris 2.10.03 (pyswisseph) swe.houses(tjd_ut, lat, lon, 'W') \u2014 ASC/MC/ARMC from ascmc, whole-sign cusps; polar cases (|lat| >= 66\u00b0) record the Ascendant omission explicitly \u2014 Solara policy, with the reference's whole-sign value and Placidus outcome quoted as observed",
  "toleranceDegrees": 0.05,
+ "cutoffProbes": {
+  "castAt": "1975-06-20T03:45:00.000Z",
+  "longitude": 18.96,
+  "note": "Latitude probes pinning the |latitude| >= 66 cutoff: both hemispheres, exactly \u00b166\u00b0 and just below. One instant and meridian shared with high-lat-1975; angles only \u2014 body positions are in cases and are identical across probes.",
+  "probes": [
+   {
+    "latitude": -69.65,
+    "polar": true,
+    "armc": 342.9496,
+    "midheaven": 341.5162,
+    "ascendant": null,
+    "ascendantOmittedReason": "polar latitude |-69.65|\u00b0 >= 66\u00b0, above the true polar circle (90\u00b0 - obliquity = 66.56\u00b0): Solara omits the Ascendant and houses by policy, pending independent validation. At this instant Swiss Ephemeris's whole-sign system still returns 35.4755\u00b0 \u2014 above the polar circle that value is circumpolar-ambiguous: the ascendant formula returns the setting point for part of each sidereal day, which Swiss Ephemeris flips by 180\u00b0. swe.houses raises for Placidus at this instant and place. The Midheaven is latitude-independent and remains valid.",
+    "placidusRefused": true,
+    "cusps": null
+   },
+   {
+    "latitude": -66.0,
+    "polar": true,
+    "armc": 342.9496,
+    "midheaven": 341.5162,
+    "ascendant": null,
+    "ascendantOmittedReason": "latitude |-66.0|\u00b0 is at or above Solara's 66\u00b0 cutoff but below the true polar circle (90\u00b0 - obliquity = 66.56\u00b0): the Ascendant is still computable \u2014 Swiss Ephemeris whole-sign returns 39.4341\u00b0 here, and its Placidus call succeeds \u2014 but the product omits the Ascendant and houses by policy; the cutoff deliberately sits below the polar circle, where the ascendant's daily sweep through the zodiac turns retrograde. The Midheaven is latitude-independent and remains valid.",
+    "placidusRefused": false,
+    "cusps": null
+   },
+   {
+    "latitude": -65.9,
+    "polar": false,
+    "armc": 342.9496,
+    "midheaven": 341.5162,
+    "ascendant": 39.5354,
+    "cusps": [
+     30.0,
+     60.0,
+     90.0,
+     120.0,
+     150.0,
+     180.0,
+     210.0,
+     240.0,
+     270.0,
+     300.0,
+     330.0,
+     0.0
+    ]
+   },
+   {
+    "latitude": 65.9,
+    "polar": false,
+    "armc": 342.9496,
+    "midheaven": 341.5162,
+    "ascendant": 122.9758,
+    "cusps": [
+     120.0,
+     150.0,
+     180.0,
+     210.0,
+     240.0,
+     270.0,
+     300.0,
+     330.0,
+     0.0,
+     30.0,
+     60.0,
+     90.0
+    ]
+   },
+   {
+    "latitude": 66.0,
+    "polar": true,
+    "armc": 342.9496,
+    "midheaven": 341.5162,
+    "ascendant": null,
+    "ascendantOmittedReason": "latitude |66.0|\u00b0 is at or above Solara's 66\u00b0 cutoff but below the true polar circle (90\u00b0 - obliquity = 66.56\u00b0): the Ascendant is still computable \u2014 Swiss Ephemeris whole-sign returns 123.1517\u00b0 here, and its Placidus call succeeds \u2014 but the product omits the Ascendant and houses by policy; the cutoff deliberately sits below the polar circle, where the ascendant's daily sweep through the zodiac turns retrograde. The Midheaven is latitude-independent and remains valid.",
+    "placidusRefused": false,
+    "cusps": null
+   }
+  ]
+ },
  "cases": [
   {
    "id": "baseline-2026",
@@ -10,6 +90,12 @@
    "timezone": "America/Tijuana",
    "castAt": "2026-05-16T11:46:50.405Z",
    "place": "new-york",
+   "latitude": 40.7128,
+   "longitude": -74.006,
+   "returnTimezone": "America/New_York",
+   "birthLatitude": 32.6393,
+   "birthLongitude": -115.4747,
+   "polar": false,
    "source": "Swiss Ephemeris 2.10.03 (pyswisseph), FLG_SWIEPH + Moshier fallback, geocentric apparent ecliptic of date",
    "bodies": {
     "Sun": {
@@ -53,7 +139,25 @@
      "speed": -0.0045
     }
    },
-   "trueNode": 335.3929
+   "trueNode": 335.3929,
+   "armc": 336.9125,
+   "midheaven": 335.0798,
+   "returnYear": 2026,
+   "ascendant": 88.9101,
+   "cusps": [
+    60.0,
+    90.0,
+    120.0,
+    150.0,
+    180.0,
+    210.0,
+    240.0,
+    270.0,
+    300.0,
+    330.0,
+    0.0,
+    30.0
+   ]
   },
   {
    "id": "dst-fold-2000",
@@ -62,6 +166,12 @@
    "timezone": "America/New_York",
    "castAt": "2000-10-29T05:30:00.000Z",
    "place": "new-york",
+   "latitude": 40.7128,
+   "longitude": -74.006,
+   "returnTimezone": "America/New_York",
+   "birthLatitude": 40.7128,
+   "birthLongitude": -74.006,
+   "polar": false,
    "source": "Swiss Ephemeris 2.10.03 (pyswisseph), FLG_SWIEPH + Moshier fallback, geocentric apparent ecliptic of date",
    "bodies": {
     "Sun": {
@@ -105,7 +215,24 @@
      "speed": 0.033
     }
    },
-   "trueNode": 108.1679
+   "trueNode": 108.1679,
+   "armc": 46.3486,
+   "midheaven": 48.8049,
+   "ascendant": 145.5476,
+   "cusps": [
+    120.0,
+    150.0,
+    180.0,
+    210.0,
+    240.0,
+    270.0,
+    300.0,
+    330.0,
+    0.0,
+    30.0,
+    60.0,
+    90.0
+   ]
   },
   {
    "id": "dst-gap-2000",
@@ -114,6 +241,12 @@
    "timezone": "America/New_York",
    "castAt": "2000-04-02T07:30:00.000Z",
    "place": "new-york",
+   "latitude": 40.7128,
+   "longitude": -74.006,
+   "returnTimezone": "America/New_York",
+   "birthLatitude": 40.7128,
+   "birthLongitude": -74.006,
+   "polar": false,
    "source": "Swiss Ephemeris 2.10.03 (pyswisseph), FLG_SWIEPH + Moshier fallback, geocentric apparent ecliptic of date",
    "bodies": {
     "Sun": {
@@ -157,7 +290,24 @@
      "speed": -0.0098
     }
    },
-   "trueNode": 121.0798
+   "trueNode": 121.0798,
+   "armc": 229.4454,
+   "midheaven": 231.8637,
+   "ascendant": 298.6225,
+   "cusps": [
+    270.0,
+    300.0,
+    330.0,
+    0.0,
+    30.0,
+    60.0,
+    90.0,
+    120.0,
+    150.0,
+    180.0,
+    210.0,
+    240.0
+   ]
   },
   {
    "id": "leap-day-2024",
@@ -166,6 +316,12 @@
    "timezone": "Europe/Madrid",
    "castAt": "2024-02-29T11:00:00.000Z",
    "place": "madrid",
+   "latitude": 40.4168,
+   "longitude": -3.7038,
+   "returnTimezone": "Europe/Madrid",
+   "birthLatitude": 40.4168,
+   "birthLongitude": -3.7038,
+   "polar": false,
    "source": "Swiss Ephemeris 2.10.03 (pyswisseph), FLG_SWIEPH + Moshier fallback, geocentric apparent ecliptic of date",
    "bodies": {
     "Sun": {
@@ -209,7 +365,24 @@
      "speed": 0.0265
     }
    },
-   "trueNode": 15.9915
+   "trueNode": 15.9915,
+   "armc": 320.0526,
+   "midheaven": 317.6083,
+   "ascendant": 71.9135,
+   "cusps": [
+    60.0,
+    90.0,
+    120.0,
+    150.0,
+    180.0,
+    210.0,
+    240.0,
+    270.0,
+    300.0,
+    330.0,
+    0.0,
+    30.0
+   ]
   },
   {
    "id": "southern-1990",
@@ -218,6 +391,12 @@
    "timezone": "Australia/Sydney",
    "castAt": "1990-11-03T11:15:00.000Z",
    "place": "sydney",
+   "latitude": -33.8688,
+   "longitude": 151.2093,
+   "returnTimezone": "Australia/Sydney",
+   "birthLatitude": -33.8688,
+   "birthLongitude": 151.2093,
+   "polar": false,
    "source": "Swiss Ephemeris 2.10.03 (pyswisseph), FLG_SWIEPH + Moshier fallback, geocentric apparent ecliptic of date",
    "bodies": {
     "Sun": {
@@ -261,7 +440,24 @@
      "speed": 0.0402
     }
    },
-   "trueNode": 301.7575
+   "trueNode": 301.7575,
+   "armc": 2.4163,
+   "midheaven": 2.6333,
+   "ascendant": 77.1271,
+   "cusps": [
+    60.0,
+    90.0,
+    120.0,
+    150.0,
+    180.0,
+    210.0,
+    240.0,
+    270.0,
+    300.0,
+    330.0,
+    0.0,
+    30.0
+   ]
   },
   {
    "id": "high-lat-1975",
@@ -270,6 +466,12 @@
    "timezone": "Europe/Oslo",
    "castAt": "1975-06-20T03:45:00.000Z",
    "place": "tromso",
+   "latitude": 69.65,
+   "longitude": 18.96,
+   "returnTimezone": "Europe/Oslo",
+   "birthLatitude": 59.9139,
+   "birthLongitude": 10.7522,
+   "polar": true,
    "source": "Swiss Ephemeris 2.10.03 (pyswisseph), FLG_SWIEPH + Moshier fallback, geocentric apparent ecliptic of date",
    "bodies": {
     "Sun": {
@@ -313,7 +515,13 @@
      "speed": 0.0017
     }
    },
-   "trueNode": 240.7838
+   "trueNode": 240.7838,
+   "armc": 342.9496,
+   "midheaven": 341.5162,
+   "ascendant": null,
+   "ascendantOmittedReason": "polar latitude |69.65|\u00b0 >= 66\u00b0, above the true polar circle (90\u00b0 - obliquity = 66.56\u00b0): Solara omits the Ascendant and houses by policy, pending independent validation. At this instant Swiss Ephemeris's whole-sign system still returns 130.0455\u00b0 \u2014 above the polar circle that value is circumpolar-ambiguous: the ascendant formula returns the setting point for part of each sidereal day, which Swiss Ephemeris flips by 180\u00b0. swe.houses raises for Placidus at this instant and place. The Midheaven is latitude-independent and remains valid.",
+   "placidusRefused": true,
+   "cusps": null
   },
   {
    "id": "pre-1970-1962",
@@ -322,6 +530,12 @@
    "timezone": "America/Mexico_City",
    "castAt": "1962-03-09T01:30:00.000Z",
    "place": "mexico-city",
+   "latitude": 19.4326,
+   "longitude": -99.1332,
+   "returnTimezone": "America/Mexico_City",
+   "birthLatitude": 19.4326,
+   "birthLongitude": -99.1332,
+   "polar": false,
    "source": "Swiss Ephemeris 2.10.03 (pyswisseph), FLG_SWIEPH + Moshier fallback, geocentric apparent ecliptic of date",
    "bodies": {
     "Sun": {
@@ -365,7 +579,24 @@
      "speed": -0.0256
     }
    },
-   "trueNode": 137.7132
+   "trueNode": 137.7132,
+   "armc": 89.6319,
+   "midheaven": 89.6623,
+   "ascendant": 179.6521,
+   "cusps": [
+    150.0,
+    180.0,
+    210.0,
+    240.0,
+    270.0,
+    300.0,
+    330.0,
+    0.0,
+    30.0,
+    60.0,
+    90.0,
+    120.0
+   ]
   }
  ]
 }
