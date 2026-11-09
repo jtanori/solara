@@ -11,10 +11,37 @@ const scryptAsync = promisify(scrypt) as (
   keylen: number,
 ) => Promise<Buffer>;
 
+const MAX_CONCURRENT_SCRYPT = 4;
+let activeScrypt = 0;
+const scryptQueue: Array<() => void> = [];
+
+async function acquireScryptSlot(): Promise<void> {
+  if (activeScrypt < MAX_CONCURRENT_SCRYPT) {
+    activeScrypt++;
+    return;
+  }
+  await new Promise<void>((resolve) => { scryptQueue.push(resolve); });
+  activeScrypt++;
+}
+
+function releaseScryptSlot(): void {
+  activeScrypt--;
+  scryptQueue.shift()?.();
+}
+
+async function runScrypt(password: string, salt: string): Promise<Buffer> {
+  await acquireScryptSlot();
+  try {
+    return await scryptAsync(password, salt, 64);
+  } finally {
+    releaseScryptSlot();
+  }
+}
+
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
   try {
-    const hash = await scryptAsync(password, salt, 64);
+    const hash = await runScrypt(password, salt);
     return `${salt}:${hash.toString("hex")}`;
   } catch {
     throw new Error("Password hashing failed.");
@@ -30,7 +57,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const expected = Buffer.from(hash, "hex");
   let actual: Buffer;
   try {
-    actual = await scryptAsync(password, salt, 64);
+    actual = await runScrypt(password, salt);
   } catch {
     return false;
   }

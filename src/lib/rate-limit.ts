@@ -106,23 +106,24 @@ export async function consumeRateLimit(
     const blocked = blockedUntil !== null && blockedUntil.getTime() > now.getTime();
     const overLimit = count > policy.limit;
     const triggered = blocked || overLimit;
+    const nextBlockedUntil = blockedUntil ?? (overLimit ? expiresAt : null);
 
     await tx.update(rateLimits).set({
       windowStart: expired ? now : row.windowStart,
       count,
       failureCount,
-      blockedUntil,
+      blockedUntil: nextBlockedUntil,
       expiresAt,
       lastTriggeredAt: triggered ? now : row.lastTriggeredAt,
     }).where(eq(rateLimits.key, key));
 
-    const retryUntil = blocked ? blockedUntil : expiresAt;
+    const retryUntil = nextBlockedUntil ?? expiresAt;
     return {
       allowed: !triggered,
       remaining: Math.max(0, policy.limit - count),
       retryAfterSeconds: Math.max(1, Math.ceil((retryUntil.getTime() - now.getTime()) / 1000)),
       resetAt: expiresAt,
-      blockedUntil,
+      blockedUntil: nextBlockedUntil,
     };
   });
 
@@ -197,6 +198,7 @@ export async function getRateLimitState(key: string): Promise<{
   failureCount: number;
   blockedUntil: Date | null;
   lastTriggeredAt: Date | null;
+  expiresAt: Date;
 } | null> {
   const [row] = await db.select().from(rateLimits).where(eq(rateLimits.key, key)).limit(1);
   if (!row) return null;
@@ -205,6 +207,7 @@ export async function getRateLimitState(key: string): Promise<{
     failureCount: row.failureCount,
     blockedUntil: row.blockedUntil,
     lastTriggeredAt: row.lastTriggeredAt,
+    expiresAt: row.expiresAt,
   };
 }
 
@@ -216,6 +219,7 @@ export async function getRateLimitStateTx(
   failureCount: number;
   blockedUntil: Date | null;
   lastTriggeredAt: Date | null;
+  expiresAt: Date;
 } | null> {
   const [row] = await tx.select().from(rateLimits).where(eq(rateLimits.key, key)).limit(1);
   if (!row) return null;
@@ -224,6 +228,7 @@ export async function getRateLimitStateTx(
     failureCount: row.failureCount,
     blockedUntil: row.blockedUntil,
     lastTriggeredAt: row.lastTriggeredAt,
+    expiresAt: row.expiresAt,
   };
 }
 

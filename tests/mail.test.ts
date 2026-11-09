@@ -80,6 +80,12 @@ test("distinguishes definitive provider rejection from an ambiguous network fail
       MailDeliveryError,
     );
 
+    globalThis.fetch = (async () => new Response("server error", { status: 503 })) as typeof fetch;
+    await assert.rejects(
+      () => transport.send({ to: "person@example.test", subject: "Subject", text: "Body" }),
+      MailAmbiguousError,
+    );
+
     globalThis.fetch = (async () => { throw new Error("network timeout"); }) as typeof fetch;
     await assert.rejects(
       () => transport.send({ to: "person@example.test", subject: "Subject", text: "Body" }),

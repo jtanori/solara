@@ -5,12 +5,12 @@ import test from "node:test";
 import { inArray } from "drizzle-orm";
 import { db } from "../src/db";
 import { rateLimits, users } from "../src/db/schema";
-import { handleAuth, handleClaim } from "../src/lib/auth-service";
+import { deliverClaimEmail, handleAuth, handleClaim, handleClaimRequest, passwordHashForLogin } from "../src/lib/auth-service";
 import { createSession } from "../src/lib/auth";
 import { createEmailVerificationToken } from "../src/lib/email-verification";
 import { hashPassword, verifyPassword } from "../src/lib/passwords";
 import { keyFor } from "../src/lib/rate-limit";
-import type { MailMessage, MailTransport } from "../src/lib/mail";
+import { MailAmbiguousError, MailDeliveryError, type MailMessage, type MailTransport } from "../src/lib/mail";
 
 function fakeMail() {
   const sent: MailMessage[] = [];
@@ -281,5 +281,152 @@ test("signup responses are indistinguishable and never create a session", {
   } finally {
     await cleanupRateLimits(keys);
     await db.delete(users).where(inArray(users.email, [existing.email, newEmail]));
+  }
+});
+
+test("pending and unknown accounts both take the dummy-hash path", () => {
+  const dummy = passwordHashForLogin(undefined);
+  assert.match(dummy, /^[0-9a-f]{32}:[0-9a-f]{128}$/);
+  assert.equal(passwordHashForLogin("pending:no-credentials"), dummy);
+  const real = "a".repeat(32) + ":" + "b".repeat(128);
+  assert.equal(passwordHashForLogin(real), real);
+});
+
+test("delivery finalization failure keeps the delivered token usable", async () => {
+  let discarded = false;
+  let finalized = 0;
+  const mail: MailTransport = { name: "outbox", send: async () => {} };
+  await deliverClaimEmail(
+    { id: "user-1", email: "person@example.test", name: "Person" },
+    "en",
+    mail,
+    "https://solara.example",
+    {
+      createToken: async () => ({
+        status: "created" as const,
+        token: "token-value",
+        tokenHash: "token-hash",
+        expiresAt: new Date(Date.now() + 60_000),
+      }),
+      finalizeToken: async () => { finalized++; throw new Error("finalize failed"); },
+      discardToken: async () => { discarded = true; },
+    },
+  );
+  assert.equal(finalized, 1);
+  assert.equal(discarded, false);
+});
+
+test("definitive send rejection discards the new token; ambiguous failure keeps it", async () => {
+  const createToken = async () => ({
+    status: "created" as const,
+    token: "token-value",
+    tokenHash: "token-hash",
+    expiresAt: new Date(Date.now() + 60_000),
+  });
+  let discarded = 0;
+  const finalizeToken = async () => true;
+
+  const definitiveMail: MailTransport = {
+    name: "outbox",
+    send: async () => { throw new MailDeliveryError("rejected"); },
+  };
+  await deliverClaimEmail(
+    { id: "user-1", email: "person@example.test", name: "Person" },
+    "en",
+    definitiveMail,
+    "https://solara.example",
+    { createToken, finalizeToken, discardToken: async () => { discarded++; } },
+  );
+  assert.equal(discarded, 1);
+
+  const ambiguousMail: MailTransport = {
+    name: "outbox",
+    send: async () => { throw new MailAmbiguousError("timeout"); },
+  };
+  await deliverClaimEmail(
+    { id: "user-1", email: "person@example.test", name: "Person" },
+    "en",
+    ambiguousMail,
+    "https://solara.example",
+    { createToken, finalizeToken, discardToken: async () => { discarded++; } },
+  );
+  assert.equal(discarded, 1);
+});
+
+test("invalid claim tokens are rejected before password hashing", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  let hashes = 0;
+  const ip = "192.0.2.81";
+  try {
+    const response = await handleClaim(new Request("https://solara-stg.vercel.app/api/auth/claim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-forwarded-for": ip },
+      body: JSON.stringify({ token: "a".repeat(43), password: "claimed-password-12" }),
+    }), "en", { hashPassword: async () => { hashes++; return "unused:hash"; } });
+    assert.equal(response.status, 400);
+    assert.equal(hashes, 0);
+  } finally {
+    await cleanupRateLimits([keyFor("claim:ip", ip)]);
+  }
+});
+
+test("resend DB failures are logged without the email", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+  const email = `log-${randomBytes(6).toString("hex")}@example.test`;
+  const ip = "192.0.2.82";
+  const logs: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  try {
+    const outcome = await handleClaimRequest(request({ email }, ip), {
+      locale: "en",
+      mail: () => fakeMail().transport,
+      lookupUser: async () => {
+        throw Object.assign(new Error(`select * from users where email='${email}'`), { code: "42P01" });
+      },
+    });
+    assert.equal(outcome.response.status, 500);
+  } finally {
+    console.error = original;
+    await cleanupRateLimits([keyFor("verify-request:ip", ip), keyFor("verify-request:email", email)]);
+  }
+  const output = logs.join("\n");
+  assert.doesNotMatch(output, new RegExp(email.replace(".", "\\.")));
+  assert.match(output, /db_42P01/);
+});
+
+test("an exhausted IP failure budget blocks a correct password before hashing", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  const user = await makeUser();
+  const ip = "192.0.2.83";
+  const failureKey = keyFor("login:ip-failures", ip);
+  const keys = [keyFor("login:ip", ip), failureKey, keyFor("login:account", user.email)];
+  try {
+    await db.insert(rateLimits).values({
+      key: failureKey,
+      windowStart: new Date(),
+      count: 50,
+      failureCount: 50,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const outcome = await handleAuth(
+      request({ mode: "login", email: user.email, password: user.password }, ip),
+      { locale: "en", mail: () => fakeMail().transport },
+    );
+    assert.equal(outcome.response.status, 429);
+  } finally {
+    await cleanupRateLimits(keys);
+    await db.delete(users).where(inArray(users.id, [user.id]));
   }
 });

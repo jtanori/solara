@@ -174,3 +174,50 @@ test("concurrent resends create at most one new token", {
     await db.delete(users).where(eq(users.id, userId));
   }
 });
+
+test("finalization is generation-aware and cannot delete a newer token", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Claim tests require a loopback database");
+
+  const userId = await makeUser();
+  try {
+    const older = await createEmailVerificationToken(userId, "account_claim", { cooldownSeconds: 0 });
+    const newer = await createEmailVerificationToken(userId, "account_claim", { cooldownSeconds: 0 });
+    assert.equal(older.status, "created");
+    assert.equal(newer.status, "created");
+    if (older.status !== "created" || newer.status !== "created") return;
+
+    assert.equal(await finalizeEmailVerificationToken(newer.tokenHash, userId, "account_claim"), true);
+    assert.equal(await finalizeEmailVerificationToken(older.tokenHash, userId, "account_claim"), false);
+
+    const remaining = await db.select({ tokenHash: emailTokens.tokenHash }).from(emailTokens).where(eq(emailTokens.userId, userId));
+    assert.deepEqual(remaining.map(row => row.tokenHash), [newer.tokenHash]);
+  } finally {
+    await db.delete(users).where(eq(users.id, userId));
+  }
+});
+
+test("a verified account cannot be claimed again or receive a new claim link", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Claim tests require a loopback database");
+
+  const userId = await makeUser();
+  try {
+    const first = await createEmailVerificationToken(userId, "account_claim", { cooldownSeconds: 0 });
+    const second = await createEmailVerificationToken(userId, "account_claim", { cooldownSeconds: 0 });
+    assert.equal(first.status, "created");
+    assert.equal(second.status, "created");
+    if (first.status !== "created" || second.status !== "created") return;
+
+    const password = await hashPassword("claimed-password-12");
+    assert.deepEqual(await claimAccountWithToken(first.token, password), { status: "claimed", userId });
+    assert.deepEqual(await claimAccountWithToken(second.token, await hashPassword("different-password-12")), { status: "invalid" });
+    assert.equal((await createEmailVerificationToken(userId, "account_claim")).status, "already_verified");
+  } finally {
+    await db.delete(users).where(eq(users.id, userId));
+  }
+});

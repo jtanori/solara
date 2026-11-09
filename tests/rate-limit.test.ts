@@ -55,6 +55,7 @@ test("rate limiter blocks after the configured limit and resets independently", 
 
     const state = await getRateLimitState(keyA);
     assert.equal(state?.count, 3);
+    assert.ok(state?.blockedUntil);
   } finally {
     await db.delete(rateLimits).where(inArray(rateLimits.key, keys));
   }

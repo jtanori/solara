@@ -125,9 +125,9 @@ The prototype had unlimited auth attempts, synchronous scrypt, no email channel,
 - Password hashing uses async `scrypt` so auth bursts cannot block the event loop.
 - Sign-up collects name and email only. No session or usable password exists before mailbox proof. The mailbox owner claims the account by choosing a password; claim revokes all sessions and invalidates sibling tokens.
 - Sign-in is unavailable until the claim completes. Per-account attempts are serialized with a PostgreSQL lock; 10 failures trigger progressive 30s-to-15m backoff. IP ceilings are generous (100 all-attempts, 50 failures per 15m). Responses use `429` + `Retry-After` and never reveal whether an email exists.
-- Email delivery runs in `after()` so provider latency does not reveal account existence. Tokens are hashed at rest and never stored in queues or logs. The previous token stays valid until a new message is delivered; ambiguous outcomes keep both tokens; claim invalidates siblings.
+- Email delivery runs in `after()` so provider latency does not reveal account existence. Tokens are hashed at rest and never stored in queues or logs. The previous token stays valid until a new message is delivered; ambiguous outcomes keep both tokens; finalization is generation-aware; claim invalidates siblings and refuses verified accounts. A post-send finalization failure keeps the delivered token.
 - `src/proxy.ts` centrally rejects cookie-authenticated mutating API requests unless the complete `Origin` (scheme, host, port) matches a trusted origin or `Sec-Fetch-Site: same-origin`. Stripe webhooks and CSP reports are exempt. There is no Bearer exemption until a real bearer flow exists.
-- Migration `0002` does not backfill legacy accounts as verified. It revokes unverified sessions; legacy users must claim with a new password.
+- Migration `0002` does not backfill legacy accounts as verified, and `db-run verify` rejects a verification column with a default. It revokes unverified sessions; legacy users must claim with a new password.
 - `src/lib/security-headers.ts` owns the security headers and the nonce CSP allowlist. CSP starts in `report-only` mode and moves to `enforce` only after a clean observation window.
 
 ### Consequences

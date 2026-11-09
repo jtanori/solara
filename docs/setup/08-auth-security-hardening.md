@@ -12,6 +12,7 @@ Status: implemented on `feat/53-54-56-57-auth-security-hardening` for #53, #54, 
 | `RESEND_API_KEY` | — | required when `MAIL_TRANSPORT=resend` |
 | `POSTMARK_SERVER_TOKEN` | — | required when `MAIL_TRANSPORT=postmark` |
 | `CSP_MODE` | `report-only` | `report-only`, then `enforce` |
+| `APP_URL` | `http://localhost:3000` fallback | required canonical HTTPS origin |
 
 Local outbox messages are written to `.mail-outbox/*.eml` with mode `0600`. They are gitignored and never logged. `MAIL_TRANSPORT=outbox` is rejected in production. `node scripts/check-setup.mjs staging --strict` validates format only; it does not verify provider delivery.
 
@@ -29,9 +30,9 @@ Local outbox messages are written to `.mail-outbox/*.eml` with mode `0600`. They
 | Claim resend | 10/hour per IP, 3/15 min per email |
 | CSP reports | 60/min per IP |
 
-Sign-in attempts for one email are serialized with a PostgreSQL advisory lock. The account failure budget is checked before `scrypt`, so rotating IPs cannot bypass it. After 10 failures the account backs off progressively from 30 seconds to 15 minutes. A correct password after the backoff succeeds and resets the failure state. The accepted tradeoff is that an attacker can repeatedly cause short lockouts; CAPTCHA/Turnstile is the future mitigation.
+Sign-in attempts for one email are serialized with a PostgreSQL advisory lock. The account failure budget is checked before `scrypt`, so rotating IPs cannot bypass it. Pending and unknown accounts both use the dummy hash, so timing does not reveal an unclaimed address. The IP failure budget is also prechecked and sets a block when exhausted. After 10 account failures the account backs off progressively from 30 seconds to 15 minutes. A correct password after the backoff succeeds and resets the failure state. The accepted tradeoff is that an attacker can repeatedly cause short lockouts; CAPTCHA/Turnstile is the future mitigation.
 
-Blocked requests return `429` with `Retry-After`; the response never reveals whether an email exists. Unknown accounts use the same dummy scrypt path and the same generic failure.
+Blocked requests return `429` with `Retry-After`; the response never reveals whether an email exists. Unknown accounts and pending accounts use the same dummy scrypt path, so timing does not disclose an unclaimed address. The IP failure budget is checked before password work and sets a block when exhausted; the all-attempt ceiling remains separate.
 
 Inspect state without raw emails or IPs:
 
@@ -46,7 +47,7 @@ The report shows triggered rows first (`NULLS LAST`). Password hashing is async 
 
 `src/lib/mail.ts` exposes `sendMail({ to, subject, text, html? })` and selects a provider from the environment. Hosted environments must configure a provider; a missing provider is a hard failure. Delivery runs in `after()`, after the HTTP response, so provider latency does not reveal whether a signup created an account.
 
-Email domain setup (owner-only):
+Hosted environments must set a valid canonical HTTPS `APP_URL`; missing or insecure values fail signup/resend instead of emailing a localhost link. Email domain setup (owner-only):
 
 1. Verify the sending domain with Resend or Postmark.
 2. Publish the provider's SPF and DKIM records.
@@ -61,13 +62,15 @@ Claim flow:
 3. The page reads the fragment, clears it after capture, and asks the mailbox owner to choose a password.
 4. `POST /api/auth/claim` consumes the token, sets the chosen password and `email_verified_at`, deletes all sessions for the user, and invalidates sibling tokens atomically.
 5. Legacy unverified accounts are not backfilled. They must claim and set a new password; sessions for unverified users are revoked by migration `0002`.
-6. `POST /api/auth/verify/request` resends a claim link with a 60-second cooldown. `GET /api/auth/verify` is a non-mutating transition page for old query-style links; it never consumes a token.
+6. `POST /api/auth/verify/request` resends a claim link with a 60-second cooldown. Issuance and redemption refuse once the account is verified, so a delayed resend cannot reset an active account. `GET /api/auth/verify` is a non-mutating transition page for old query-style links; it never consumes a token.
+7. Invalid or expired claim tokens are rejected before `scrypt`; only a token that passes the cheap lookup can trigger password hashing. Scrypt concurrency is bounded per instance.
 
 Delivery states:
 
-- **Provider success:** finalize the new token and delete older unused tokens.
+- **Provider success:** finalize the new token and delete older unused tokens. Finalization is generation-aware and locks the user, so a delayed older finalizer cannot delete a newer token.
+- **Finalization failure after acceptance:** keep the delivered token active; log and allow a retry rather than discarding it.
 - **Definitive rejection:** discard the new token; a previously delivered link stays valid.
-- **Timeout/ambiguous acceptance:** keep both tokens active; do not auto-retry.
+- **Timeout/5xx/ambiguous acceptance:** keep both tokens active; do not auto-retry.
 - **Crash after response:** the user can resend; old tokens remain valid.
 
 `consume`-equivalent claim logic invalidates all sibling unused tokens when one succeeds. No plaintext token is stored in the database, logs, or a durable queue.
@@ -86,7 +89,7 @@ npx tsx scripts/db-run.ts --env staging migrate
 npx tsx scripts/db-run.ts --env staging verify
 ```
 
-`verify` checks `rate_limits`, `email_tokens`, `users.email_verified_at`, and the new indexes. Do not edit `0002` in place if it has run in a persistent environment; use an audited forward repair. The production promotion waits for the separate exact-SHA migration-gate PR.
+`verify` checks `rate_limits`, `email_tokens`, `users.email_verified_at` (type, nullability, and **no default** that would auto-verify), and the new indexes. A `DEFAULT now()` drift makes verification fail. Do not edit `0002` in place if it has run in a persistent environment; use an audited forward repair. The production promotion waits for the separate exact-SHA migration-gate PR.
 
 ## Strict origin checks (#56)
 

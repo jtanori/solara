@@ -7,12 +7,14 @@ import {
   SESSION_COOKIE,
 } from "@/lib/auth";
 import { withEmailLock } from "@/lib/account-lock";
+import { canonicalAppUrl } from "@/lib/app-url";
 import {
   claimAccountWithToken,
   createEmailVerificationToken,
   discardEmailVerificationToken,
   emailVerificationUrl,
   finalizeEmailVerificationToken,
+  lookupClaimToken,
 } from "@/lib/email-verification";
 import {
   accountClaimMessage,
@@ -22,6 +24,7 @@ import { reportServerError } from "@/lib/error-report";
 import {
   MailAmbiguousError,
   MailConfigurationError,
+  MailDeliveryError,
   type MailTransport,
 } from "@/lib/mail";
 import { hashPassword, verifyPassword } from "@/lib/passwords";
@@ -41,11 +44,23 @@ import type { Locale } from "@/lib/i18n";
 const PENDING_PASSWORD_HASH = "pending:no-credentials";
 const DUMMY_PASSWORD_HASH = `${"0".repeat(32)}:${"0".repeat(128)}`;
 
+export function passwordHashForLogin(stored: string | null | undefined): string {
+  return stored && !stored.startsWith("pending:") ? stored : DUMMY_PASSWORD_HASH;
+}
+
 type Task = () => Promise<void>;
 
 export type AuthDeps = {
   locale: Locale;
   mail: () => MailTransport;
+  appUrl?: string;
+  lookupUser?: (email: string) => Promise<{
+    id: string;
+    email: string;
+    name: string;
+    emailVerifiedAt: Date | null;
+  } | null>;
+  verify?: typeof verifyPassword;
 };
 
 export type AuthOutcome = {
@@ -83,44 +98,81 @@ function sessionResponse(name: string, token: string, expiresAt: Date) {
   return response;
 }
 
+export type ClaimDeliveryDeps = {
+  createToken?: typeof createEmailVerificationToken;
+  finalizeToken?: typeof finalizeEmailVerificationToken;
+  discardToken?: typeof discardEmailVerificationToken;
+};
+
+export async function deliverClaimEmail(
+  user: { id: string; email: string; name: string },
+  locale: Locale,
+  mail: MailTransport,
+  appUrl: string,
+  deps: ClaimDeliveryDeps = {},
+): Promise<void> {
+  let token: Awaited<ReturnType<typeof createEmailVerificationToken>>;
+  try {
+    token = await (deps.createToken ?? createEmailVerificationToken)(user.id, "account_claim");
+  } catch (error) {
+    reportServerError("auth.claim_token_issue_failed", error);
+    return;
+  }
+  if (token.status !== "created") return;
+
+  try {
+    await mail.send(accountClaimMessage({
+      to: user.email,
+      name: user.name,
+      url: emailVerificationUrl(token.token, locale, appUrl),
+      locale,
+    }));
+  } catch (error) {
+    if (error instanceof MailDeliveryError || error instanceof MailConfigurationError) {
+      try {
+        await (deps.discardToken ?? discardEmailVerificationToken)(token.tokenHash);
+      } catch (discardError) {
+        reportServerError("auth.claim_discard_failed", discardError);
+      }
+      reportServerError("auth.claim_email_failed", error);
+    } else {
+      reportServerError("auth.claim_email_ambiguous", error);
+    }
+    return;
+  }
+
+  try {
+    await (deps.finalizeToken ?? finalizeEmailVerificationToken)(
+      token.tokenHash,
+      user.id,
+      "account_claim",
+    );
+  } catch (error) {
+    reportServerError("auth.claim_finalize_failed", error);
+  }
+}
+
 function claimTask(
   user: { id: string; email: string; name: string },
   locale: Locale,
   mail: MailTransport,
+  appUrl: string,
 ): Task {
-  return async () => {
-    const token = await createEmailVerificationToken(user.id, "account_claim");
-    if (token.status !== "created") return;
-    try {
-      await mail.send(accountClaimMessage({
-        to: user.email,
-        name: user.name,
-        url: emailVerificationUrl(token.token, locale),
-        locale,
-      }));
-      await finalizeEmailVerificationToken(token.tokenHash, user.id, "account_claim");
-    } catch (error) {
-      if (error instanceof MailAmbiguousError) {
-        reportServerError("auth.claim_email_ambiguous", error);
-      } else {
-        await discardEmailVerificationToken(token.tokenHash);
-        reportServerError("auth.claim_email_failed", error);
-      }
-    }
-  };
+  return () => deliverClaimEmail(user, locale, mail, appUrl);
 }
 
 function accountExistsTask(
   user: { email: string; name: string },
   locale: Locale,
   mail: MailTransport,
+  appUrl: string,
 ): Task {
   return async () => {
     try {
       await mail.send(accountExistsMessage({
         to: user.email,
         name: user.name,
-        url: new URL("/account", process.env.APP_URL?.trim() || "http://localhost:3000").toString(),
+        url: new URL("/account", appUrl).toString(),
         locale,
       }));
     } catch (error) {
@@ -165,6 +217,7 @@ async function handleSignup(
   }
 
   const mail = deps.mail();
+  const appUrl = canonicalAppUrl(deps.appUrl);
 
   const [created] = await db.insert(users).values({
     name,
@@ -182,7 +235,7 @@ async function handleSignup(
   if (created) {
     return {
       response: NextResponse.json({ ok: true }),
-      tasks: [claimTask(created, deps.locale, mail)],
+      tasks: [claimTask(created, deps.locale, mail, appUrl)],
     };
   }
 
@@ -204,8 +257,8 @@ async function handleSignup(
   return {
     response: NextResponse.json({ ok: true }),
     tasks: [existing.emailVerifiedAt
-      ? accountExistsTask(existing, deps.locale, mail)
-      : claimTask(existing, deps.locale, mail)],
+      ? accountExistsTask(existing, deps.locale, mail, appUrl)
+      : claimTask(existing, deps.locale, mail, appUrl)],
   };
 }
 
@@ -229,9 +282,20 @@ async function handleLogin(
 
   const ipFailureKey = keyFor("login:ip-failures", ip);
   const ipFailureState = await getRateLimitState(ipFailureKey);
-  if (ipFailureState?.blockedUntil && ipFailureState.blockedUntil.getTime() > Date.now()) {
+  const now = Date.now();
+  if (
+    ipFailureState
+    && ipFailureState.expiresAt.getTime() > now
+    && (
+      (ipFailureState.blockedUntil?.getTime() ?? 0) > now
+      || ipFailureState.count >= AUTH_RATE_LIMITS.loginIpFailures.limit
+    )
+  ) {
+    const retryDate = ipFailureState.blockedUntil && ipFailureState.blockedUntil.getTime() > now
+      ? ipFailureState.blockedUntil
+      : ipFailureState.expiresAt;
     return {
-      response: tooManyAttempts(es, retryAfterSeconds(ipFailureState.blockedUntil)),
+      response: tooManyAttempts(es, retryAfterSeconds(retryDate)),
       tasks: [],
     };
   }
@@ -252,9 +316,9 @@ async function handleLogin(
       };
     }
 
-    const passwordMatches = await verifyPassword(
+    const passwordMatches = await (deps.verify ?? verifyPassword)(
       password,
-      user?.passwordHash ?? DUMMY_PASSWORD_HASH,
+      passwordHashForLogin(user?.passwordHash),
     );
 
     if (!user || !passwordMatches || !user.emailVerifiedAt) {
@@ -326,11 +390,7 @@ export async function handleAuth(request: Request, deps: AuthDeps): Promise<Auth
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
     return {
       response: NextResponse.json(
-        {
-          error: es
-            ? "Introduce un correo válido."
-            : "Enter a valid email.",
-        },
+        { error: es ? "Introduce un correo válido." : "Enter a valid email." },
         { status: 400 },
       ),
       tasks: [],
@@ -405,7 +465,10 @@ export async function handleClaimRequest(
     data = await request.json() as { email?: unknown };
   } catch {
     return {
-      response: NextResponse.json({ error: es ? "Solicitud no válida." : "Invalid request." }, { status: 400 }),
+      response: NextResponse.json(
+        { error: es ? "Solicitud no válida." : "Invalid request." },
+        { status: 400 },
+      ),
       tasks: [],
     };
   }
@@ -415,54 +478,92 @@ export async function handleClaimRequest(
     return { response: NextResponse.json({ ok: true }), tasks: [] };
   }
 
-  const ipLimit = await consumeRateLimit(
-    keyFor("verify-request:ip", clientIp(request)),
-    AUTH_RATE_LIMITS.verifyRequestIp,
-    "verify_request_ip",
-  );
-  if (!ipLimit.allowed) {
-    return { response: tooManyAttempts(es, ipLimit.retryAfterSeconds), tasks: [] };
+  try {
+    const ipLimit = await consumeRateLimit(
+      keyFor("verify-request:ip", clientIp(request)),
+      AUTH_RATE_LIMITS.verifyRequestIp,
+      "verify_request_ip",
+    );
+    if (!ipLimit.allowed) {
+      return { response: tooManyAttempts(es, ipLimit.retryAfterSeconds), tasks: [] };
+    }
+
+    const emailLimit = await consumeRateLimit(
+      keyFor("verify-request:email", email),
+      AUTH_RATE_LIMITS.verifyRequestEmail,
+      "verify_request_email",
+    );
+    if (!emailLimit.allowed) {
+      return { response: tooManyAttempts(es, emailLimit.retryAfterSeconds), tasks: [] };
+    }
+
+    const mail = deps.mail();
+    const appUrl = canonicalAppUrl(deps.appUrl);
+
+    const user = deps.lookupUser
+      ? await deps.lookupUser(email)
+      : (await db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          emailVerifiedAt: users.emailVerifiedAt,
+        })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1))[0];
+
+    if (!user || user.emailVerifiedAt) {
+      return { response: NextResponse.json({ ok: true }), tasks: [] };
+    }
+
+    return {
+      response: NextResponse.json({ ok: true }),
+      tasks: [claimTask(user, deps.locale, mail, appUrl)],
+    };
+  } catch (error) {
+    if (error instanceof MailConfigurationError) {
+      return {
+        response: NextResponse.json(
+          {
+            error: es
+              ? "El envío de correo aún no está configurado."
+              : "Email delivery is not configured yet.",
+          },
+          { status: 503 },
+        ),
+        tasks: [],
+      };
+    }
+    reportServerError("auth.claim_request_failed", error);
+    return {
+      response: NextResponse.json(
+        {
+          error: es
+            ? "No pudimos completar tu solicitud. Inténtalo de nuevo."
+            : "Unable to complete your request. Please try again.",
+        },
+        { status: 500 },
+      ),
+      tasks: [],
+    };
   }
-
-  const emailLimit = await consumeRateLimit(
-    keyFor("verify-request:email", email),
-    AUTH_RATE_LIMITS.verifyRequestEmail,
-    "verify_request_email",
-  );
-  if (!emailLimit.allowed) {
-    return { response: tooManyAttempts(es, emailLimit.retryAfterSeconds), tasks: [] };
-  }
-
-  const mail = deps.mail();
-
-  const [user] = await db
-    .select({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      emailVerifiedAt: users.emailVerifiedAt,
-    })
-    .from(users)
-    .where(eq(users.email, email))
-    .limit(1);
-
-  if (!user || user.emailVerifiedAt) {
-    return { response: NextResponse.json({ ok: true }), tasks: [] };
-  }
-
-  return {
-    response: NextResponse.json({ ok: true }),
-    tasks: [claimTask(user, deps.locale, mail)],
-  };
 }
 
-export async function handleClaim(request: Request, locale: Locale): Promise<Response> {
+export async function handleClaim(
+  request: Request,
+  locale: Locale,
+  deps: { hashPassword?: typeof hashPassword } = {},
+): Promise<Response> {
   const es = locale === "es";
   let data: { token?: unknown; password?: unknown };
   try {
     data = await request.json() as { token?: unknown; password?: unknown };
   } catch {
-    return NextResponse.json({ error: es ? "Solicitud no válida." : "Invalid request." }, { status: 400 });
+    return NextResponse.json(
+      { error: es ? "Solicitud no válida." : "Invalid request." },
+      { status: 400 },
+    );
   }
 
   const token = typeof data.token === "string" ? data.token.trim() : "";
@@ -493,15 +594,28 @@ export async function handleClaim(request: Request, locale: Locale): Promise<Res
     );
     if (!ipLimit.allowed) return tooManyAttempts(es, ipLimit.retryAfterSeconds);
 
-    const passwordHash = await hashPassword(password);
-    const result = await claimAccountWithToken(token, passwordHash);
-
-    if (result.status !== "claimed") {
+    const tokenState = await lookupClaimToken(token);
+    if (tokenState !== "valid") {
       return NextResponse.json(
         {
           error: es
             ? "Este enlace no es válido, ya se usó o caducó."
             : "This link is invalid, already used, or expired.",
+          code: tokenState,
+        },
+        { status: 400 },
+      );
+    }
+
+    const passwordHash = await (deps.hashPassword ?? hashPassword)(password);
+    const result = await claimAccountWithToken(token, passwordHash);
+
+    if (result.status !== "claimed") {
+      return NextResponse.json(
+        {
+          error: result.status === "already_verified"
+            ? (es ? "Esta cuenta ya está activa. Inicia sesión." : "This account is already active. Sign in.")
+            : (es ? "Este enlace no es válido, ya se usó o caducó." : "This link is invalid, already used, or expired."),
           code: result.status,
         },
         { status: 400 },

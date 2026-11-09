@@ -33,6 +33,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 import { Client } from "pg";
+import { findMissingColumns, REQUIRED_COLUMNS } from "../src/lib/schema-verification";
 
 type Target = "staging" | "production" | "local";
 type Command = "migrate" | "status" | "verify";
@@ -255,27 +256,6 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
     "public.subscriptions", "public.stripe_events", "public.audit_logs",
     "public.rate_limits", "public.email_tokens",
   ];
-  const REQUIRED_COLUMNS: Array<{
-    table: string;
-    column: string;
-    nullable?: boolean;
-    dataType?: string;
-  }> = [
-    { table: "users", column: "email_verified_at", nullable: true, dataType: "timestamp with time zone" },
-    { table: "rate_limits", column: "key" },
-    { table: "rate_limits", column: "window_start" },
-    { table: "rate_limits", column: "count" },
-    { table: "rate_limits", column: "failure_count" },
-    { table: "rate_limits", column: "blocked_until" },
-    { table: "rate_limits", column: "last_triggered_at" },
-    { table: "rate_limits", column: "expires_at" },
-    { table: "email_tokens", column: "token_hash" },
-    { table: "email_tokens", column: "user_id" },
-    { table: "email_tokens", column: "purpose" },
-    { table: "email_tokens", column: "expires_at" },
-    { table: "email_tokens", column: "used_at" },
-    { table: "email_tokens", column: "created_at" },
-  ];
   const REQUIRED_INDEXES = ["rate_limits_expires_idx", "email_tokens_user_idx"];
   const r = resolveAndCheck(env);
   const { url, source, id, warnings, errors } = r;
@@ -292,20 +272,14 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
       column_name: string;
       is_nullable: string;
       data_type: string;
+      column_default: string | null;
     }>(`
-      select table_name, column_name, is_nullable, data_type
+      select table_name, column_name, is_nullable, data_type, column_default
       from information_schema.columns
       where table_schema = 'public'
         and table_name in ('users', 'rate_limits', 'email_tokens')
     `);
-    const columnMap = new Map(columns.rows.map(row => [`${row.table_name}.${row.column_name}`, row]));
-    const missingColumns = REQUIRED_COLUMNS.filter(spec => {
-      const row = columnMap.get(`${spec.table}.${spec.column}`);
-      if (!row) return true;
-      if (spec.nullable !== undefined && row.is_nullable !== (spec.nullable ? "YES" : "NO")) return true;
-      if (spec.dataType && row.data_type !== spec.dataType) return true;
-      return false;
-    }).map(spec => `${spec.table}.${spec.column}`);
+    const missingColumns = findMissingColumns(columns.rows);
 
     const indexes = await client.query<{ indexname: string }>(
       "select indexname from pg_indexes where schemaname = 'public' and indexname = any($1)",

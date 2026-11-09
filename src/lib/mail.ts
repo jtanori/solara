@@ -79,6 +79,9 @@ async function sendResend(env: Environment, message: MailMessage): Promise<void>
     throw new MailAmbiguousError("Resend delivery outcome is unknown.");
   }
   if (!response.ok) {
+    if (response.status >= 500) {
+      throw new MailAmbiguousError("Resend returned a server error; delivery outcome is unknown.");
+    }
     throw new MailDeliveryError(`Resend rejected the message with status ${response.status}.`);
   }
 }
@@ -109,6 +112,9 @@ async function sendPostmark(env: Environment, message: MailMessage): Promise<voi
     throw new MailAmbiguousError("Postmark delivery outcome is unknown.");
   }
   if (!response.ok) {
+    if (response.status >= 500) {
+      throw new MailAmbiguousError("Postmark returned a server error; delivery outcome is unknown.");
+    }
     throw new MailDeliveryError(`Postmark rejected the message with status ${response.status}.`);
   }
 }
