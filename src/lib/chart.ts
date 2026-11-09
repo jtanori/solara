@@ -17,8 +17,9 @@ import {
  * reading built on it. The whole-sign angles and cusps are pinned against Swiss Ephemeris
  * (#102, `tests/ephemeris.test.ts`); the 66° Ascendant cutoff is product policy — the
  * reference still returns an Ascendant there — regression-tested at its boundary from both
- * hemispheres. #101 still owes Placidus, the modality half of the element/modality balance,
- * and a correct cross-aspect implementation (#117) — each with the same validation.
+ * hemispheres. Cross-aspects (#117) and the modality balance have landed; Placidus is the
+ * only item left on #101's own checklist — design §3's chart ruler and applying/separating
+ * stay open beyond it as epic follow-ups — and it lands with the same validation.
  */
 export type HouseSystem = "whole-sign" | "placidus";
 
@@ -50,7 +51,10 @@ export type Aspect = {
   cross: boolean;    // true when it links the return chart to the natal chart
 };
 
-export type Balance = { fire: number; earth: number; air: number; water: number };
+export type Balance = {
+  fire: number; earth: number; air: number; water: number;
+  cardinal: number; fixed: number; mutable: number;
+};
 
 export type ChartFacts = {
   chartVersion: "chart/2";
@@ -153,6 +157,46 @@ export function findAspects(
   return out.sort((x, y) => x.orb - y.orb);
 }
 
+/**
+ * Cross-aspects: every return point against every natal point, pairwise (#117).
+ *
+ * The first implementation flattened the two charts into synthetic points at
+ * `return − natal` and ran `findAspects` over *those* — asking whether two differences
+ * are in aspect to each other, which reported 2457 aspects on the baseline where 40
+ * pairs actually apply. This asks the real question: is this return point separated from
+ * that natal point by an exact aspect angle, within the configured per-body orbs (the
+ * luminary bonus is applied to the bare body names on either side of the pair)? A pair
+ * is reported at most once, at its tightest aspect.
+ */
+export function findCrossAspects(
+  returnPoints: { name: string; longitude: number }[],
+  natalPoints: { name: string; longitude: number }[],
+): Aspect[] {
+  const out: Aspect[] = [];
+  for (const p of returnPoints) {
+    for (const n of natalPoints) {
+      const separation = angularSeparation(p.longitude, n.longitude);
+      let best: { type: AspectType; orb: number } | null = null;
+      for (const type of Object.keys(EXACT_ANGLES) as AspectType[]) {
+        const orb = Math.abs(separation - EXACT_ANGLES[type]);
+        if (orb <= orbFor(type, p.name, n.name) && (best === null || orb < best.orb)) {
+          best = { type, orb };
+        }
+      }
+      if (best) {
+        out.push({
+          a: p.name, b: `natal-${n.name}`, type: best.type,
+          angle: Number(separation.toFixed(4)),
+          orb: Number(best.orb.toFixed(4)),
+          applying: null, // needs two instants; filled by the caller when it matters
+          cross: true,
+        });
+      }
+    }
+  }
+  return out.sort((x, y) => x.orb - y.orb);
+}
+
 // ------------------------------------------------------------------ chart
 
 export type CastOptions = {
@@ -178,6 +222,24 @@ function placementOf(body: BodyName, longitude: number, cusps: number[] | null, 
     house: cusps ? houseOf(longitude, cusps) : null,
     retrograde: isRetrograde(body, at),
   };
+}
+
+/**
+ * Element and modality counts for a set of longitudes — the ten bodies plus the Ascendant
+ * when it exists (the same population the element half has always counted; nodes and the
+ * Midheaven are deliberately excluded). Modality cycles by sign: Aries cardinal, Taurus
+ * fixed, Gemini mutable, then repeat.
+ */
+export function elementAndModality(longitudes: number[]): Balance {
+  const balance: Balance = { fire: 0, earth: 0, air: 0, water: 0, cardinal: 0, fixed: 0, mutable: 0 };
+  const elementOf = (signIndex: number) => (["fire", "earth", "air", "water"] as const)[signIndex % 4];
+  const modalityOf = (signIndex: number) => (["cardinal", "fixed", "mutable"] as const)[signIndex % 3];
+  for (const longitude of longitudes) {
+    const { index } = signOf(longitude);
+    balance[elementOf(index)] += 1;
+    balance[modalityOf(index)] += 1;
+  }
+  return balance;
 }
 
 export function castChart(options: CastOptions): ChartFacts {
@@ -250,25 +312,14 @@ export function castChart(options: CastOptions): ChartFacts {
   ];
 
   const aspects = findAspects(points);
-  // KNOWN DEFECT (#117, surfaced by the #115 review): this runs `findAspects` over
-  // *differences* of longitudes (return − natal), which asks "are two differences in aspect
-  // to each other?" — not "is this return point in aspect to that natal point?". On the
-  // baseline fixture it reports 2457 cross-aspects versus 40 true pairwise matches under
-  // the configured per-body orbs. Synthetic Moon/natal-Mercury and Moon/natal-Neptune
-  // are reported as a trine, although return Moon and natal Neptune are 139.8135° apart.
-  // Nothing consumes these values yet; the rework is tracked in #117 and must not be
-  // built upon.
-  const crossAspects = options.natal
-    ? findAspects(
-        points.flatMap(p => options.natal!.bodies.map(n => ({ name: `${p.name}/natal-${n.name}`, longitude: p.longitude - n.longitude }))),
-        { cross: true },
-      )
-    : [];
+  // Pairwise return-vs-natal (#117): each return point against each natal body, at most
+  // one aspect per pair under the configured per-body orbs.
+  const crossAspects = options.natal ? findCrossAspects(points, options.natal.bodies) : [];
 
-  const balance: Balance = { fire: 0, earth: 0, air: 0, water: 0 };
-  const elementOf = (signIndex: number) => (["fire", "earth", "air", "water"] as const)[signIndex % 4];
-  for (const body of bodies) balance[elementOf(signOf(body.longitude).index)] += 1;
-  if (ascendantLongitude !== null) balance[elementOf(signOf(ascendantLongitude).index)] += 1;
+  const balance = elementAndModality([
+    ...bodies.map(body => body.longitude),
+    ...(ascendantLongitude === null ? [] : [ascendantLongitude]),
+  ]);
 
   return {
     chartVersion: "chart/2",
