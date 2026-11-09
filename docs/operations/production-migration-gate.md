@@ -33,10 +33,9 @@ dry_run=false`, and immediately precedes the first statement that can change a d
 |---|---|---|
 | 1 | `rehearsal_pr` must be supplied and numeric | dispatching production with no record of what was rehearsed |
 | 2 | that PR must be `OPEN` or `MERGED` | citing a rehearsal that never reached staging |
-| 3 | a **successful, non-dry-run** `migrate staging pr-<n> <sha> mode=migrate dry=false` run must exist for the exact SHA | production becoming the first place a migration ever runs, or a verify/dry-run being mistaken for DDL |
-| 4 | the dispatch `sha` must equal that PR's head SHA and appear in the staging run name | rehearsing one commit and shipping another |
+| 3 | a **successful** `migrate staging pr-<n>` run must exist | production becoming the first place a migration ever runs |
+| 4 | the dispatch `sha` must equal that PR's head SHA | rehearsing one commit and shipping another |
 | 5 | `sha` must be a full 40-character SHA | migrating a moving branch tip |
-| 6 | the staging run must contain the `migration-applied.json` artifact for that env/SHA/mode | a green workflow that only ran `verify` |
 
 Additionally, outside the gate:
 
@@ -54,7 +53,7 @@ The `production` GitHub Environment is still a real boundary for **secret isolat
 ```bash
 # 1. rehearse on staging — this is the green run the gate looks for
 npx tsx scripts/db-remote.ts --pr 97                       # env inferred: staging
-#    → run-name: migrate staging pr-97 <sha> mode=migrate dry=false   (must conclude success)
+#    → run-name: migrate staging pr-97 <sha>   (must conclude success)
 
 # 2. promote to main (ADR 004: staging → main uses --merge)
 #    production migration happens on the promotion PR's head = the staging tip
@@ -67,6 +66,17 @@ npx tsx scripts/db-remote.ts --check --env production
 ```
 
 Step 4 must report `OK production schema and drizzle journal are in sync`.
+
+## Fresh-workflow rehearsal after both PRs merge
+
+The first staging run using #118's older workflow cannot satisfy #120's artifact requirement. After #118 and #120 are both merged, rehearse again with the updated workflow:
+
+1. Open the promotion PR (`staging → main`) and freeze its full head SHA.
+2. Manually dispatch `migrate.yml` for `env=staging`, `pr=<promotion-pr>`, `sha=<full promotion SHA>`, `mode=migrate`, `dry_run=false`.
+3. Confirm the run name contains the exact SHA and `mode=migrate dry=false`, and uploads `migration-applied.json`.
+4. Supply that same promotion PR and SHA to the production gate.
+
+The marker is necessary but not sufficient: a migrate run can report “nothing to do”. Preserve the original migration log and inspect the schema verdict; do not treat the marker alone as proof that DDL ran in that run.
 
 ## What is still not covered
 
