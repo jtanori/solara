@@ -8,6 +8,7 @@ CREATE TABLE "email_tokens" (
 );
 --> statement-breakpoint
 ALTER TABLE "users" ADD COLUMN "email_verified_at" timestamp with time zone;--> statement-breakpoint
-UPDATE "users" SET "email_verified_at" = now() WHERE "email_verified_at" IS NULL;--> statement-breakpoint
+DELETE FROM "sessions" WHERE "user_id" IN (SELECT "id" FROM "users" WHERE "email_verified_at" IS NULL);--> statement-breakpoint
+DELETE FROM "email_tokens" WHERE "used_at" IS NULL;--> statement-breakpoint
 ALTER TABLE "email_tokens" ADD CONSTRAINT "email_tokens_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "email_tokens_user_idx" ON "email_tokens" USING btree ("user_id");

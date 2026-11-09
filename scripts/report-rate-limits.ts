@@ -1,14 +1,9 @@
 import "dotenv/config";
-import { desc } from "drizzle-orm";
-import { db, pool } from "../src/db";
-import { rateLimits } from "../src/db/schema";
+import { pool } from "../src/db";
+import { listRateLimitReport } from "../src/lib/rate-limit-report";
 
 async function main() {
-  const rows = await db
-    .select()
-    .from(rateLimits)
-    .orderBy(desc(rateLimits.lastTriggeredAt), desc(rateLimits.failureCount))
-    .limit(50);
+  const rows = await listRateLimitReport();
 
   if (!rows.length) {
     console.log("No rate-limit state recorded.");

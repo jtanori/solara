@@ -25,6 +25,13 @@ export class MailDeliveryError extends Error {
   }
 }
 
+export class MailAmbiguousError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MailAmbiguousError";
+  }
+}
+
 type Environment = Record<string, string | undefined>;
 
 function required(env: Environment, name: string): string {
@@ -50,22 +57,27 @@ export function resolveMailTransportName(env: Environment = process.env): MailTr
 async function sendResend(env: Environment, message: MailMessage): Promise<void> {
   const apiKey = required(env, "RESEND_API_KEY");
   const from = required(env, "MAIL_FROM");
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [message.to],
-      subject: message.subject,
-      text: message.text,
-      ...(message.html ? { html: message.html } : {}),
-      ...(env.MAIL_REPLY_TO?.trim() ? { reply_to: env.MAIL_REPLY_TO.trim() } : {}),
-    }),
-    signal: AbortSignal.timeout(10_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: [message.to],
+        subject: message.subject,
+        text: message.text,
+        ...(message.html ? { html: message.html } : {}),
+        ...(env.MAIL_REPLY_TO?.trim() ? { reply_to: env.MAIL_REPLY_TO.trim() } : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new MailAmbiguousError("Resend delivery outcome is unknown.");
+  }
   if (!response.ok) {
     throw new MailDeliveryError(`Resend rejected the message with status ${response.status}.`);
   }
@@ -74,23 +86,28 @@ async function sendResend(env: Environment, message: MailMessage): Promise<void>
 async function sendPostmark(env: Environment, message: MailMessage): Promise<void> {
   const token = required(env, "POSTMARK_SERVER_TOKEN");
   const from = required(env, "MAIL_FROM");
-  const response = await fetch("https://api.postmarkapp.com/email", {
-    method: "POST",
-    headers: {
-      "X-Postmark-Server-Token": token,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      From: from,
-      To: message.to,
-      Subject: message.subject,
-      TextBody: message.text,
-      ...(message.html ? { HtmlBody: message.html } : {}),
-      ...(env.MAIL_REPLY_TO?.trim() ? { ReplyTo: env.MAIL_REPLY_TO.trim() } : {}),
-    }),
-    signal: AbortSignal.timeout(10_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch("https://api.postmarkapp.com/email", {
+      method: "POST",
+      headers: {
+        "X-Postmark-Server-Token": token,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        From: from,
+        To: message.to,
+        Subject: message.subject,
+        TextBody: message.text,
+        ...(message.html ? { HtmlBody: message.html } : {}),
+        ...(env.MAIL_REPLY_TO?.trim() ? { ReplyTo: env.MAIL_REPLY_TO.trim() } : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new MailAmbiguousError("Postmark delivery outcome is unknown.");
+  }
   if (!response.ok) {
     throw new MailDeliveryError(`Postmark rejected the message with status ${response.status}.`);
   }
@@ -112,7 +129,11 @@ async function sendOutbox(env: Environment, message: MailMessage): Promise<void>
     message.text,
     "",
   ].join("\n");
-  await writeFile(path.join(directory, filename), content, { encoding: "utf8", mode: 0o600 });
+  try {
+    await writeFile(path.join(directory, filename), content, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    throw new MailDeliveryError("Unable to write the local outbox message.");
+  }
   console.log(`[mail] wrote ${filename} to ${directory}`);
 }
 

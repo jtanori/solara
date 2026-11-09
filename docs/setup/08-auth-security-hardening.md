@@ -19,72 +19,94 @@ Local outbox messages are written to `.mail-outbox/*.eml` with mode `0600`. They
 
 `src/lib/rate-limit.ts` stores hashed keys in the `rate_limits` table.
 
-| Route | Per IP | Per email |
-|---|---|---|
-| Sign-up | 5 / hour | 3 / hour |
-| Sign-in | 10 / 15 min | 10 failed / 15 min |
-| Verification resend | 10 / hour | 3 / 15 min |
-| Verification link | 10 / hour | — |
-| CSP reports | 60 / min | — |
+| Route | Budget |
+|---|---|
+| Sign-up | 5/hour per IP, 3/hour per email |
+| Sign-in IP ceiling | 100 attempts/15 min per IP |
+| Sign-in IP failures | 50 failures/15 min per IP |
+| Sign-in account | 10 failures/15 min per email |
+| Claim attempt | 10/hour per IP |
+| Claim resend | 10/hour per IP, 3/15 min per email |
+| CSP reports | 60/min per IP |
 
-Failed sign-ins also increment an IP+email failure key. After 5 failures the key backs off exponentially from 30 seconds up to 15 minutes. A successful sign-in clears the failure state. Blocked requests return `429` with `Retry-After`; the response never reveals whether an email exists.
+Sign-in attempts for one email are serialized with a PostgreSQL advisory lock. The account failure budget is checked before `scrypt`, so rotating IPs cannot bypass it. After 10 failures the account backs off progressively from 30 seconds to 15 minutes. A correct password after the backoff succeeds and resets the failure state. The accepted tradeoff is that an attacker can repeatedly cause short lockouts; CAPTCHA/Turnstile is the future mitigation.
+
+Blocked requests return `429` with `Retry-After`; the response never reveals whether an email exists. Unknown accounts use the same dummy scrypt path and the same generic failure.
 
 Inspect state without raw emails or IPs:
 
 ```bash
 npm run rate-limits:report
-```
-
-The script prints key prefixes, counts, failures, block expiry, and last trigger. Expired rows can be deleted by an operator or a scheduled job:
-
-```bash
 npm run rate-limits:cleanup
 ```
 
-The table has an index on `expires_at`.
+The report shows triggered rows first (`NULLS LAST`). Password hashing is async `scrypt` (`src/lib/passwords.ts`).
 
-Password hashing is async `scrypt` (`src/lib/passwords.ts`). Rate limiting bounds work before hashing; if a deployment needs more concurrency, tune the Node/libuv threadpool rather than reintroducing synchronous hashing.
+## Account claim and email transport (#54)
 
-## Email transport and verification (#54)
-
-`src/lib/mail.ts` exposes `sendMail({ to, subject, text, html? })` and selects a provider from the environment. Hosted environments must configure a provider; a missing provider is a hard failure.
+`src/lib/mail.ts` exposes `sendMail({ to, subject, text, html? })` and selects a provider from the environment. Hosted environments must configure a provider; a missing provider is a hard failure. Delivery runs in `after()`, after the HTTP response, so provider latency does not reveal whether a signup created an account.
 
 Email domain setup (owner-only):
 
 1. Verify the sending domain with Resend or Postmark.
 2. Publish the provider's SPF and DKIM records.
 3. Set `MAIL_FROM` to the verified sender and add `MAIL_REPLY_TO` if replies should go elsewhere.
-4. Send a staging sign-up and confirm delivery before promotion.
-5. Do not log message bodies or tokens; provider dashboards may retain metadata.
+4. Send a staging sign-up and confirm delivery in a real browser before promotion.
+5. Do not log message bodies or tokens. Provider click tracking should be disabled where possible.
 
-Verification flow:
+Claim flow:
 
-1. Sign-up creates the user and a `email_tokens` row with a SHA-256 hash, purpose `email_verification`, and a 24-hour expiry.
-2. The email links to `/api/auth/verify?token=…&lang=…`.
-3. The route consumes the token once and redirects to `/verify-email?status=verified|used|expired|invalid|rate_limited|error`.
-4. The page offers a resend form. `POST /api/auth/verify/request` is idempotent and returns a generic success response; a 60-second cooldown prevents token churn.
-5. Existing accounts were backfilled as verified in migration `0002_email_verification`.
+1. Sign-up collects name and email only. It creates an unverified user with an unusable pending password hash and returns the same generic `200` for new, unverified-existing, and verified-existing addresses. No session is created.
+2. A claim token is stored SHA-256-hashed with purpose `account_claim` and a 24-hour expiry. The email link is `/verify-email?lang=…#token=…`; the token is in the fragment, not the request URL.
+3. The page reads the fragment, clears it after capture, and asks the mailbox owner to choose a password.
+4. `POST /api/auth/claim` consumes the token, sets the chosen password and `email_verified_at`, deletes all sessions for the user, and invalidates sibling tokens atomically.
+5. Legacy unverified accounts are not backfilled. They must claim and set a new password; sessions for unverified users are revoked by migration `0002`.
+6. `POST /api/auth/verify/request` resends a claim link with a 60-second cooldown. `GET /api/auth/verify` is a non-mutating transition page for old query-style links; it never consumes a token.
 
-Policy: sign-in stays available. `POST /api/billing/checkout` and `DELETE /api/profile` return `403` with `code: "email_not_verified"` until the address is verified. The dashboard shows a verification notice when needed.
+Delivery states:
 
-Tokens are never written to application logs. The verification route sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`; platform access logs may still record the request URL, so do not paste verification links into tickets or chat.
+- **Provider success:** finalize the new token and delete older unused tokens.
+- **Definitive rejection:** discard the new token; a previously delivered link stays valid.
+- **Timeout/ambiguous acceptance:** keep both tokens active; do not auto-retry.
+- **Crash after response:** the user can resend; old tokens remain valid.
+
+`consume`-equivalent claim logic invalidates all sibling unused tokens when one succeeds. No plaintext token is stored in the database, logs, or a durable queue.
+
+Policy: unverified users cannot sign in. `POST /api/billing/checkout` and `DELETE /api/profile` still return `403` with `code: "email_not_verified"`; the stronger rule is that no session is issued before the claim. The dashboard shows a verification notice when needed. Password recovery for already-verified accounts remains #55.
+
+Tokens are never written to application logs. Claim responses use `Cache-Control: no-store`; the claim page clears the fragment after capture.
+
+## Migration order
+
+Migration `0002_email_verification` is additive and removes unverified sessions. Apply and verify migrations with the approved runner **before** merging/deploying:
+
+```bash
+npx tsx scripts/db-run.ts --env staging status
+npx tsx scripts/db-run.ts --env staging migrate
+npx tsx scripts/db-run.ts --env staging verify
+```
+
+`verify` checks `rate_limits`, `email_tokens`, `users.email_verified_at`, and the new indexes. Do not edit `0002` in place if it has run in a persistent environment; use an audited forward repair. The production promotion waits for the separate exact-SHA migration-gate PR.
 
 ## Strict origin checks (#56)
 
 `src/proxy.ts` runs before mutating API routes. For `POST`, `PUT`, `PATCH`, and `DELETE` under `/api/*`:
 
-- Accept when `Origin` matches the host in `APP_URL` or the request `Host` (covers custom domains and `*.vercel.app` previews).
+- Compare the complete `Origin` (scheme, host, port) against `APP_URL`, configured Vercel origins, and the actual request target origin.
 - Accept when `Origin` is absent and `Sec-Fetch-Site: same-origin`.
-- Reject with `403` when both are absent or the origin is foreign.
+- Reject with `403` when both are absent, the scheme differs, the port differs, or the origin is foreign.
 - Pass `GET`, `HEAD`, and `OPTIONS`.
+
+The proxy matcher has a dedicated `/api/:path*` entry plus the asset-filtered page entry, so an API path ending in `.png`, `.js`, or another asset extension cannot skip the guard.
 
 Exemptions:
 
 - `/api/billing/webhook` — authenticated by the Stripe signature.
 - `/api/csp-report` — browser-generated reports; content type and size are validated.
-- `Authorization: Bearer …` — no cookie, so no CSRF surface; future mobile/API clients use this path.
 
-`GET` endpoints are not origin-gated. New mutating routes inherit the proxy automatically; do not add per-route copies of the check.
+There is no Bearer exemption. No validated bearer flow exists yet; add one only with a real cookie-independent authentication check.
+
+New mutating routes inherit the proxy automatically; do not add per-route copies of the check.
 
 ## Security headers and CSP (#57)
 
@@ -133,13 +155,16 @@ npx eslint src tests scripts --max-warnings=0
 RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
 npm run build
 node scripts/check-setup.mjs local
+npx tsx scripts/db-run.ts --env local verify
 ```
 
 Staging acceptance:
 
-- 11 rapid failed sign-ins for one email return `429` with `Retry-After`.
-- A fresh sign-up delivers a verification email; the link verifies once, and reuse or expiry fails with a resend option.
-- An unverified account can browse but receives `403` for checkout and account deletion.
-- A mutating API request with no `Origin`/`Sec-Fetch-Site` returns `403`; the real app still signs up, saves charts, and deletes accounts.
+- A fresh sign-up returns the same generic response as an existing address and creates no session.
+- The delivered claim link opens a confirmation page; the mailbox owner chooses a password and can then sign in.
+- A scanner-like GET leaves the account unverified; reuse/expiry fails with a resend option.
+- Ten distributed failures block the account until the backoff expires; a correct password then succeeds.
+- Twelve successful logins across accounts from one shared IP all return `200`.
+- A mutating API request with no `Origin`/`Sec-Fetch-Site` returns `403`; mixed-scheme origins, fake Bearer headers, and `.png` API paths are rejected.
 - HTML responses carry the security headers; no CSP violations appear in the report stream.
 - Maps, Stripe test checkout, PDF download, and sign-in still work.

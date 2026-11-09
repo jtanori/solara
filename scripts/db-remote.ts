@@ -258,7 +258,14 @@ async function findRun(t: Target, before: string): Promise<string> {
 
 // Read the schema verdict the workflow published as an artifact. The job conclusion is NOT the
 // verdict: a verify run exits 0 even when the database is empty, by design.
-type Verdict = { ok: boolean; missing: string[]; pending: string[]; tables?: string[] };
+type Verdict = {
+  ok: boolean;
+  missing: string[];
+  missingColumns?: string[];
+  missingIndexes?: string[];
+  pending: string[];
+  tables?: string[];
+};
 
 function readVerdict(runId: string, env: string, sha: string): Verdict | null {
   const dir = mkdtempSync(path.join(tmpdir(), "solara-verdict-"));
@@ -269,9 +276,19 @@ function readVerdict(runId: string, env: string, sha: string): Verdict | null {
       .find(f => f.endsWith("verify.json"));
     if (!found) return null;
     const raw = JSON.parse(readFileSync(path.join(dir, found), "utf8")) as {
-      ok?: boolean; missing?: string[]; pending?: string[];
+      ok?: boolean;
+      missing?: string[];
+      missingColumns?: string[];
+      missingIndexes?: string[];
+      pending?: string[];
     };
-    return { ok: raw.ok === true, missing: raw.missing ?? [], pending: raw.pending ?? [] };
+    return {
+      ok: raw.ok === true,
+      missing: raw.missing ?? [],
+      missingColumns: raw.missingColumns ?? [],
+      missingIndexes: raw.missingIndexes ?? [],
+      pending: raw.pending ?? [],
+    };
   } catch {
     return null; // artifact unavailable (expired, or gh lacks artifact read) — degrade, do not lie
   } finally {
@@ -376,6 +393,8 @@ async function main() {
     } else {
       console.log("verdict   OUT OF SYNC");
       if (verdict.missing.length) console.log(`missing   ${verdict.missing.join(", ")}`);
+      if (verdict.missingColumns?.length) console.log(`columns   missing: ${verdict.missingColumns.join(", ")}`);
+      if (verdict.missingIndexes?.length) console.log(`indexes   missing: ${verdict.missingIndexes.join(", ")}`);
       if (verdict.pending.length) console.log(`pending   ${verdict.pending.join(", ")}`);
       if (expectsDrift) {
         console.log(`EXPECTED  a ${o.check ? "verify" : "dry-run"} dispatch may find drift — no DDL was run`);

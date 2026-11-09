@@ -4,7 +4,9 @@ import path from "node:path";
 import test from "node:test";
 import {
   createMailTransport,
+  MailAmbiguousError,
   MailConfigurationError,
+  MailDeliveryError,
   resolveMailTransportName,
 } from "../src/lib/mail";
 
@@ -60,6 +62,32 @@ test("requires provider credentials", () => {
     }),
     MailConfigurationError,
   );
+});
+
+test("distinguishes definitive provider rejection from an ambiguous network failure", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const transport = createMailTransport({
+      NODE_ENV: "production",
+      MAIL_TRANSPORT: "resend",
+      MAIL_FROM: "Solara <no-reply@example.com>",
+      RESEND_API_KEY: "re_test",
+    });
+
+    globalThis.fetch = (async () => new Response("rejected", { status: 422 })) as typeof fetch;
+    await assert.rejects(
+      () => transport.send({ to: "person@example.test", subject: "Subject", text: "Body" }),
+      MailDeliveryError,
+    );
+
+    globalThis.fetch = (async () => { throw new Error("network timeout"); }) as typeof fetch;
+    await assert.rejects(
+      () => transport.send({ to: "person@example.test", subject: "Subject", text: "Body" }),
+      MailAmbiguousError,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("writes local messages to the outbox without logging the body", async () => {

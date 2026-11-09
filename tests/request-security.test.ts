@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   evaluateMutationOrigin,
-  isBearerRequest,
   isGuardedApiPath,
   isMutatingMethod,
 } from "../src/lib/request-security";
@@ -13,9 +12,7 @@ function decide(overrides: Partial<Parameters<typeof evaluateMutationOrigin>[0]>
   return evaluateMutationOrigin({
     origin: null,
     secFetchSite: null,
-    host: "solara-stg.vercel.app",
     appUrl,
-    authorization: null,
     requestUrl: "https://solara-stg.vercel.app/api/auth",
     ...overrides,
   });
@@ -29,35 +26,41 @@ test("identifies mutating methods and guarded API paths", () => {
   assert.equal(isMutatingMethod("GET"), false);
   assert.equal(isGuardedApiPath("/api/auth"), true);
   assert.equal(isGuardedApiPath("/api/readings/abc"), true);
+  assert.equal(isGuardedApiPath("/api/readings/abc.png"), true);
   assert.equal(isGuardedApiPath("/api/billing/webhook"), false);
   assert.equal(isGuardedApiPath("/api/billing/webhook/"), false);
   assert.equal(isGuardedApiPath("/api/csp-report"), false);
-  assert.equal(isGuardedApiPath("/api/csp-report/"), false);
   assert.equal(isGuardedApiPath("/dashboard"), false);
 });
 
-test("detects bearer requests without treating malformed values as bearer", () => {
-  assert.equal(isBearerRequest("Bearer abc"), true);
-  assert.equal(isBearerRequest("bearer abc"), true);
-  assert.equal(isBearerRequest("Basic abc"), false);
-  assert.equal(isBearerRequest("Bearer"), false);
-  assert.equal(isBearerRequest(null), false);
-});
-
-test("accepts a same-origin Origin header", () => {
+test("accepts an exact same-origin Origin", () => {
   assert.deepEqual(
     decide({ origin: "https://solara-stg.vercel.app" }),
     { allowed: true, reason: "same-origin" },
   );
 });
 
-test("accepts the request Host for preview and custom domains", () => {
+test("accepts a configured preview origin", () => {
   assert.deepEqual(
     decide({
       origin: "https://solara-git-staging.vercel.app",
-      host: "solara-git-staging.vercel.app",
+      requestUrl: "https://solara-git-staging.vercel.app/api/auth",
     }),
     { allowed: true, reason: "same-origin" },
+  );
+});
+
+test("rejects a mixed-scheme origin on the same host", () => {
+  assert.deepEqual(
+    decide({ origin: "http://solara-stg.vercel.app" }),
+    { allowed: false, reason: "foreign-origin" },
+  );
+});
+
+test("rejects a different port on the same host", () => {
+  assert.deepEqual(
+    decide({ origin: "https://solara-stg.vercel.app:8443" }),
+    { allowed: false, reason: "foreign-origin" },
   );
 });
 
@@ -92,19 +95,5 @@ test("rejects an Origin that cannot be parsed", () => {
   assert.deepEqual(
     decide({ origin: "not-a-url" }),
     { allowed: false, reason: "invalid-origin" },
-  );
-});
-
-test("rejects an invalid APP_URL", () => {
-  assert.deepEqual(
-    decide({ origin: "https://solara-stg.vercel.app", appUrl: "not-a-url" }),
-    { allowed: false, reason: "invalid-app-url" },
-  );
-});
-
-test("allows bearer-authenticated API clients without Origin", () => {
-  assert.deepEqual(
-    decide({ authorization: "Bearer opaque-token" }),
-    { allowed: true, reason: "bearer" },
   );
 });

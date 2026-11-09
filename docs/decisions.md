@@ -114,7 +114,7 @@ Launch limitations are listed in `README.md` and `docs/setup/README.md`: calcula
 
 ## ADR 007 — Auth and transport hardening for launch
 
-**Date:** 2026-11-08
+**Date:** 2026-11-09
 **Status:** Accepted
 **Issues:** #53, #54, #56, #57
 
@@ -123,16 +123,19 @@ The prototype had unlimited auth attempts, synchronous scrypt, no email channel,
 
 ### Decision
 - Password hashing uses async `scrypt` so auth bursts cannot block the event loop.
-- `/api/auth`, verification resends, and verification attempts are rate-limited in Postgres per IP and per email, with an IP+email failure backoff. Responses use `429` + `Retry-After` and do not reveal whether an email exists.
-- Email delivery is a provider seam (`src/lib/mail.ts`): Resend and Postmark in hosted environments, a local outbox in development, and a hard failure when production has no provider.
-- Email verification uses hashed, single-use, 24-hour tokens. Sign-in stays available, but checkout and account deletion require `email_verified_at`. Existing accounts are backfilled as verified.
-- `src/proxy.ts` centrally rejects cookie-authenticated mutating API requests unless `Origin` matches `APP_URL`/`Host` or `Sec-Fetch-Site: same-origin`. Stripe webhooks, CSP reports, and Bearer clients are exempt.
+- Sign-up collects name and email only. No session or usable password exists before mailbox proof. The mailbox owner claims the account by choosing a password; claim revokes all sessions and invalidates sibling tokens.
+- Sign-in is unavailable until the claim completes. Per-account attempts are serialized with a PostgreSQL lock; 10 failures trigger progressive 30s-to-15m backoff. IP ceilings are generous (100 all-attempts, 50 failures per 15m). Responses use `429` + `Retry-After` and never reveal whether an email exists.
+- Email delivery runs in `after()` so provider latency does not reveal account existence. Tokens are hashed at rest and never stored in queues or logs. The previous token stays valid until a new message is delivered; ambiguous outcomes keep both tokens; claim invalidates siblings.
+- `src/proxy.ts` centrally rejects cookie-authenticated mutating API requests unless the complete `Origin` (scheme, host, port) matches a trusted origin or `Sec-Fetch-Site: same-origin`. Stripe webhooks and CSP reports are exempt. There is no Bearer exemption until a real bearer flow exists.
+- Migration `0002` does not backfill legacy accounts as verified. It revokes unverified sessions; legacy users must claim with a new password.
 - `src/lib/security-headers.ts` owns the security headers and the nonce CSP allowlist. CSP starts in `report-only` mode and moves to `enforce` only after a clean observation window.
 
 ### Consequences
 - New mutating routes inherit the origin guard; do not duplicate it per route.
 - New third-party origins must be added to the CSP allowlist and documented in `docs/setup/08-auth-security-hardening.md`.
 - Rate-limit keys are hashed; operational inspection uses `npm run rate-limits:report`, never raw emails or IPs.
+- Existing unverified users are logged out and must claim; seed fixtures are local-only and verified.
+- Production promotion requires the separate exact-SHA migration-gate PR.
 - #57 remains open until CSP enforcement is verified after the observation window.
 
 ---

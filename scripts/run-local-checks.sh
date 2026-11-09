@@ -70,7 +70,7 @@ import("dotenv/config").then(async()=>{
   const {randomBytes,createHash}=await import("node:crypto");
   const {eq}=await import("drizzle-orm");
   const email="dash-check-"+Date.now()+"@example.test";
-  const [u]=await db.insert(users).values({email,name:"Dash Check",role:"user",passwordHash:"x"}).returning({id:users.id});
+  const [u]=await db.insert(users).values({email,name:"Dash Check",role:"user",passwordHash:"x",emailVerifiedAt:new Date()}).returning({id:users.id});
   const tok=randomBytes(32).toString("base64url"); const h=createHash("sha256").update(tok).digest("hex");
   await db.insert(sessions).values({tokenHash:h,userId:u.id,expiresAt:new Date(Date.now()+3600000)});
   const res=await fetch("http://localhost:3000/dashboard",{headers:{Cookie:`solara_session=${tok}`}});

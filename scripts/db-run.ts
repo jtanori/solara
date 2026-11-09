@@ -253,7 +253,30 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
   const REQUIRED = [
     "public.users", "public.sessions", "public.readings", "public.knowledge",
     "public.subscriptions", "public.stripe_events", "public.audit_logs",
+    "public.rate_limits", "public.email_tokens",
   ];
+  const REQUIRED_COLUMNS: Array<{
+    table: string;
+    column: string;
+    nullable?: boolean;
+    dataType?: string;
+  }> = [
+    { table: "users", column: "email_verified_at", nullable: true, dataType: "timestamp with time zone" },
+    { table: "rate_limits", column: "key" },
+    { table: "rate_limits", column: "window_start" },
+    { table: "rate_limits", column: "count" },
+    { table: "rate_limits", column: "failure_count" },
+    { table: "rate_limits", column: "blocked_until" },
+    { table: "rate_limits", column: "last_triggered_at" },
+    { table: "rate_limits", column: "expires_at" },
+    { table: "email_tokens", column: "token_hash" },
+    { table: "email_tokens", column: "user_id" },
+    { table: "email_tokens", column: "purpose" },
+    { table: "email_tokens", column: "expires_at" },
+    { table: "email_tokens", column: "used_at" },
+    { table: "email_tokens", column: "created_at" },
+  ];
+  const REQUIRED_INDEXES = ["rate_limits_expires_idx", "email_tokens_user_idx"];
   const r = resolveAndCheck(env);
   const { url, source, id, warnings, errors } = r;
   if (!json) printTarget(r, env);
@@ -263,19 +286,54 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
     const reg = await client.query<Record<string, string | null>>(
       `select ${REQUIRED.map((r, i) => `to_regclass($${i + 1}) as t${i}`).join(", ")}`, REQUIRED);
     const missing = REQUIRED.filter((r, i) => !reg.rows[0]?.[`t${i}`]);
+
+    const columns = await client.query<{
+      table_name: string;
+      column_name: string;
+      is_nullable: string;
+      data_type: string;
+    }>(`
+      select table_name, column_name, is_nullable, data_type
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name in ('users', 'rate_limits', 'email_tokens')
+    `);
+    const columnMap = new Map(columns.rows.map(row => [`${row.table_name}.${row.column_name}`, row]));
+    const missingColumns = REQUIRED_COLUMNS.filter(spec => {
+      const row = columnMap.get(`${spec.table}.${spec.column}`);
+      if (!row) return true;
+      if (spec.nullable !== undefined && row.is_nullable !== (spec.nullable ? "YES" : "NO")) return true;
+      if (spec.dataType && row.data_type !== spec.dataType) return true;
+      return false;
+    }).map(spec => `${spec.table}.${spec.column}`);
+
+    const indexes = await client.query<{ indexname: string }>(
+      "select indexname from pg_indexes where schemaname = 'public' and indexname = any($1)",
+      [REQUIRED_INDEXES],
+    );
+    const presentIndexes = new Set(indexes.rows.map(row => row.indexname));
+    const missingIndexes = REQUIRED_INDEXES.filter(index => !presentIndexes.has(index));
+
     const applied = await readApplied(client);
     const pendingTags = entries.filter(e => !applied.hashes.includes(journalHash(e, readFileSync(path.resolve(process.cwd(), `drizzle/${e.tag}.sql`), "utf8")))).map(e => e.tag);
 
-    const ok = missing.length === 0 && pendingTags.length === 0 && errors.length === 0;
+    const ok = missing.length === 0
+      && missingColumns.length === 0
+      && missingIndexes.length === 0
+      && pendingTags.length === 0
+      && errors.length === 0;
     const out = {
       env, source,
       target: `${id.user}@${id.host}/${id.database}`,
-      warnings, errors, required: REQUIRED, missing, pending: pendingTags, ok,
+      warnings, errors, required: REQUIRED, missing,
+      missingColumns, missingIndexes, pending: pendingTags, ok,
     };
 
     if (json) console.log(JSON.stringify(out, null, 2));
     else {
       console.log(`tables   ${REQUIRED.length - missing.length}/${REQUIRED.length} present${missing.length ? ` — missing: ${missing.join(", ")}` : ""}`);
+      console.log(`columns  ${REQUIRED_COLUMNS.length - missingColumns.length}/${REQUIRED_COLUMNS.length} present${missingColumns.length ? ` — missing: ${missingColumns.join(", ")}` : ""}`);
+      console.log(`indexes  ${REQUIRED_INDEXES.length - missingIndexes.length}/${REQUIRED_INDEXES.length} present${missingIndexes.length ? ` — missing: ${missingIndexes.join(", ")}` : ""}`);
       console.log(`pending  ${pendingTags.length ? pendingTags.join(", ") : "none"}`);
       console.log(ok ? "OK       schema and journal are up to date" : "FAIL     environment is not ready");
     }

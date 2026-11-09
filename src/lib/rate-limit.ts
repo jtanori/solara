@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { rateLimits } from "@/db/schema";
+import type { DbTransaction } from "@/lib/account-lock";
 
 export type RateLimitPolicy = {
   limit: number;
@@ -26,16 +27,23 @@ export type FailureBackoff = {
 export const AUTH_RATE_LIMITS = {
   signupIp: { limit: 5, windowSeconds: 60 * 60 },
   signupEmail: { limit: 3, windowSeconds: 60 * 60 },
-  loginIp: { limit: 10, windowSeconds: 15 * 60 },
-  loginEmail: { limit: 10, windowSeconds: 15 * 60 },
+  loginIp: { limit: 100, windowSeconds: 15 * 60 },
+  loginIpFailures: { limit: 50, windowSeconds: 15 * 60 },
+  claimIp: { limit: 10, windowSeconds: 60 * 60 },
   verifyRequestEmail: { limit: 3, windowSeconds: 15 * 60 },
   verifyRequestIp: { limit: 10, windowSeconds: 60 * 60 },
-  verifyTokenIp: { limit: 10, windowSeconds: 60 * 60 },
   cspReportIp: { limit: 60, windowSeconds: 60 },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export const AUTH_FAILURE_BACKOFF: FailureBackoff = {
   threshold: 5,
+  baseDelaySeconds: 30,
+  maxDelaySeconds: 15 * 60,
+  windowSeconds: 15 * 60,
+};
+
+export const ACCOUNT_FAILURE_BACKOFF: FailureBackoff = {
+  threshold: 10,
   baseDelaySeconds: 30,
   maxDelaySeconds: 15 * 60,
   windowSeconds: 15 * 60,
@@ -184,12 +192,6 @@ export async function clearAuthFailures(key: string): Promise<void> {
     .where(eq(rateLimits.key, key));
 }
 
-export async function resetRateLimit(key: string): Promise<void> {
-  await db.update(rateLimits)
-    .set({ count: 0, failureCount: 0, blockedUntil: null, lastTriggeredAt: null })
-    .where(eq(rateLimits.key, key));
-}
-
 export async function getRateLimitState(key: string): Promise<{
   count: number;
   failureCount: number;
@@ -204,4 +206,83 @@ export async function getRateLimitState(key: string): Promise<{
     blockedUntil: row.blockedUntil,
     lastTriggeredAt: row.lastTriggeredAt,
   };
+}
+
+export async function getRateLimitStateTx(
+  tx: DbTransaction,
+  key: string,
+): Promise<{
+  count: number;
+  failureCount: number;
+  blockedUntil: Date | null;
+  lastTriggeredAt: Date | null;
+} | null> {
+  const [row] = await tx.select().from(rateLimits).where(eq(rateLimits.key, key)).limit(1);
+  if (!row) return null;
+  return {
+    count: row.count,
+    failureCount: row.failureCount,
+    blockedUntil: row.blockedUntil,
+    lastTriggeredAt: row.lastTriggeredAt,
+  };
+}
+
+export async function recordAuthFailureTx(
+  tx: DbTransaction,
+  key: string,
+  config: FailureBackoff = ACCOUNT_FAILURE_BACKOFF,
+): Promise<{ failureCount: number; blockedUntil: Date | null }> {
+  const now = new Date();
+  await tx.insert(rateLimits).values({
+    key,
+    windowStart: now,
+    count: 0,
+    failureCount: 0,
+    expiresAt: now,
+  }).onConflictDoNothing();
+
+  const [row] = await tx.select().from(rateLimits).where(eq(rateLimits.key, key)).for("update");
+  if (!row) throw new Error("Rate limit row unavailable.");
+
+  const expired = row.expiresAt.getTime() <= now.getTime();
+  const failureCount = (expired ? 0 : row.failureCount) + 1;
+  let blockedUntil = expired ? null : row.blockedUntil;
+
+  if (failureCount >= config.threshold) {
+    const delay = Math.min(
+      config.baseDelaySeconds * 2 ** (failureCount - config.threshold),
+      config.maxDelaySeconds,
+    );
+    blockedUntil = new Date(now.getTime() + delay * 1000);
+  }
+
+  const expiresAt = new Date(Math.max(
+    (expired ? now : row.expiresAt).getTime(),
+    now.getTime() + config.windowSeconds * 1000,
+  ));
+
+  await tx.update(rateLimits).set({
+    windowStart: expired ? now : row.windowStart,
+    count: expired ? 0 : row.count,
+    failureCount,
+    blockedUntil,
+    expiresAt,
+    lastTriggeredAt: failureCount >= config.threshold ? now : row.lastTriggeredAt,
+  }).where(eq(rateLimits.key, key));
+
+  if (blockedUntil) {
+    console.warn("[auth-rate-limit]", JSON.stringify({
+      event: "account_failure_backoff",
+      failureCount,
+      blockedUntil: blockedUntil.toISOString(),
+    }));
+  }
+
+  return { failureCount, blockedUntil };
+}
+
+export async function clearAuthFailuresTx(tx: DbTransaction, key: string): Promise<void> {
+  await tx.update(rateLimits)
+    .set({ failureCount: 0, blockedUntil: null })
+    .where(eq(rateLimits.key, key));
 }

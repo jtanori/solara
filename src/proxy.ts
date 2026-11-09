@@ -14,6 +14,16 @@ function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
+function vercelOrigins(): string[] {
+  return [
+    process.env.VERCEL_BRANCH_URL,
+    process.env.VERCEL_URL,
+    process.env.VERCEL_PROJECT_PRODUCTION_URL,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.startsWith("http") ? value : `https://${value}`);
+}
+
 export function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
@@ -21,10 +31,9 @@ export function proxy(request: NextRequest) {
     const decision = evaluateMutationOrigin({
       origin: request.headers.get("origin"),
       secFetchSite: request.headers.get("sec-fetch-site"),
-      host: request.headers.get("host"),
       appUrl: process.env.APP_URL,
-      authorization: request.headers.get("authorization"),
       requestUrl: request.url,
+      trustedOrigins: vercelOrigins(),
     });
 
     if (!decision.allowed) {
@@ -57,6 +66,7 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
+    "/api/:path*",
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|txt|xml|woff|woff2)$).*)",
   ],
 };

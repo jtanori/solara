@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
-import { and, eq, gt, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import { sessions, subscriptions, users } from "@/db/schema";
 import { hashPassword, verifyPassword } from "@/lib/passwords";
 import type { Role } from "@/lib/types";
+import type { DbTransaction } from "@/lib/account-lock";
 
 export { hashPassword, verifyPassword };
 
@@ -13,9 +14,16 @@ const SESSION_DURATION = 1000 * 60 * 60 * 24 * 30;
 
 export function hashToken(token: string) { return createHash("sha256").update(token).digest("hex"); }
 export async function createSession(userId: string) {
+  return createSessionInTransaction(db, userId);
+}
+
+export async function createSessionInTransaction(
+  executor: Pick<DbTransaction, "insert">,
+  userId: string,
+) {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_DURATION);
-  await db.insert(sessions).values({ tokenHash: hashToken(token), userId, expiresAt });
+  await executor.insert(sessions).values({ tokenHash: hashToken(token), userId, expiresAt });
   return { token, expiresAt };
 }
 export async function hasPremiumAccess(userId: string) {
@@ -30,7 +38,11 @@ export async function currentUser() {
   if (!token) return null;
   const [user] = await db.select({ id: users.id, name: users.name, email: users.email, role: users.role, stripeCustomerId: users.stripeCustomerId, emailVerifiedAt: users.emailVerifiedAt })
     .from(sessions).innerJoin(users, eq(users.id, sessions.userId))
-    .where(and(eq(sessions.tokenHash, hashToken(token)), gt(sessions.expiresAt, new Date()))).limit(1);
+    .where(and(
+      eq(sessions.tokenHash, hashToken(token)),
+      gt(sessions.expiresAt, new Date()),
+      isNotNull(users.emailVerifiedAt),
+    )).limit(1);
   if (!user) return null;
   return { ...user, plan: await hasPremiumAccess(user.id) ? "paid" as const : "free" as const };
 }

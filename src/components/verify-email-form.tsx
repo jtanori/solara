@@ -31,8 +31,8 @@ export function VerifyEmailForm({ locale }: { locale: Locale }) {
           : "We could not send the email. Please try again."));
       } else {
         setMessage(es
-          ? "Si existe una cuenta con ese correo, enviamos un nuevo enlace de verificación."
-          : "If an account exists for that email, we sent a new verification link.");
+          ? "Si existe una cuenta pendiente con ese correo, enviaremos un nuevo enlace para reclamarla."
+          : "If an unclaimed account exists for that email, we will send a new claim link.");
       }
     } catch {
       setError(es
@@ -44,7 +44,7 @@ export function VerifyEmailForm({ locale }: { locale: Locale }) {
   }
 
   return (
-    <form name="resend-verification" action="/api/auth/verify/request" method="post" onSubmit={submit} className="field-stack">
+    <form name="resend-claim" action="/api/auth/verify/request" method="post" onSubmit={submit} className="field-stack">
       <div>
         <label className="field-label" htmlFor="verify-email">{es ? "Correo electrónico" : "Email address"}</label>
         <input
@@ -68,7 +68,7 @@ export function VerifyEmailForm({ locale }: { locale: Locale }) {
       <button type="submit" className="button button-full" disabled={loading}>
         {loading
           ? (es ? "Enviando…" : "Sending…")
-          : (es ? "Reenviar verificación" : "Resend verification")}
+          : (es ? "Reenviar enlace" : "Resend claim link")}
       </button>
     </form>
   );
