@@ -62,10 +62,15 @@ export async function createEmailVerificationToken(
   });
 }
 
+export type FinalizeHooks = {
+  afterLocks?: () => Promise<void>;
+};
+
 export async function finalizeEmailVerificationToken(
   tokenHash: string,
   userId: string,
   purpose: EmailTokenPurpose = "account_claim",
+  hooks: FinalizeHooks = {},
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [user] = await tx
@@ -85,6 +90,7 @@ export async function finalizeEmailVerificationToken(
       ))
       .for("update");
     if (!target || target.usedAt) return false;
+    await hooks.afterLocks?.();
 
     const [latest] = await tx
       .select({ tokenHash: emailTokens.tokenHash })
@@ -134,15 +140,20 @@ export async function lookupClaimToken(
   return "valid";
 }
 
+export type ClaimHooks = {
+  beforeUserLock?: () => Promise<void>;
+};
+
 export async function claimAccountWithToken(
   token: string,
   passwordHash: string,
   purpose: EmailTokenPurpose = "account_claim",
+  hooks: ClaimHooks = {},
 ): Promise<AccountClaimResult> {
   const tokenHash = hashEmailToken(token);
 
   const [hint] = await db
-    .select({ email: users.email })
+    .select({ email: users.email, userId: users.id })
     .from(emailTokens)
     .innerJoin(users, eq(users.id, emailTokens.userId))
     .where(and(eq(emailTokens.tokenHash, tokenHash), eq(emailTokens.purpose, purpose)))
@@ -152,22 +163,28 @@ export async function claimAccountWithToken(
 
   return withEmailLock(hint.email, async (tx) => {
     const now = new Date();
+
+    await hooks.beforeUserLock?.();
+    const [user] = await tx
+      .select({ id: users.id, email: users.email, emailVerifiedAt: users.emailVerifiedAt })
+      .from(users)
+      .where(eq(users.id, hint.userId))
+      .for("update");
+    if (!user) return { status: "invalid" };
+
     const [row] = await tx
       .select()
       .from(emailTokens)
-      .where(and(eq(emailTokens.tokenHash, tokenHash), eq(emailTokens.purpose, purpose)))
+      .where(and(
+        eq(emailTokens.tokenHash, tokenHash),
+        eq(emailTokens.purpose, purpose),
+        eq(emailTokens.userId, user.id),
+      ))
       .for("update");
 
     if (!row) return { status: "invalid" };
     if (row.usedAt) return { status: "used" };
     if (row.expiresAt.getTime() <= now.getTime()) return { status: "expired" };
-
-    const [user] = await tx
-      .select({ id: users.id, email: users.email, emailVerifiedAt: users.emailVerifiedAt })
-      .from(users)
-      .where(eq(users.id, row.userId))
-      .for("update");
-    if (!user) return { status: "invalid" };
     if (user.emailVerifiedAt) return { status: "already_verified" };
 
     await tx.update(users)

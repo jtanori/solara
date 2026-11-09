@@ -6,7 +6,7 @@ import {
   createSessionInTransaction,
   SESSION_COOKIE,
 } from "@/lib/auth";
-import { withEmailLock } from "@/lib/account-lock";
+import { withLoginLocks } from "@/lib/account-lock";
 import { canonicalAppUrl } from "@/lib/app-url";
 import {
   claimAccountWithToken,
@@ -27,6 +27,8 @@ import {
   MailDeliveryError,
   type MailTransport,
 } from "@/lib/mail";
+import { ScryptBusyError } from "@/lib/scrypt-pool";
+import { Semaphore, SemaphoreQueueFullError } from "@/lib/semaphore";
 import { hashPassword, verifyPassword } from "@/lib/passwords";
 import {
   ACCOUNT_FAILURE_BACKOFF,
@@ -34,7 +36,7 @@ import {
   clearAuthFailuresTx,
   clientIp,
   consumeRateLimit,
-  getRateLimitState,
+  consumeRateLimitTx,
   getRateLimitStateTx,
   keyFor,
   recordAuthFailureTx,
@@ -43,6 +45,7 @@ import type { Locale } from "@/lib/i18n";
 
 const PENDING_PASSWORD_HASH = "pending:no-credentials";
 const DUMMY_PASSWORD_HASH = `${"0".repeat(32)}:${"0".repeat(128)}`;
+const loginAdmission = new Semaphore(8, 32);
 
 export function passwordHashForLogin(stored: string | null | undefined): string {
   return stored && !stored.startsWith("pending:") ? stored : DUMMY_PASSWORD_HASH;
@@ -84,6 +87,17 @@ function tooManyAttempts(es: boolean, retryAfterSeconds: number) {
 
 function retryAfterSeconds(date: Date): number {
   return Math.max(1, Math.ceil((date.getTime() - Date.now()) / 1000));
+}
+
+function serviceUnavailable(es: boolean) {
+  return NextResponse.json(
+    {
+      error: es
+        ? "El servicio está ocupado. Inténtalo de nuevo en un momento."
+        : "The service is busy. Please try again shortly.",
+    },
+    { status: 503 },
+  );
 }
 
 function sessionResponse(name: string, token: string, expiresAt: Date) {
@@ -269,98 +283,118 @@ async function handleLogin(
   password: string,
 ): Promise<AuthOutcome> {
   const es = deps.locale === "es";
-  const ip = clientIp(request);
-
-  const ipLimit = await consumeRateLimit(
-    keyFor("login:ip", ip),
-    AUTH_RATE_LIMITS.loginIp,
-    "login_ip",
-  );
-  if (!ipLimit.allowed) {
-    return { response: tooManyAttempts(es, ipLimit.retryAfterSeconds), tasks: [] };
+  try {
+    await loginAdmission.acquire();
+  } catch (error) {
+    if (error instanceof SemaphoreQueueFullError) {
+      return { response: serviceUnavailable(es), tasks: [] };
+    }
+    throw error;
   }
 
-  const ipFailureKey = keyFor("login:ip-failures", ip);
-  const ipFailureState = await getRateLimitState(ipFailureKey);
-  const now = Date.now();
-  if (
-    ipFailureState
-    && ipFailureState.expiresAt.getTime() > now
-    && (
-      (ipFailureState.blockedUntil?.getTime() ?? 0) > now
-      || ipFailureState.count >= AUTH_RATE_LIMITS.loginIpFailures.limit
-    )
-  ) {
-    const retryDate = ipFailureState.blockedUntil && ipFailureState.blockedUntil.getTime() > now
-      ? ipFailureState.blockedUntil
-      : ipFailureState.expiresAt;
-    return {
-      response: tooManyAttempts(es, retryAfterSeconds(retryDate)),
-      tasks: [],
-    };
-  }
+  try {
+    const ip = clientIp(request);
+    const ipFailureKey = keyFor("login:ip-failures", ip);
+    const accountKey = keyFor("login:account", email);
 
-  const accountKey = keyFor("login:account", email);
-  const outcome = await withEmailLock(email, async (tx) => {
-    const [user] = await tx
-      .select()
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1);
+    const outcome = await withLoginLocks(ip, email, async (tx) => {
+      const ipLimit = await consumeRateLimitTx(
+        tx,
+        keyFor("login:ip", ip),
+        AUTH_RATE_LIMITS.loginIp,
+        "login_ip",
+      );
+      if (!ipLimit.allowed) {
+        return { kind: "blocked" as const, retryAfter: ipLimit.retryAfterSeconds };
+      }
 
-    const accountState = await getRateLimitStateTx(tx, accountKey);
-    if (accountState?.blockedUntil && accountState.blockedUntil.getTime() > Date.now()) {
+      const ipFailureState = await getRateLimitStateTx(tx, ipFailureKey);
+      const now = Date.now();
+      if (
+        ipFailureState
+        && ipFailureState.expiresAt.getTime() > now
+        && (
+          (ipFailureState.blockedUntil?.getTime() ?? 0) > now
+          || ipFailureState.count >= AUTH_RATE_LIMITS.loginIpFailures.limit
+        )
+      ) {
+        const retryDate = ipFailureState.blockedUntil && ipFailureState.blockedUntil.getTime() > now
+          ? ipFailureState.blockedUntil
+          : ipFailureState.expiresAt;
+        return { kind: "blocked" as const, retryAfter: retryAfterSeconds(retryDate) };
+      }
+
+      const accountState = await getRateLimitStateTx(tx, accountKey);
+      if (accountState?.blockedUntil && accountState.blockedUntil.getTime() > now) {
+        return { kind: "blocked" as const, retryAfter: retryAfterSeconds(accountState.blockedUntil) };
+      }
+
+      const [user] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1);
+
+      let passwordMatches: boolean;
+      try {
+        passwordMatches = await (deps.verify ?? verifyPassword)(
+          password,
+          passwordHashForLogin(user?.passwordHash),
+        );
+      } catch (error) {
+        if (error instanceof ScryptBusyError) return { kind: "busy" as const };
+        throw error;
+      }
+
+      if (!user || !passwordMatches || !user.emailVerifiedAt) {
+        await recordAuthFailureTx(tx, accountKey, ACCOUNT_FAILURE_BACKOFF);
+        const ipFailure = await consumeRateLimitTx(
+          tx,
+          ipFailureKey,
+          AUTH_RATE_LIMITS.loginIpFailures,
+          "login_ip_failures",
+        );
+        return {
+          kind: "invalid" as const,
+          ipRetryAfter: ipFailure.allowed ? null : ipFailure.retryAfterSeconds,
+        };
+      }
+
+      await clearAuthFailuresTx(tx, accountKey);
+      const session = await createSessionInTransaction(tx, user.id);
+      return { kind: "ok" as const, user, session };
+    });
+
+    if (outcome.kind === "busy") {
+      return { response: serviceUnavailable(es), tasks: [] };
+    }
+    if (outcome.kind === "blocked") {
+      return { response: tooManyAttempts(es, outcome.retryAfter), tasks: [] };
+    }
+    if (outcome.kind === "invalid") {
+      if (outcome.ipRetryAfter) {
+        return { response: tooManyAttempts(es, outcome.ipRetryAfter), tasks: [] };
+      }
       return {
-        kind: "blocked" as const,
-        retryAfter: retryAfterSeconds(accountState.blockedUntil),
+        response: NextResponse.json(
+          {
+            error: es
+              ? "El correo o la contraseña son incorrectos."
+              : "Email or password is incorrect.",
+          },
+          { status: 401 },
+        ),
+        tasks: [],
       };
     }
 
-    const passwordMatches = await (deps.verify ?? verifyPassword)(
-      password,
-      passwordHashForLogin(user?.passwordHash),
-    );
-
-    if (!user || !passwordMatches || !user.emailVerifiedAt) {
-      await recordAuthFailureTx(tx, accountKey, ACCOUNT_FAILURE_BACKOFF);
-      return { kind: "invalid" as const };
-    }
-
-    await clearAuthFailuresTx(tx, accountKey);
-    const session = await createSessionInTransaction(tx, user.id);
-    return { kind: "ok" as const, user, session };
-  });
-
-  if (outcome.kind === "blocked") {
-    return { response: tooManyAttempts(es, outcome.retryAfter), tasks: [] };
-  }
-
-  if (outcome.kind === "invalid") {
-    const ipFailure = await consumeRateLimit(
-      ipFailureKey,
-      AUTH_RATE_LIMITS.loginIpFailures,
-      "login_ip_failures",
-    );
-    if (!ipFailure.allowed) {
-      return { response: tooManyAttempts(es, ipFailure.retryAfterSeconds), tasks: [] };
-    }
     return {
-      response: NextResponse.json(
-        {
-          error: es
-            ? "El correo o la contraseña son incorrectos."
-            : "Email or password is incorrect.",
-        },
-        { status: 401 },
-      ),
+      response: sessionResponse(outcome.user.name, outcome.session.token, outcome.session.expiresAt),
       tasks: [],
     };
+  } finally {
+    loginAdmission.release();
   }
-
-  return {
-    response: sessionResponse(outcome.user.name, outcome.session.token, outcome.session.expiresAt),
-    tasks: [],
-  };
 }
 
 export async function handleAuth(request: Request, deps: AuthDeps): Promise<AuthOutcome> {
@@ -439,6 +473,9 @@ export async function handleAuth(request: Request, deps: AuthDeps): Promise<Auth
         ),
         tasks: [],
       };
+    }
+    if (error instanceof ScryptBusyError) {
+      return { response: serviceUnavailable(es), tasks: [] };
     }
     reportServerError("auth.request_failed", error);
     return {
@@ -624,6 +661,9 @@ export async function handleClaim(
 
     return NextResponse.json({ ok: true });
   } catch (error) {
+    if (error instanceof ScryptBusyError) {
+      return serviceUnavailable(es);
+    }
     reportServerError("auth.claim_failed", error);
     return NextResponse.json(
       {

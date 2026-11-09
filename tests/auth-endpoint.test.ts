@@ -11,6 +11,7 @@ import { createEmailVerificationToken } from "../src/lib/email-verification";
 import { hashPassword, verifyPassword } from "../src/lib/passwords";
 import { keyFor } from "../src/lib/rate-limit";
 import { MailAmbiguousError, MailDeliveryError, type MailMessage, type MailTransport } from "../src/lib/mail";
+import { ScryptBusyError } from "../src/lib/scrypt-pool";
 
 function fakeMail() {
   const sent: MailMessage[] = [];
@@ -425,6 +426,88 @@ test("an exhausted IP failure budget blocks a correct password before hashing", 
       { locale: "en", mail: () => fakeMail().transport },
     );
     assert.equal(outcome.response.status, 429);
+  } finally {
+    await cleanupRateLimits(keys);
+    await db.delete(users).where(inArray(users.id, [user.id]));
+  }
+});
+
+test("a correct login queued behind the failure that crosses the IP budget gets 429", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  const failureUser = await makeUser();
+  const correctUser = await makeUser();
+  const ip = "192.0.2.90";
+  const failureKey = keyFor("login:ip-failures", ip);
+  const keys = [
+    keyFor("login:ip", ip),
+    failureKey,
+    keyFor("login:account", failureUser.email),
+    keyFor("login:account", correctUser.email),
+  ];
+  let releaseFailure!: () => void;
+  const failureGate = new Promise<void>((resolve) => { releaseFailure = resolve; });
+  let failureStarted!: () => void;
+  const failureStartedGate = new Promise<void>((resolve) => { failureStarted = resolve; });
+  let verifyCalls = 0;
+  const verify = async () => {
+    verifyCalls++;
+    failureStarted();
+    await failureGate;
+    return false;
+  };
+
+  try {
+    await db.insert(rateLimits).values({
+      key: failureKey,
+      windowStart: new Date(),
+      count: 49,
+      failureCount: 49,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const failure = handleAuth(
+      request({ mode: "login", email: failureUser.email, password: "wrong-password" }, ip),
+      { locale: "en", mail: () => fakeMail().transport, verify },
+    );
+    await failureStartedGate;
+    const correct = handleAuth(
+      request({ mode: "login", email: correctUser.email, password: correctUser.password }, ip),
+      { locale: "en", mail: () => fakeMail().transport, verify },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseFailure();
+    const [failureOutcome, correctOutcome] = await Promise.all([failure, correct]);
+    assert.equal(failureOutcome.response.status, 401);
+    assert.equal(correctOutcome.response.status, 429);
+    assert.equal(verifyCalls, 1);
+  } finally {
+    await cleanupRateLimits(keys);
+    await db.delete(users).where(inArray(users.id, [failureUser.id, correctUser.id]));
+  }
+});
+
+test("scrypt saturation returns 503 without rolling back the all-attempt count", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  const user = await makeUser();
+  const ip = "192.0.2.91";
+  const allAttemptKey = keyFor("login:ip", ip);
+  const keys = [allAttemptKey, keyFor("login:account", user.email)];
+  try {
+    const outcome = await handleAuth(
+      request({ mode: "login", email: user.email, password: user.password }, ip),
+      { locale: "en", mail: () => fakeMail().transport, verify: async () => { throw new ScryptBusyError(); } },
+    );
+    assert.equal(outcome.response.status, 503);
+    const [state] = await db.select({ count: rateLimits.count }).from(rateLimits).where(inArray(rateLimits.key, [allAttemptKey]));
+    assert.equal(state?.count, 1);
   } finally {
     await cleanupRateLimits(keys);
     await db.delete(users).where(inArray(users.id, [user.id]));

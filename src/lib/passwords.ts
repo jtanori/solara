@@ -2,48 +2,16 @@
 // Next.js `import "server-only"` would enforce this at build, but it breaks plain `tsx --test`
 // imports, so we document the invariant here and rely on the build-time check.
 // See P3 in PR #17 review.
-import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
-import { promisify } from "node:util";
-
-const scryptAsync = promisify(scrypt) as (
-  password: string,
-  salt: string,
-  keylen: number,
-) => Promise<Buffer>;
-
-const MAX_CONCURRENT_SCRYPT = 4;
-let activeScrypt = 0;
-const scryptQueue: Array<() => void> = [];
-
-async function acquireScryptSlot(): Promise<void> {
-  if (activeScrypt < MAX_CONCURRENT_SCRYPT) {
-    activeScrypt++;
-    return;
-  }
-  await new Promise<void>((resolve) => { scryptQueue.push(resolve); });
-  activeScrypt++;
-}
-
-function releaseScryptSlot(): void {
-  activeScrypt--;
-  scryptQueue.shift()?.();
-}
-
-async function runScrypt(password: string, salt: string): Promise<Buffer> {
-  await acquireScryptSlot();
-  try {
-    return await scryptAsync(password, salt, 64);
-  } finally {
-    releaseScryptSlot();
-  }
-}
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { ScryptBusyError, scryptPool } from "@/lib/scrypt-pool";
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
   try {
-    const hash = await runScrypt(password, salt);
+    const hash = await scryptPool.run(password, salt);
     return `${salt}:${hash.toString("hex")}`;
-  } catch {
+  } catch (error) {
+    if (error instanceof ScryptBusyError) throw error;
     throw new Error("Password hashing failed.");
   }
 }
@@ -57,8 +25,9 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const expected = Buffer.from(hash, "hex");
   let actual: Buffer;
   try {
-    actual = await runScrypt(password, salt);
-  } catch {
+    actual = await scryptPool.run(password, salt);
+  } catch (error) {
+    if (error instanceof ScryptBusyError) throw error;
     return false;
   }
   return expected.length === actual.length && timingSafeEqual(expected, actual);

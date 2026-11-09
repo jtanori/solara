@@ -189,6 +189,10 @@ test("finalization is generation-aware and cannot delete a newer token", {
     assert.equal(newer.status, "created");
     if (older.status !== "created" || newer.status !== "created") return;
 
+    assert.equal(await finalizeEmailVerificationToken(older.tokenHash, userId, "account_claim"), false);
+    const beforeNewerFinalize = await db.select({ tokenHash: emailTokens.tokenHash }).from(emailTokens).where(eq(emailTokens.userId, userId));
+    assert.deepEqual(beforeNewerFinalize.map(row => row.tokenHash).sort(), [older.tokenHash, newer.tokenHash].sort());
+
     assert.equal(await finalizeEmailVerificationToken(newer.tokenHash, userId, "account_claim"), true);
     assert.equal(await finalizeEmailVerificationToken(older.tokenHash, userId, "account_claim"), false);
 
@@ -215,8 +219,79 @@ test("a verified account cannot be claimed again or receive a new claim link", {
 
     const password = await hashPassword("claimed-password-12");
     assert.deepEqual(await claimAccountWithToken(first.token, password), { status: "claimed", userId });
-    assert.deepEqual(await claimAccountWithToken(second.token, await hashPassword("different-password-12")), { status: "invalid" });
+
+    const liveToken = randomBytes(32).toString("base64url");
+    await db.insert(emailTokens).values({
+      tokenHash: hashEmailToken(liveToken),
+      userId,
+      purpose: "account_claim",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const before = await db
+      .select({ passwordHash: users.passwordHash, emailVerifiedAt: users.emailVerifiedAt })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    assert.deepEqual(await claimAccountWithToken(liveToken, await hashPassword("different-password-12")), { status: "already_verified" });
+    const after = await db
+      .select({ passwordHash: users.passwordHash, emailVerifiedAt: users.emailVerifiedAt })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    assert.equal(after[0].passwordHash, before[0].passwordHash);
+    assert.deepEqual(after[0].emailVerifiedAt, before[0].emailVerifiedAt);
     assert.equal((await createEmailVerificationToken(userId, "account_claim")).status, "already_verified");
+  } finally {
+    await db.delete(users).where(eq(users.id, userId));
+  }
+});
+
+test("claim and finalization use user-then-token locks without deadlocking", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Claim tests require a loopback database");
+
+  const userId = await makeUser();
+  try {
+    const older = await createEmailVerificationToken(userId, "account_claim", { cooldownSeconds: 0 });
+    const newer = await createEmailVerificationToken(userId, "account_claim", { cooldownSeconds: 0 });
+    assert.equal(older.status, "created");
+    assert.equal(newer.status, "created");
+    if (older.status !== "created" || newer.status !== "created") return;
+
+    let releaseFinalize!: () => void;
+    const release = new Promise<void>((resolve) => { releaseFinalize = resolve; });
+    let finalizeLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { finalizeLocked = resolve; });
+    let claimReady!: () => void;
+    const claimReached = new Promise<void>((resolve) => { claimReady = resolve; });
+
+    const finalizePromise = finalizeEmailVerificationToken(newer.tokenHash, userId, "account_claim", {
+      afterLocks: async () => {
+        finalizeLocked();
+        await release;
+      },
+    });
+    await locked;
+
+    const claimPromise = claimAccountWithToken(
+      older.token,
+      await hashPassword("claimed-password-12"),
+      "account_claim",
+      { beforeUserLock: async () => { claimReady(); } },
+    );
+    await claimReached;
+    releaseFinalize();
+
+    const [finalizeResult, claimResult] = await Promise.allSettled([finalizePromise, claimPromise]);
+    assert.equal(finalizeResult.status, "fulfilled");
+    if (finalizeResult.status === "fulfilled") assert.equal(finalizeResult.value, true);
+    assert.equal(claimResult.status, "fulfilled");
+    if (claimResult.status === "fulfilled") {
+      assert.ok(["invalid", "used"].includes(claimResult.value.status));
+    }
   } finally {
     await db.delete(users).where(eq(users.id, userId));
   }

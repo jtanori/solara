@@ -78,57 +78,72 @@ function logLimit(kind: string, result: RateLimitResult): void {
   }));
 }
 
+async function consumeRateLimitIn(
+  tx: DbTransaction,
+  key: string,
+  policy: RateLimitPolicy,
+): Promise<RateLimitResult> {
+  const now = new Date();
+
+  await tx.insert(rateLimits).values({
+    key,
+    windowStart: now,
+    count: 0,
+    failureCount: 0,
+    expiresAt: now,
+  }).onConflictDoNothing();
+
+  const [row] = await tx.select().from(rateLimits).where(eq(rateLimits.key, key)).for("update");
+  if (!row) throw new Error("Rate limit row unavailable.");
+
+  const expired = row.expiresAt.getTime() <= now.getTime();
+  const count = expired ? 1 : row.count + 1;
+  const failureCount = expired ? 0 : row.failureCount;
+  const blockedUntil = expired ? null : row.blockedUntil;
+  const expiresAt = expired
+    ? new Date(now.getTime() + policy.windowSeconds * 1000)
+    : row.expiresAt;
+  const blocked = blockedUntil !== null && blockedUntil.getTime() > now.getTime();
+  const overLimit = count > policy.limit;
+  const triggered = blocked || overLimit;
+  const nextBlockedUntil = blockedUntil ?? (overLimit ? expiresAt : null);
+
+  await tx.update(rateLimits).set({
+    windowStart: expired ? now : row.windowStart,
+    count,
+    failureCount,
+    blockedUntil: nextBlockedUntil,
+    expiresAt,
+    lastTriggeredAt: triggered ? now : row.lastTriggeredAt,
+  }).where(eq(rateLimits.key, key));
+
+  const retryUntil = nextBlockedUntil ?? expiresAt;
+  return {
+    allowed: !triggered,
+    remaining: Math.max(0, policy.limit - count),
+    retryAfterSeconds: Math.max(1, Math.ceil((retryUntil.getTime() - now.getTime()) / 1000)),
+    resetAt: expiresAt,
+    blockedUntil: nextBlockedUntil,
+  };
+}
+
+export async function consumeRateLimitTx(
+  tx: DbTransaction,
+  key: string,
+  policy: RateLimitPolicy,
+  kind: string,
+): Promise<RateLimitResult> {
+  const result = await consumeRateLimitIn(tx, key, policy);
+  if (!result.allowed) logLimit(kind, result);
+  return result;
+}
+
 export async function consumeRateLimit(
   key: string,
   policy: RateLimitPolicy,
   kind: string,
 ): Promise<RateLimitResult> {
-  const now = new Date();
-  const result = await db.transaction(async (tx) => {
-    await tx.insert(rateLimits).values({
-      key,
-      windowStart: now,
-      count: 0,
-      failureCount: 0,
-      expiresAt: now,
-    }).onConflictDoNothing();
-
-    const [row] = await tx.select().from(rateLimits).where(eq(rateLimits.key, key)).for("update");
-    if (!row) throw new Error("Rate limit row unavailable.");
-
-    const expired = row.expiresAt.getTime() <= now.getTime();
-    const count = expired ? 1 : row.count + 1;
-    const failureCount = expired ? 0 : row.failureCount;
-    const blockedUntil = expired ? null : row.blockedUntil;
-    const expiresAt = expired
-      ? new Date(now.getTime() + policy.windowSeconds * 1000)
-      : row.expiresAt;
-    const blocked = blockedUntil !== null && blockedUntil.getTime() > now.getTime();
-    const overLimit = count > policy.limit;
-    const triggered = blocked || overLimit;
-    const nextBlockedUntil = blockedUntil ?? (overLimit ? expiresAt : null);
-
-    await tx.update(rateLimits).set({
-      windowStart: expired ? now : row.windowStart,
-      count,
-      failureCount,
-      blockedUntil: nextBlockedUntil,
-      expiresAt,
-      lastTriggeredAt: triggered ? now : row.lastTriggeredAt,
-    }).where(eq(rateLimits.key, key));
-
-    const retryUntil = nextBlockedUntil ?? expiresAt;
-    return {
-      allowed: !triggered,
-      remaining: Math.max(0, policy.limit - count),
-      retryAfterSeconds: Math.max(1, Math.ceil((retryUntil.getTime() - now.getTime()) / 1000)),
-      resetAt: expiresAt,
-      blockedUntil: nextBlockedUntil,
-    };
-  });
-
-  if (!result.allowed) logLimit(kind, result);
-  return result;
+  return db.transaction((tx) => consumeRateLimitTx(tx, key, policy, kind));
 }
 
 export async function recordAuthFailure(
