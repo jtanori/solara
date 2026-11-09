@@ -61,6 +61,28 @@ test("the Midheaven is always computed, even at high latitude where the Ascendan
   assert.ok(facts.bodies.every(body => body.house === null));
 });
 
+test("the 66° cutoff omits the Ascendant in both engines, both hemispheres, exactly at the boundary", () => {
+  // v1 (calculateSolarReturn) and v2 (castChart) each carry their own copy of the cutoff.
+  // The ephemeris fixtures pin the v2 formula through castChart; this pins both copies as
+  // they are actually wired — including the southern hemisphere (|latitude|, not latitude)
+  // and the exact ±66° boundary (< 66, not <= 66).
+  const places = [
+    { name: "McMurdo Station, Antarctica", latitude: -77.85, longitude: 166.67, timezone: "Pacific/Auckland" },
+    { name: "66° south", latitude: -66, longitude: 18.96, timezone: "Europe/Oslo" },
+    { name: "66° north", latitude: 66, longitude: 18.96, timezone: "Europe/Oslo" },
+  ];
+  for (const returnPlace of places) {
+    const { result, facts } = calculateSolarReturnChart({ ...base, returnPlace });
+    assert.equal(result.ascendant, null, `${returnPlace.name}: v1 omits the Ascendant at |latitude| >= 66°`);
+    assert.equal(result.sunHouse, null, `${returnPlace.name}: v1 assigns no sun house`);
+    assert.ok(result.warnings.some(warning => warning.includes("high latitudes")), `${returnPlace.name}: v1 warns the user`);
+    assert.equal(facts.angles.ascendant, null, `${returnPlace.name}: v2 omits the Ascendant`);
+    assert.deepEqual(facts.houses, [], `${returnPlace.name}: v2 assigns no houses`);
+    assert.ok(facts.bodies.every(body => body.house === null), `${returnPlace.name}: no body may claim a house`);
+    assert.ok(facts.angles.midheaven.sign, `${returnPlace.name}: the Midheaven survives`);
+  }
+});
+
 test("whole-sign houses: each sign is a house and the Ascendant is the first cusp", () => {
   const cusps = wholeSignCusps(100); // 10° Cancer
   assert.equal(cusps.length, 12);
