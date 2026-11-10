@@ -27,7 +27,7 @@ Run the application with `npm run dev` and open `/usage-guide` to explore the bi
 
 Use Node.js 22 and a **new, empty, disposable** PostgreSQL database. Configure `DATABASE_URL` and `APP_URL` in `.env` (copy `.env.example` only if `.env` does not already exist), then run `npm ci`, `npx drizzle-kit migrate`, and `npm run dev`. Run `node scripts/check-setup.mjs local` for a secret-safe format check.
 
-Earlier prototypes may have databases created with `drizzle-kit push` and no migration history. Do not run the initial migration blindly on those databases; use a fresh development database or obtain a reviewed baseline. Never use `push` against production. The CI workflow applies versioned migrations to a disposable database and runs `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`.
+Earlier prototypes may have databases created with `drizzle-kit push` and no migration history. Do not run the initial migration blindly on those databases; use a fresh development database or obtain a reviewed baseline. Never use `push` against production. The CI workflow applies versioned migrations to a disposable database, runs `npm run db:check`, and runs `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`. `/api/health` is liveness only; `/api/ready` is the deployment gate. See ADR 008 for the migration and rollback policy.
 
 Public registration creates a free user. A trusted operator must provision the first owner; see the foundation guide. No Stripe keys, prices or customer data are included.
 

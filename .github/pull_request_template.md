@@ -19,7 +19,8 @@ Closes #<!-- issue number --> — <!-- title -->
 - [ ] `npx eslint src tests --max-warnings=0`
 - [ ] `RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`
 - [ ] `npm run build` succeeds
-- [ ] Smoke checks (CI `verify` job): `GET /blueprint` → 404, `GET /setup` → 404, `GET /usage-guide` → 404 outside development, and no internal-doc content leaked (`EL PROYECTO DE SOLARA` absent). For internal-doc link gating also verify homepage/dashboard/footer contain no `/blueprint`, `/setup`, `/usage-guide` links outside development.
+- [ ] `npm run db:manifest:check` and `npm run db:check` pass
+- [ ] Smoke checks (CI `verify` job): `GET /api/health` and `GET /api/ready` return 200; `GET /blueprint` → 404, `GET /setup` → 404, `GET /usage-guide` → 404 outside development, and no internal-doc content leaked (`EL PROYECTO DE SOLARA` absent). For internal-doc link gating also verify homepage/dashboard/footer contain no `/blueprint`, `/setup`, `/usage-guide` links outside development.
 - [ ] Security smoke: HTML carries `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, and the CSP header; mutating `/api/*` without `Origin`/`Sec-Fetch-Site` → 403; same-origin request passes.
 - Paste local command output or CI run link:
 
@@ -36,7 +37,7 @@ Closes #<!-- issue number --> — <!-- title -->
 
 ## Rollout / Rollback
 - Rollout: merge to `staging` → QA on staging → promotion PR `staging → main` → Vercel production deploy. Secrets are per-environment (never use prod secrets locally; previews do not access prod data).
-- Rollback: revert squash commit on `staging`/`main` or promote previous `staging` commit; rolling back code does **not** automatically reverse a migration — plan compatibility and restore per `docs/setup/01-foundation-and-deployment.md`.
+- Rollback: revert squash commit on `staging`/`main` or promote previous `staging` commit; rolling back code does **not** automatically reverse a migration — plan compatibility and restore per ADR 008 and `docs/setup/01-foundation-and-deployment.md`.
 - Operational runbook updated: <!-- yes / no / N/A -->
 
 ## Checklist
@@ -62,7 +63,7 @@ Run locally (no local DB URL needed):
 ```bash
 ./scripts/deploy.sh --pr <number> --env staging
 ```
-See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://solara-stg.vercel.app/api/health` → `{"ok":true}`.
+See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://solara-stg.vercel.app/api/health` → `{"ok":true}` and `/api/ready` → `{"ok":true}` (use `VERCEL_AUTOMATION_BYPASS_SECRET` for protected domains).
 
 — Promotion staging → main (PR targets `main`) —
 ✅ **Accepted for promotion — ready to deploy to production**

@@ -53,7 +53,7 @@ connects.
 ### CI path (`scripts/db-remote.ts`)
 
 ```bash
-npm run db:check -- --env staging          # read-only: dispatch migrate.yml in verify mode
+npm run db:check:remote -- --env staging    # read-only: dispatch migrate.yml in verify mode
 npm run db:migrate:remote -- --pr 97       # migrate the DB for PR 97, wait, report the verdict
 npm run db:migrate:remote -- --pr 97 --dry-run   # print the plan + exact dispatch payload
 npm run db:migrate:remote -- --pr 98 --env production --rehearsal-pr 97
@@ -81,12 +81,15 @@ run when the target looks wrong (pooled host, loopback for a hosted env, unset/l
 
 ```bash
 # inspect (no DDL, connects read-only)
-npm run db:status -- staging
-npm run db:status -- production
+npx tsx scripts/db-run.ts --env staging status
+npx tsx scripts/db-run.ts --env production status
 
 # apply (staging), then verify
 npx tsx scripts/db-run.ts --env staging migrate
-npm run db:verify -- staging
+npx tsx scripts/db-run.ts --env staging verify
+
+# local drift check (uses DATABASE_URL from .env or the shell)
+npm run db:check
 
 # production requires typed confirmation
 npx tsx scripts/db-run.ts --env production migrate         # prompts: type "production"

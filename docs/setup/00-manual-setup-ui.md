@@ -132,7 +132,7 @@ npx drizzle-kit migrate   # confirm target is staging-pooler host, not prod
 node scripts/check-setup.mjs staging --strict
 ```
 
-Verify in staging domain: `GET /api/health` → `{"ok":true}`, sign-in, chart, map, both languages, PDF gate, test-mode Checkout + webhook (if Vercel protection blocks webhooks, add a narrow public `/api/billing/webhook` bypass — docs: <https://vercel.com/docs/security/deployment-protection>).
+Verify in staging domain: `GET /api/health` → `{"ok":true}` (liveness) and `GET /api/ready` → `{"ok":true}` (DB/schema/migrations/auth; use `VERCEL_AUTOMATION_BYPASS_SECRET` if deployment protection blocks it), sign-in, chart, map, both languages, PDF gate, test-mode Checkout + webhook (if Vercel protection blocks webhooks, add a narrow public `/api/billing/webhook` bypass — docs: <https://vercel.com/docs/security/deployment-protection>).
 
 For **production** (before real customers): repeat with prod direct URL, but only after launch gate in `README.md`/`docs/decisions.md` ADR 003 is green.
 
@@ -155,4 +155,4 @@ vercel env ls   # or check dashboard env scoping
 node scripts/check-setup.mjs local
 ```
 
-Verify: `https://solara-stg.vercel.app/api/health` and `https://solara-production.vercel.app/api/health` should both return `{"ok":true}`.
+Verify: `https://solara-stg.vercel.app/api/health` and `https://solara-production.vercel.app/api/health` should both return `{"ok":true}`; `/api/ready` must also return `{"ok":true}`, using `VERCEL_AUTOMATION_BYPASS_SECRET` if protection is enabled.

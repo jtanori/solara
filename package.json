@@ -12,14 +12,17 @@
     "test:integration": "RUN_BILLING_INTEGRATION_TESTS=1 tsx --test tests/*.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:status": "tsx scripts/db-run.ts status --env",
-    "db:verify": "tsx scripts/db-run.ts verify --env",
+    "db:status": "tsx scripts/db-run.ts --env local status",
+    "db:verify": "tsx scripts/db-run.ts --env local verify",
     "db:migrate:remote": "tsx scripts/db-remote.ts",
-    "db:check": "tsx scripts/db-remote.ts --check",
+    "db:check": "tsx scripts/db-run.ts --env local verify",
     "check:setup": "node scripts/check-setup.mjs local",
     "rate-limits:report": "tsx scripts/report-rate-limits.ts",
     "rate-limits:cleanup": "tsx scripts/cleanup-rate-limits.ts",
-    "db:seed:local": "tsx scripts/local/seed-users.ts"
+    "db:seed:local": "tsx scripts/local/seed-users.ts",
+    "db:check:remote": "tsx scripts/db-remote.ts --check",
+    "db:manifest": "tsx scripts/generate-migration-manifest.ts",
+    "db:manifest:check": "tsx scripts/generate-migration-manifest.ts --check"
   },
   "engines": {
     "node": ">=22"

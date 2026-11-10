@@ -32,6 +32,7 @@ A single Vercel project with branch-specific Preview variables is the recommenda
 - Local email defaults to `MAIL_TRANSPORT=outbox` and writes `.mail-outbox/*.eml`; staging/production require a Resend or Postmark provider. Security headers and CSP rollout are documented in [08-auth-security-hardening](08-auth-security-hardening.md).
 - Next.js loads its normal environment files; `drizzle.config.ts` and `scripts/check-setup.mjs` load `.env` via dotenv and also honor already-exported variables. Do not assume `.env.local` is loaded by those two commands; export the intended variables in a secure shell or runner.
 - Run `node scripts/check-setup.mjs local` for a format-only check that never prints values. Use `staging --strict` or `production --strict` in a secure environment after configuration. This does **not** verify credentials, licensing, webhook delivery, data isolation, or readiness for launch.
+- `/api/health` is liveness only; `/api/ready` is the deployment gate for DB, schema, migrations, and auth-table access. See ADR 008 for the migration/deploy order and ADR 006 for the identity decision.
 
 ## Important launch gate
 

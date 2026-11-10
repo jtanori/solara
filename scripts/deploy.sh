@@ -9,7 +9,8 @@ set -euo pipefail
 #   ./scripts/deploy.sh --pr 44 --env production --yes
 #   ./scripts/deploy.sh --pr 43 --skip-migrate
 #
-# Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=verify-full&channel_binding=require)
+# Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=verify-full&channel_binding=require),
+# and VERCEL_AUTOMATION_BYPASS_SECRET when the Vercel domain is protected (hard-fails on 401/403).
 # Merge policy (see ADR 004): feature → staging uses --squash (linear), promotion staging→main uses --merge (preserve ancestry).
 # Repo needs allow_squash_merge:true + allow_merge_commit:true (Settings → General → Pull Requests).
 
@@ -176,6 +177,16 @@ if [[ "$NEEDS_MIGRATE" == true ]]; then
 else echo "Skipping remote migrate step."; fi
 
 echo ""
+echo "== Gate: hosted schema check ($WORKFLOW_ENV) =="
+# Read-only verification against the environment database before merge. This catches a
+# DB that is behind the journal even when the PR itself has no drizzle/ changes. The
+# workflow runs on the reviewed PR head, not on a local branch that happens to be checked out.
+if ! npx tsx scripts/db-remote.ts --check --env "$WORKFLOW_ENV" --branch "$HEAD_REF"; then
+  echo "ERROR: hosted $WORKFLOW_ENV schema is not in sync with $HEAD_REF — refusing to merge." >&2
+  exit 1
+fi
+
+echo ""
 echo "== Merge PR #$PR → $BASE_BRANCH ($ENV) =="
 # Merge policy: squash for feature→staging, merge commit for staging→main (ADR 004 — preserve ancestry)
 if [[ "$BASE" == "main" ]]; then
@@ -197,7 +208,38 @@ echo "Policy: $MERGE_LABEL — see AGENTS.md & ADR 004."
 if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH ($MERGE_LABEL)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
 gh pr merge "$PR" $MERGE_ARGS --repo jtanori/solara
 echo "Merged PR #$PR → $BASE_BRANCH ($MERGE_LABEL)"
-echo "Waiting 30s for Vercel $APP_URL ..."
-sleep 30
-if curl -fsS "$APP_URL/api/health" | grep -q '"ok":true'; then echo "✅ $APP_URL/api/health → {\"ok\":true}"; else echo "WARN: $APP_URL/api/health not yet ok — check Vercel Deployments"; curl -i "$APP_URL/api/health" 2>&1 | head -20 || true; fi
+echo "Waiting for Vercel $APP_URL /api/ready ..."
+
+READY_TMP="$(mktemp)"
+trap 'rm -f "$READY_TMP"' EXIT
+ready_curl() {
+  if [[ -n "${VERCEL_AUTOMATION_BYPASS_SECRET:-}" ]]; then
+    curl -sS --max-time 5 -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" -o "$READY_TMP" -w '%{http_code}' "$APP_URL/api/ready"
+  else
+    curl -sS --max-time 5 -o "$READY_TMP" -w '%{http_code}' "$APP_URL/api/ready"
+  fi
+}
+
+# Vercel Authentication returns 401/403 before the app sees the request. Fail early with
+# an actionable message instead of polling a protected endpoint until the timeout.
+READY_CODE="$(ready_curl || true)"
+if [[ "$READY_CODE" == "401" || "$READY_CODE" == "403" ]]; then
+  echo "ERROR: $APP_URL/api/ready is blocked by Vercel Authentication (HTTP $READY_CODE)." >&2
+  echo "Set VERCEL_AUTOMATION_BYPASS_SECRET for this environment and re-run." >&2
+  exit 1
+fi
+
+READY=false
+for i in {1..24}; do
+  READY_CODE="$(ready_curl || true)"
+  if [[ "$READY_CODE" == "200" ]] && grep -q '"ok":true' "$READY_TMP"; then READY=true; break; fi
+  sleep 5
+done
+if [[ "$READY" == true ]]; then
+  echo "✅ $APP_URL/api/ready → {\"ok\":true}"
+else
+  echo "ERROR: $APP_URL/api/ready did not become ready (last HTTP $READY_CODE):" >&2
+  cat "$READY_TMP" >&2 || true
+  exit 1
+fi
 echo "Done. Verify sign-in, map, PDF gate, staging Stripe test webhook before promoting."

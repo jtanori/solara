@@ -142,9 +142,16 @@ npx tsx scripts/db-remote.ts --pr "$PROMO_PR" --env production --rehearsal-pr "$
 
 # 6. confirm the production schema and journal
 npx tsx scripts/db-remote.ts --check --env production
+
+# 7. after the deploy, require readiness (DB/schema/migrations/auth)
+#    Protected Vercel domains need VERCEL_AUTOMATION_BYPASS_SECRET.
+curl -fsS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+  "https://solara-production.vercel.app/api/ready"
 ```
 
-Step 6 must report `OK production schema and drizzle journal are in sync`.
+Step 6 must report `OK production schema and drizzle journal are in sync`. Step 7 must report
+`/api/ready -> {"ok":true}`; a 401/403 means deployment protection blocked the check and the
+deploy fails closed.
 
 ## What is still not covered
 
@@ -154,8 +161,8 @@ Step 6 must report `OK production schema and drizzle journal are in sync`.
 - **A leaked credential defeats every clause.** The gate constrains the *pipeline*, not a
   shell that exports the production URL directly. That is why `DATABASE_URL` for production
   lives only in the Environment and is never written to `.env.production`, a laptop, or Vercel.
-- **No rollback.** Migrations are forward-only. Recovery is a Neon branch restore or the
-  documented down-migration, decided by a human.
+- **No automatic schema rollback.** Migrations are forward-only (ADR 008). Recovery is code
+  rollback when schema-compatible, a forward fix, or a Neon branch restore, decided by a human.
 
 ## If a second human ever joins
 
