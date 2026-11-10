@@ -17,10 +17,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/wait-for-vercel-status.sh
 source "$SCRIPT_DIR/lib/wait-for-vercel-status.sh"
+# shellcheck source=lib/vercel-rollback.sh
+source "$SCRIPT_DIR/lib/vercel-rollback.sh"
+# shellcheck source=lib/deploy-policy.sh
+source "$SCRIPT_DIR/lib/deploy-policy.sh"
 
 PR=""
 ENV=""
 SKIP_MIGRATE=false
+FORCE=false
 YES=false
 
 while [[ $# -gt 0 ]]; do
@@ -30,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     --env) ENV="$2"; shift 2;;
     --env=*) ENV="${1#*=}"; shift;;
     --skip-migrate) SKIP_MIGRATE=true; shift;;
+    --force) FORCE=true; shift;;
     --yes|-y) YES=true; shift;;
     -h|--help) sed -n '1,130p' "$0"; exit 0;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
@@ -131,6 +137,35 @@ if [[ "$MSTS" != *"CLEAN"* ]]; then
   echo "ERROR: PR #$PR is $MSTS, not CLEAN — fix CI first" >&2; exit 1
 fi
 
+# #76 release tracking: every deploy leaves one row in DEPLOY_LOG so "what is in production?" is
+# answerable without guessing. A failed write is a warning, not a deploy failure — the deploy itself
+# already succeeded or failed on its own gates.
+DEPLOY_LOG="${DEPLOY_LOG:-docs/deploys.md}"
+DEPLOY_LOG_HEADER='| when | env | sha | pr | migrations | result | rollback |
+| --- | --- | --- | --- | --- | --- | --- |'
+
+# Args: env sha pr migrations result rollback. Escapes are done by the node renderer, so the row
+# stays one table line even when a value contains a pipe.
+record_deploy() {
+  local env="$1" sha="$2" pr="$3" migrations="$4" result="$5" rollback="$6"
+  local json record
+  json=$(node -e '
+    const [env, sha, pr, migrations, result, rollback, timestamp] = process.argv.slice(1);
+    process.stdout.write(JSON.stringify({ env, sha, pr, migrations, result, rollback, timestamp }));
+  ' "$env" "$sha" "$pr" "$migrations" "$result" "$rollback" "$(date -u +%Y-%m-%dT%H:%MZ)" )
+
+  if ! record=$(node "$SCRIPT_DIR/lib/deploy-log.mjs" "$json"); then
+    echo "WARN: could not render the deploy record; the deploy itself is unaffected" >&2
+    return 0
+  fi
+
+  if [[ ! -f "$DEPLOY_LOG" ]]; then
+    printf '# Deploys\n\nAppend-only record written by `scripts/deploy.sh` (#76).\n\n%s\n' "$DEPLOY_LOG_HEADER" > "$DEPLOY_LOG"
+  fi
+  printf '%s\n' "$record" >> "$DEPLOY_LOG"
+  echo "Deploy record appended to $DEPLOY_LOG: $record"
+}
+
 echo "== Detect migrations =="
 git fetch origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" --quiet
 BASE_SHA=$(git rev-parse "origin/$BASE_BRANCH")
@@ -146,7 +181,24 @@ if git diff --name-only "$BASE_SHA...$HEAD_SHA" | grep -qE '^drizzle/'; then
 else
   echo "No drizzle/ changes — migrations not needed."
 fi
-if [[ "$NEEDS_MIGRATE" == true && "$SKIP_MIGRATE" == true ]]; then NEEDS_MIGRATE=false; echo "WARN: --skip-migrate set"; fi
+case "$(decide_skip_migrate "$NEEDS_MIGRATE" "$SKIP_MIGRATE" "$FORCE" "$ENV")" in
+  refuse-production)
+    echo "ERROR: --skip-migrate is refused for production." >&2
+    echo "       Run the migration through .github/workflows/migrate.yml with --rehearsal-pr first," >&2
+    echo "       then deploy without the flag." >&2
+    exit 1
+    ;;
+  refuse-force)
+    echo "ERROR: --skip-migrate requires --force." >&2
+    echo "       It skips applying drizzle/ migrations for $WORKFLOW_ENV. Re-run with --force if that" >&2
+    echo "       is intended, and record the reason in the PR." >&2
+    exit 1
+    ;;
+  skip-forced)
+    NEEDS_MIGRATE=false
+    echo "WARN: --skip-migrate --force: migrations will NOT be applied to $WORKFLOW_ENV. Record the reason in the PR."
+    ;;
+esac
 
 if [[ "$NEEDS_MIGRATE" == true ]]; then
   echo ""
@@ -178,7 +230,11 @@ if [[ "$NEEDS_MIGRATE" == true ]]; then
   CONCLUSION=$(gh run view "$RUN_ID" --repo jtanori/solara --json conclusion --jq .conclusion)
   if [[ "$CONCLUSION" != "success" ]]; then echo "ERROR: migrate workflow $RUN_ID $CONCLUSION — gh run view $RUN_ID --log" >&2; exit 1; fi
   echo "✅ Migrations complete for $WORKFLOW_ENV (run $RUN_ID, sha $HEAD_SHA)"
-else echo "Skipping remote migrate step."; fi
+  MIGRATIONS_RECORD="applied ($WORKFLOW_ENV)"
+else
+  echo "Skipping remote migrate step."
+  MIGRATIONS_RECORD="skipped"
+fi
 
 echo ""
 echo "== Gate: hosted schema check ($WORKFLOW_ENV) =="
@@ -210,6 +266,17 @@ else
 fi
 echo "Policy: $MERGE_LABEL — see AGENTS.md & ADR 004."
 if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH ($MERGE_LABEL)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
+# #76 rollback target: the deployment serving production *before* this merge. Captured only when
+# the credentials to act on it exist; otherwise the failure path prints manual steps.
+ROLLBACK_TARGET=""
+ROLLBACK_TARGET_URL=""
+if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then
+  IFS=$'\t' read -r ROLLBACK_TARGET ROLLBACK_TARGET_URL _ <<< "$(vercel_current_production_deployment "$VERCEL_PROJECT_ID" "${VERCEL_TEAM_ID:-}")"
+  [[ -n "$ROLLBACK_TARGET" ]] && echo "Rollback target captured: $ROLLBACK_TARGET${ROLLBACK_TARGET_URL:+ ($ROLLBACK_TARGET_URL)}"
+else
+  echo "NOTE: VERCEL_TOKEN/VERCEL_PROJECT_ID unset — automatic rollback disabled, manual steps will be printed on failure."
+fi
+
 CURRENT_HEAD=$(gh pr view "$PR" --repo jtanori/solara --json headRefOid --jq .headRefOid)
 if [[ "$CURRENT_HEAD" != "$HEAD_SHA" ]]; then
   echo "ERROR: PR #$PR head moved from $HEAD_SHA to $CURRENT_HEAD after review — refusing to merge." >&2
@@ -240,13 +307,7 @@ echo "Waiting for Vercel $APP_URL /api/ready ..."
 
 READY_TMP="$(mktemp)"
 trap 'rm -f "$READY_TMP"' EXIT
-ready_curl() {
-  if [[ -n "${VERCEL_AUTOMATION_BYPASS_SECRET:-}" ]]; then
-    curl -sS --max-time 5 -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" -o "$READY_TMP" -w '%{http_code}' "$APP_URL/api/ready"
-  else
-    curl -sS --max-time 5 -o "$READY_TMP" -w '%{http_code}' "$APP_URL/api/ready"
-  fi
-}
+ready_curl() { deploy_ready_curl "$APP_URL/api/ready" "$READY_TMP"; }
 
 # Vercel Authentication returns 401/403 before the app sees the request. Fail early with
 # an actionable message instead of polling a protected endpoint until the timeout.
@@ -260,14 +321,48 @@ fi
 READY=false
 for i in {1..24}; do
   READY_CODE="$(ready_curl || true)"
-  if [[ "$READY_CODE" == "200" ]] && grep -q '"ok":true' "$READY_TMP"; then READY=true; break; fi
+  if deploy_ready_ok "$READY_CODE" "$READY_TMP"; then READY=true; break; fi
   sleep 5
 done
+ROLLBACK_RECORD="—"
 if [[ "$READY" == true ]]; then
   echo "✅ $APP_URL/api/ready → {\"ok\":true}"
 else
   echo "ERROR: $APP_URL/api/ready did not become ready (last HTTP $READY_CODE):" >&2
   cat "$READY_TMP" >&2 || true
+  echo "" >&2
+  echo "== Rollback (#76) ==" >&2
+  ROLLBACK_CREDS="absent"
+  if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then ROLLBACK_CREDS="present"; fi
+  if [[ "$(decide_rollback "$ROLLBACK_CREDS" "$ROLLBACK_TARGET")" == "auto" ]]; then
+    if vercel_promote_deployment "$VERCEL_PROJECT_ID" "$ROLLBACK_TARGET" "${VERCEL_TEAM_ID:-}"; then
+      echo "Rolled back to $ROLLBACK_TARGET${ROLLBACK_TARGET_URL:+ ($ROLLBACK_TARGET_URL)}; re-checking readiness..." >&2
+      ROLLBACK_RECORD="to $ROLLBACK_TARGET"
+      RB_CODE="$(ready_curl || true)"
+      for i in {1..12}; do
+        RB_CODE="$(ready_curl || true)"
+        deploy_ready_ok "$RB_CODE" "$READY_TMP" && break
+        sleep 5
+      done
+      if deploy_ready_ok "$RB_CODE" "$READY_TMP"; then
+        echo "Rollback verified: $APP_URL/api/ready → {\"ok\":true} on the previous deployment." >&2
+      else
+        echo "ERROR: rollback did not restore readiness (last HTTP $RB_CODE). Manual intervention required." >&2
+        ROLLBACK_RECORD="to $ROLLBACK_TARGET (NOT verified)"
+      fi
+    else
+      echo "ERROR: automated rollback failed." >&2
+      ROLLBACK_RECORD="attempted, FAILED"
+      print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL"
+    fi
+  else
+    echo "No automatic rollback available (VERCEL_TOKEN/VERCEL_PROJECT_ID unset or no target captured)." >&2
+    ROLLBACK_RECORD="manual, not executed"
+    print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL"
+  fi
+  record_deploy "$ENV" "$MERGE_SHA" "$PR" "${MIGRATIONS_RECORD:-unknown}" "FAILED readiness" "$ROLLBACK_RECORD"
   exit 1
 fi
+
+record_deploy "$ENV" "$MERGE_SHA" "$PR" "${MIGRATIONS_RECORD:-none}" "ok" "—"
 echo "Done. Verify sign-in, map, PDF gate, staging Stripe test webhook before promoting."
