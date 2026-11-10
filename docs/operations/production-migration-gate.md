@@ -42,6 +42,18 @@ The marker is necessary but not sufficient. A `migrate` run can report “nothin
 preserve the original migration log and inspect the schema verdict. A marker by itself is not
 proof that DDL ran in that run.
 
+### Workflow token permissions
+
+The production gate runs inside Actions with `GITHUB_TOKEN`. `migrate.yml` grants:
+
+- `contents: read` — checkout the exact SHA,
+- `actions: read` — list workflow runs and download the staging verdict artifact,
+- `pull-requests: read` — the `gh pr view` checks for PR state and head SHA.
+
+A missing `pull-requests: read` makes the gate fail with `403 Resource not accessible by
+integration` before any DDL. The manual staging preflight runs with the operator's `gh` token,
+not `GITHUB_TOKEN`, so its permissions are separate.
+
 Additionally, outside the gate:
 
 - `Guard the connection string` rejects a pooled (`-pooler`) host or loopback, for both
