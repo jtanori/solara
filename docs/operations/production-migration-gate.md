@@ -33,9 +33,26 @@ dry_run=false`, and immediately precedes the first statement that can change a d
 |---|---|---|
 | 1 | `rehearsal_pr` must be supplied and numeric | dispatching production with no record of what was rehearsed |
 | 2 | that PR must be `OPEN` or `MERGED` | citing a rehearsal that never reached staging |
-| 3 | a **successful** `migrate staging pr-<n>` run must exist | production becoming the first place a migration ever runs |
-| 4 | the dispatch `sha` must equal that PR's head SHA | rehearsing one commit and shipping another |
+| 3 | a **successful, non-dry-run** `migrate staging pr-<rehearsal_pr> <full-sha> mode=migrate dry=false` run must exist | production becoming the first place a migration runs, or a verify/dry-run being mistaken for DDL |
+| 4 | the dispatch `sha` must equal that PR's head SHA and appear in the staging run name | rehearsing one commit and shipping another |
 | 5 | `sha` must be a full 40-character SHA | migrating a moving branch tip |
+| 6 | the staging run must contain `migration-applied.json` with matching env/SHA/mode/dryRun=false | a green workflow that only ran `verify` or a dry run |
+
+The marker is necessary but not sufficient. A `migrate` run can report “nothing to do”, so
+preserve the original migration log and inspect the schema verdict. A marker by itself is not
+proof that DDL ran in that run.
+
+### Workflow token permissions
+
+The production gate runs inside Actions with `GITHUB_TOKEN`. `migrate.yml` grants:
+
+- `contents: read` — checkout the exact SHA,
+- `actions: read` — list workflow runs and download the staging verdict artifact,
+- `pull-requests: read` — the `gh pr view` checks for PR state and head SHA.
+
+A missing `pull-requests: read` makes the gate fail with `403 Resource not accessible by
+integration` before any DDL. The manual staging preflight runs with the operator's `gh` token,
+not `GITHUB_TOKEN`, so its permissions are separate.
 
 Additionally, outside the gate:
 
@@ -51,21 +68,83 @@ The `production` GitHub Environment is still a real boundary for **secret isolat
 ## The procedure
 
 ```bash
-# 1. rehearse on staging — this is the green run the gate looks for
-npx tsx scripts/db-remote.ts --pr 97                       # env inferred: staging
-#    → run-name: migrate staging pr-97 <sha>   (must conclude success)
+set -euo pipefail
 
-# 2. promote to main (ADR 004: staging → main uses --merge)
-#    production migration happens on the promotion PR's head = the staging tip
+# 1. open the promotion PR (staging -> main) and freeze its head ref and exact SHA
+PROMO_PR=<promotion-pr>
+META=$(gh pr view "$PROMO_PR" --repo jtanori/solara \
+  --json headRefName,headRefOid \
+  --jq '[.headRefName, .headRefOid] | @tsv')
+IFS=$'\t' read -r PROMO_REF PROMO_SHA <<< "$META"
 
-# 3. production, citing the rehearsal
-npx tsx scripts/db-remote.ts --pr <promotion-pr> --env production --rehearsal-pr 97
+[[ -n "$PROMO_REF" ]] || { echo "ERROR: promotion PR has no head branch"; exit 1; }
+[[ "$PROMO_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "ERROR: promotion SHA is not 40 lowercase hex characters: $PROMO_SHA"
+  exit 1
+}
 
-# 4. confirm
+# 2. confirm the selected ref contains the updated workflow definition.
+#    --ref selects the workflow file version; sha selects the exact migration checkout.
+#    Do not rely on the default branch: main is unsuitable until #120 is promoted there.
+WF=$(mktemp)
+gh api "repos/jtanori/solara/contents/.github/workflows/migrate.yml?ref=$PROMO_REF" \
+  -H "Accept: application/vnd.github.raw" > "$WF"
+
+grep -Eq '^[[:space:]]+mode:[[:space:]]*$' "$WF" || {
+  echo "ERROR: workflow at $PROMO_REF has no mode input"; rm -f "$WF"; exit 1;
+}
+grep -Eq '^[[:space:]]+dry_run:[[:space:]]*$' "$WF" || {
+  echo "ERROR: workflow at $PROMO_REF has no dry_run input"; rm -f "$WF"; exit 1;
+}
+for marker in \
+  'mode=${{ inputs.mode }}' \
+  'dry=${{ inputs.dry_run }}' \
+  'migration-applied.json' \
+  'mode=migrate' \
+  'dry=false'
+do
+  grep -Fq -- "$marker" "$WF" || {
+    echo "ERROR: workflow at $PROMO_REF lacks required marker: $marker"
+    rm -f "$WF"
+    exit 1
+  }
+done
+rm -f "$WF"
+
+# This is a version-presence check, not proof that the gate behaves correctly.
+# The reviewed workflow and CI are the behavioral assurance.
+
+# 3. recheck the frozen values after the preflight, immediately before dispatch.
+#    If the PR head moved, stop and rehearse the new SHA instead of dispatching stale evidence.
+CURRENT=$(gh pr view "$PROMO_PR" --repo jtanori/solara \
+  --json headRefName,headRefOid \
+  --jq '[.headRefName, .headRefOid] | @tsv')
+IFS=$'\t' read -r CURRENT_REF CURRENT_SHA <<< "$CURRENT"
+if [[ "$CURRENT_REF" != "$PROMO_REF" || "$CURRENT_SHA" != "$PROMO_SHA" ]]; then
+  echo "ERROR: promotion PR head moved from $PROMO_REF@$PROMO_SHA to $CURRENT_REF@$CURRENT_SHA"
+  echo "Freeze and rehearse the new SHA instead of dispatching a stale one."
+  exit 1
+fi
+
+# 4. rehearse that promotion PR on staging with the updated workflow.
+#    db-remote.ts --pr <promotion-pr> infers production, so dispatch the staging run manually.
+gh workflow run migrate.yml --repo jtanori/solara \
+  --ref "$PROMO_REF" \
+  -f env=staging -f pr="$PROMO_PR" -f sha="$PROMO_SHA" \
+  -f mode=migrate -f dry_run=false
+
+#    Verify the run name is:
+#    migrate staging pr-<promotion-pr> <PROMO_SHA> mode=migrate dry=false
+#    and the schema-verdict artifact contains migration-applied.json for that env/SHA/mode.
+
+# 5. production, citing the same promotion PR as the rehearsal
+npx tsx scripts/db-remote.ts --pr "$PROMO_PR" --env production --rehearsal-pr "$PROMO_PR"
+
+# 6. confirm the production schema and journal
 npx tsx scripts/db-remote.ts --check --env production
 ```
 
-Step 4 must report `OK production schema and drizzle journal are in sync`.
+Step 6 must report `OK production schema and drizzle journal are in sync`.
 
 ## What is still not covered
 

@@ -52,12 +52,13 @@ on:
 permissions:
   contents: read
   actions: read
+  pull-requests: read
 
 concurrency:
   group: migrate-${{ inputs.env }}
   cancel-in-progress: false
 
-run-name: migrate ${{ inputs.env }} pr-${{ inputs.pr }} ${{ inputs.sha }}
+run-name: migrate ${{ inputs.env }} pr-${{ inputs.pr }} ${{ inputs.sha }} mode=${{ inputs.mode }} dry=${{ inputs.dry_run }}
 
 jobs:
   migrate:
@@ -129,21 +130,42 @@ jobs:
             exit 1
           fi
 
-          echo "== 3. staging has a green migrate run for this PR =="
-          # A green `migrate staging pr-<n>` run is the proof that this exact migration already
-          # ran against a real database. Without it, production is the rehearsal.
-          FOUND=""
+          echo "== 3. staging has a green, non-dry-run migrate run for this exact SHA =="
+          # A green `migrate staging pr-<n> <sha> mode=migrate dry=false` run is the proof
+          # that this exact migration already ran against a real database. A verify-only or
+          # dry-run run is not a rehearsal.
+          RUN_ID=""
           for i in 1 2 3 4 5; do
-            FOUND=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/migrate.yml/runs?per_page=100" \
-              --jq "[.workflow_runs[] | select(.conclusion==\"success\") | select(.name | contains(\"migrate staging\")) | select(.name | contains(\"pr-$REHEARSAL_PR\"))] | length" 2>/dev/null || echo 0)
-            if [[ "$FOUND" != "0" && -n "$FOUND" ]]; then break; fi
+            RUN_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/migrate.yml/runs?per_page=100" \
+              --jq "[.workflow_runs[] | select(.conclusion==\"success\") | select(.name | contains(\"migrate staging\")) | select(.name | contains(\"pr-$REHEARSAL_PR\")) | select(.name | contains(\"$SHA\")) | select(.name | contains(\"mode=migrate\")) | select(.name | contains(\"dry=false\"))] | sort_by(.created_at) | reverse | .[0].id // empty" 2>/dev/null || true)
+            if [[ -n "$RUN_ID" ]]; then break; fi
             sleep 5
           done
-          if [[ "${FOUND:-0}" == "0" ]]; then
-            echo "::error::no successful 'migrate staging pr-$REHEARSAL_PR' run — run: gh workflow run migrate.yml -f env=staging -f pr=$REHEARSAL_PR -f sha=<sha> -f mode=migrate"
+          if [[ -z "$RUN_ID" ]]; then
+            echo "::error::no successful non-dry-run 'migrate staging pr-$REHEARSAL_PR $SHA' run — dispatch it first with mode=migrate and dry_run=false"
             exit 1
           fi
-          echo "found $FOUND successful staging migrate run(s) for pr-$REHEARSAL_PR"
+          echo "found staging run $RUN_ID for pr-$REHEARSAL_PR at $SHA"
+
+          ART_DIR=$(mktemp -d)
+          if ! gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "schema-verdict-staging-$SHA" --dir "$ART_DIR" >/dev/null 2>&1; then
+            echo "::error::staging run $RUN_ID has no schema-verdict-staging-$SHA artifact"
+            exit 1
+          fi
+          if [[ ! -f "$ART_DIR/migration-applied.json" ]]; then
+            echo "::error::staging run $RUN_ID has no migration-applied marker; a verify/dry-run is not a rehearsal"
+            exit 1
+          fi
+          node - "$ART_DIR/migration-applied.json" "$SHA" <<'NODE'
+          const fs = require("node:fs");
+          const [file, sha] = process.argv.slice(2);
+          const marker = JSON.parse(fs.readFileSync(file, "utf8"));
+          if (marker.env !== "staging" || marker.sha !== sha || marker.mode !== "migrate" || marker.dryRun !== false) {
+            console.error("staging artifact does not prove a real migrate for this SHA");
+            process.exit(1);
+          }
+          NODE
+          echo "verified staging migration marker for $SHA"
 
           echo "== 4. exact-commit match =="
           # The SHA below the gate must be the head of the rehearsed PR, or the rehearsal
@@ -159,7 +181,7 @@ jobs:
             echo "### production gate passed"
             echo "- rehearsal PR: #$REHEARSAL_PR"
             echo "- commit: \`$SHA\`"
-            echo "- green staging migrate runs: $FOUND"
+            echo "- staging migrate run: $RUN_ID"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Guard the connection string
@@ -198,6 +220,15 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
         run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" migrate --yes
+
+      - name: Record applied migration
+        if: ${{ inputs.mode == 'migrate' && inputs.dry_run == false }}
+        env:
+          TARGET_ENV: ${{ inputs.env }}
+          SHA: ${{ inputs.sha }}
+          PR: ${{ inputs.pr }}
+        run: |
+          node -e 'require("node:fs").writeFileSync("migration-applied.json", JSON.stringify({env:process.env.TARGET_ENV,sha:process.env.SHA,pr:process.env.PR,mode:"migrate",dryRun:false,appliedAt:new Date().toISOString()}))'
 
       # The verdict is DATA, not the job conclusion. A verify run is allowed to find an empty
       # database (that is useful information before a migration), so it must not turn the run
@@ -247,5 +278,6 @@ jobs:
           path: |
             verify.json
             migrate.log
+            migration-applied.json
           retention-days: 30
           if-no-files-found: ignore
