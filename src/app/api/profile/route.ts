@@ -5,6 +5,7 @@ import { subscriptions, users } from "@/db/schema";
 import { currentUser, SESSION_COOKIE } from "@/lib/auth";
 import { getStripe } from "@/lib/billing";
 import { getLocale } from "@/lib/i18n-server";
+import { log, requestMeta } from "@/lib/log";
 
 const ongoingStatuses = ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"];
 export async function PATCH(request:Request) {
@@ -13,7 +14,7 @@ export async function PATCH(request:Request) {
   if(!name||name.length>100)return NextResponse.json({error:"Enter a name of up to 100 characters."},{status:400});
   await db.update(users).set({name}).where(eq(users.id,user.id));return NextResponse.json({ok:true});
 }
-export async function DELETE() {
+export async function DELETE(request: Request) {
   const user=await currentUser();if(!user)return NextResponse.json({error:"Please sign in."},{status:401});const es=(await getLocale())==="es";
   if(!user.emailVerifiedAt)return NextResponse.json({error:es?"Verifica tu correo antes de eliminar tu cuenta.":"Verify your email before deleting your account.",code:"email_not_verified"},{status:403});
   if(user.role==="owner")return NextResponse.json({error:es?"Transfiere la cuenta propietaria antes de eliminarla.":"Owner accounts must be transferred before deletion."},{status:400});
@@ -29,7 +30,7 @@ export async function DELETE() {
       const sessions=await stripe.checkout.sessions.list({customer:user.stripeCustomerId,status:"open",limit:100});
       for(const session of sessions.data){if(session.mode==="subscription")await stripe.checkout.sessions.expire(session.id);}
       if(await hasOngoing())return NextResponse.json({error:message},{status:409});
-    }catch(error){console.error("Unable to verify billing before account deletion",error instanceof Error?error.message:"unknown error");return NextResponse.json({error:es?"No pudimos verificar tu facturación. Inténtalo más tarde.":"We could not verify billing. Please try again later."},{status:503});}
+    }catch(error){log.error("profile.billing_check_failed", { ...requestMeta(request), userId: user.id, error });return NextResponse.json({error:es?"No pudimos verificar tu facturación. Inténtalo más tarde.":"We could not verify billing. Please try again later."},{status:503});}
   }
   await db.delete(users).where(eq(users.id,user.id));const response=NextResponse.json({ok:true});response.cookies.set(SESSION_COOKIE,"",{path:"/",maxAge:0,httpOnly:true,sameSite:"lax",secure:process.env.NODE_ENV==="production"});return response;
 }

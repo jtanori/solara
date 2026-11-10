@@ -9,7 +9,7 @@ set -euo pipefail
 #   ./scripts/deploy.sh --pr 44 --env production --yes
 #   ./scripts/deploy.sh --pr 43 --skip-migrate
 #
-# Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=require&channel_binding=require)
+# Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=verify-full&channel_binding=require)
 # Merge policy (see ADR 004): feature → staging uses --squash (linear), promotion staging→main uses --merge (preserve ancestry).
 # Repo needs allow_squash_merge:true + allow_merge_commit:true (Settings → General → Pull Requests).
 

@@ -31,7 +31,7 @@ node scripts/check-setup.mjs production --strict
 
 **Important:**
 
-- `DATABASE_URL` in Vercel is always the **pooled** Neon URL (`-pooler.` + `?sslmode=require`). Keep the **direct** (non-pooler) URL only in your secure migration shell, never in Vercel.
+- `DATABASE_URL` in Vercel is always the **pooled** Neon URL (`-pooler.` + `?sslmode=verify-full`). Keep the **direct** (non-pooler) URL only in your secure migration shell, never in Vercel.
 - `NEXT_PUBLIC_*` vars are baked into the build — redeploy after changing them.
 - Never set `ALLOW_LOCAL_SEED*` or `LOCAL_SEED_PASSWORD` in Vercel — the app refuses them when `VERCEL` is set.
 - Hosted environments require `MAIL_TRANSPORT=resend|postmark`, `MAIL_FROM`, and the matching provider key. Never use `MAIL_TRANSPORT=outbox` in Vercel.

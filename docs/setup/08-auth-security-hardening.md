@@ -28,6 +28,9 @@ Local outbox messages are written to `.mail-outbox/*.eml` with mode `0600`. They
 | Sign-in account | 10 failures/15 min per email |
 | Claim attempt | 10/hour per IP |
 | Claim resend | 10/hour per IP, 3/15 min per email |
+| Password reset request | 5/hour per IP, 3/hour per email |
+| Password reset confirm | 10/hour per IP |
+| Places search | 30/min per IP, 1000 upstream calls/hour |
 | CSP reports | 60/min per IP |
 
 Sign-in attempts for one email are serialized with a PostgreSQL advisory lock. Attempts for one IP are serialized by an IP advisory lock plus the all-attempt rate-limit row, in IP → account order; the counters, password check, and session creation all run in that transaction. The account failure budget is checked before `scrypt`, so rotating IPs cannot bypass it. Pending and unknown accounts both use the dummy hash, so timing does not reveal an unclaimed address. The IP failure budget is prechecked and sets a block when exhausted. After 10 account failures the account backs off progressively from 30 seconds to 15 minutes. A correct password after the backoff succeeds and resets the failure state.
@@ -81,6 +84,14 @@ Policy: unverified users cannot sign in. `POST /api/billing/checkout` and `DELET
 
 Tokens are never written to application logs. Claim responses use `Cache-Control: no-store`; the claim page clears the fragment after capture.
 
+### Password reset
+
+- `/forgot-password` posts to `/api/auth/reset/request`. The response is generic for known, unknown, and unverified addresses.
+- Only verified accounts receive a `password_reset` token: SHA-256 hashed, single-use, 1-hour TTL, 60-second resend cooldown.
+- The email links to `/reset-password?lang=…#token=…`; the page reads the fragment, asks for a new password, and submits an explicit POST to `/api/auth/reset/confirm`.
+- Confirmation updates the password, deletes every session for the user, invalidates sibling reset tokens, and writes an `audit_logs` `password:reset` row. Invalid tokens are rejected before `scrypt`.
+- Reset requests are limited to 5/hour/IP and 3/hour/email; confirmation is limited to 10/hour/IP.
+
 ## Migration order
 
 Migration `0002_email_verification` is additive and removes unverified sessions. Apply and verify migrations with the approved runner **before** merging/deploying:
@@ -92,6 +103,17 @@ npx tsx scripts/db-run.ts --env staging verify
 ```
 
 `verify` checks `rate_limits`, `email_tokens`, `users.email_verified_at` (type, nullability, and **no default** that would auto-verify), and the new indexes. A `DEFAULT now()` drift makes verification fail. Do not edit `0002` in place if it has run in a persistent environment; use an audited forward repair. The production promotion waits for the separate exact-SHA migration-gate PR.
+
+## Logging and request IDs (#87)
+
+All server logs go through `src/lib/log.ts`. `src/proxy.ts` generates an `x-request-id` for every request and returns it in the response; API logs carry the same ID and the route path, never the query string.
+
+- Database errors emit only the name, SQLSTATE, a generic `"database error"` message, and a stack hash. Drizzle query parameters are never logged.
+- Non-database messages are redacted.
+- Redaction strips: email addresses, Bearer values, `postgres(ql)://` URLs, Stripe/mail keys, webhook secrets, `password/token/apikey/secret/email` query values, long hex, and 40+ character opaque strings (including 43-character base64url tokens), while preserving UUIDs.
+- Sensitive object keys (`password`, `token`, `secret`, `email`, `birth`, `stripe`, `authorization`, `cookie`) become `[redacted]`.
+- Bare `console.*` under `src/` fails ESLint; only `src/lib/log.ts` is allowlisted.
+- Do not pass request bodies, chart inputs, birth data, or raw Error objects to a logger. `log.error(event, { error })` is safe; `console.error(error)` is not.
 
 ## Strict origin checks (#56)
 

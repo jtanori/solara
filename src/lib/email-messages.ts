@@ -81,3 +81,40 @@ export function accountExistsMessage(input: {
   const html = `<p>Hi ${escapeHtml(input.name)},</p><p>Someone tried to create an account with this email, but a verified account already exists.</p><p><a href="${escapeHtml(input.url)}">Sign in</a></p><p>If that was not you, you can ignore this message.</p>`;
   return { to: input.to, subject, text, html };
 }
+
+export function passwordResetMessage(input: {
+  to: string;
+  name: string;
+  url: string;
+  locale: "en" | "es";
+}): MailMessage {
+  if (input.locale === "es") {
+    const subject = "Restablece tu contraseña de Solara";
+    const text = [
+      `Hola ${input.name},`,
+      "",
+      "Alguien solicitó restablecer la contraseña de tu cuenta. Si fuiste tú, abre el enlace y elige una nueva contraseña:",
+      "",
+      input.url,
+      "",
+      "El enlace caduca en 1 hora y solo puede usarse una vez.",
+      "Si no lo solicitaste, ignora este mensaje; tu contraseña actual sigue funcionando.",
+    ].join("\n");
+    const html = `<p>Hola ${escapeHtml(input.name)},</p><p>Alguien solicitó restablecer la contraseña de tu cuenta. Si fuiste tú, abre el enlace y elige una nueva contraseña:</p><p><a href="${escapeHtml(input.url)}">Restablecer mi contraseña</a></p><p>El enlace caduca en 1 hora y solo puede usarse una vez.</p><p>Si no lo solicitaste, ignora este mensaje; tu contraseña actual sigue funcionando.</p>`;
+    return { to: input.to, subject, text, html };
+  }
+
+  const subject = "Reset your Solara password";
+  const text = [
+    `Hi ${input.name},`,
+    "",
+    "Someone requested a password reset for your account. If that was you, open the link and choose a new password:",
+    "",
+    input.url,
+    "",
+    "This link expires in 1 hour and can only be used once.",
+    "If you did not request it, ignore this message; your current password still works.",
+  ].join("\n");
+  const html = `<p>Hi ${escapeHtml(input.name)},</p><p>Someone requested a password reset for your account. If that was you, open the link and choose a new password:</p><p><a href="${escapeHtml(input.url)}">Reset my password</a></p><p>This link expires in 1 hour and can only be used once.</p><p>If you did not request it, ignore this message; your current password still works.</p>`;
+  return { to: input.to, subject, text, html };
+}

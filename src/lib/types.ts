@@ -1,6 +1,6 @@
 export type Role = "owner" | "admin" | "editor" | "user";
 
-export type EmailTokenPurpose = "account_claim" | "email_verification";
+export type EmailTokenPurpose = "account_claim" | "email_verification" | "password_reset";
 
 export type Place = {
   name: string;

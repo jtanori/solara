@@ -17,6 +17,16 @@ export function isGuardedApiPath(pathname: string): boolean {
   return !UNGUARDED_API_PATHS.has(normalized);
 }
 
+export function vercelOrigins(env: Record<string, string | undefined> = process.env): string[] {
+  return [
+    env.VERCEL_BRANCH_URL,
+    env.VERCEL_URL,
+    env.VERCEL_PROJECT_PRODUCTION_URL,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.startsWith("http") ? value : `https://${value}`);
+}
+
 function normalizedOrigin(value: string | undefined): string | null {
   if (!value) return null;
   try {

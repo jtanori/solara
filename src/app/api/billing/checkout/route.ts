@@ -5,6 +5,7 @@ import { subscriptions, users } from "@/db/schema";
 import { currentUser } from "@/lib/auth";
 import { appOrigin, billingIsConfigured, getStripe, priceIdFor, type BillingCurrency } from "@/lib/billing";
 import { getLocale } from "@/lib/i18n-server";
+import { log, requestMeta } from "@/lib/log";
 
 export const runtime = "nodejs";
 export async function POST(request: Request) {
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
     if (!session.url) throw new Error("Checkout URL missing");
     return NextResponse.json({ url: session.url });
   } catch (error) {
-    console.error("Stripe checkout failed", error instanceof Error ? error.message : "unknown error");
+    log.error("billing.checkout_failed", { ...requestMeta(request), userId: user.id, error });
     return NextResponse.json({ error: locale === "es" ? "No pudimos abrir el pago. Inténtalo de nuevo." : "Could not open checkout. Please try again." }, { status: 503 });
   }
 }

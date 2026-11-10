@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { rateLimits } from "@/db/schema";
 import type { DbTransaction } from "@/lib/account-lock";
+import { log } from "@/lib/log";
 
 export type RateLimitPolicy = {
   limit: number;
@@ -15,6 +16,11 @@ export type RateLimitResult = {
   retryAfterSeconds: number;
   resetAt: Date;
   blockedUntil: Date | null;
+};
+
+export type RateLimitContext = {
+  requestId?: string;
+  route?: string;
 };
 
 export type FailureBackoff = {
@@ -32,6 +38,10 @@ export const AUTH_RATE_LIMITS = {
   claimIp: { limit: 10, windowSeconds: 60 * 60 },
   verifyRequestEmail: { limit: 3, windowSeconds: 15 * 60 },
   verifyRequestIp: { limit: 10, windowSeconds: 60 * 60 },
+  resetRequestEmail: { limit: 3, windowSeconds: 60 * 60 },
+  resetRequestIp: { limit: 5, windowSeconds: 60 * 60 },
+  resetConfirmIp: { limit: 10, windowSeconds: 60 * 60 },
+  placesIp: { limit: 30, windowSeconds: 60 },
   cspReportIp: { limit: 60, windowSeconds: 60 },
 } as const satisfies Record<string, RateLimitPolicy>;
 
@@ -68,14 +78,14 @@ export function keyFor(kind: string, value: string): string {
   return `${kind}:${hashRateLimitKey(value)}`;
 }
 
-function logLimit(kind: string, result: RateLimitResult): void {
-  console.warn("[auth-rate-limit]", JSON.stringify({
-    event: "rate_limit_triggered",
+function logLimit(kind: string, result: RateLimitResult, context: RateLimitContext = {}): void {
+  log.warn("rate_limit", {
+    ...context,
     kind,
     retryAfterSeconds: result.retryAfterSeconds,
     resetAt: result.resetAt.toISOString(),
     blockedUntil: result.blockedUntil?.toISOString() ?? null,
-  }));
+  });
 }
 
 async function consumeRateLimitIn(
@@ -132,9 +142,10 @@ export async function consumeRateLimitTx(
   key: string,
   policy: RateLimitPolicy,
   kind: string,
+  context: RateLimitContext = {},
 ): Promise<RateLimitResult> {
   const result = await consumeRateLimitIn(tx, key, policy);
-  if (!result.allowed) logLimit(kind, result);
+  if (!result.allowed) logLimit(kind, result, context);
   return result;
 }
 
@@ -142,13 +153,15 @@ export async function consumeRateLimit(
   key: string,
   policy: RateLimitPolicy,
   kind: string,
+  context: RateLimitContext = {},
 ): Promise<RateLimitResult> {
-  return db.transaction((tx) => consumeRateLimitTx(tx, key, policy, kind));
+  return db.transaction((tx) => consumeRateLimitTx(tx, key, policy, kind, context));
 }
 
 export async function recordAuthFailure(
   key: string,
   config: FailureBackoff = AUTH_FAILURE_BACKOFF,
+  context: RateLimitContext = {},
 ): Promise<{ failureCount: number; blockedUntil: Date | null }> {
   const now = new Date();
   const result = await db.transaction(async (tx) => {
@@ -193,11 +206,11 @@ export async function recordAuthFailure(
   });
 
   if (result.blockedUntil) {
-    console.warn("[auth-rate-limit]", JSON.stringify({
-      event: "failure_backoff",
+    log.warn("auth.failure_backoff", {
+      ...context,
       failureCount: result.failureCount,
       blockedUntil: result.blockedUntil.toISOString(),
-    }));
+    });
   }
   return result;
 }
@@ -251,6 +264,7 @@ export async function recordAuthFailureTx(
   tx: DbTransaction,
   key: string,
   config: FailureBackoff = ACCOUNT_FAILURE_BACKOFF,
+  context: RateLimitContext = {},
 ): Promise<{ failureCount: number; blockedUntil: Date | null }> {
   const now = new Date();
   await tx.insert(rateLimits).values({
@@ -291,11 +305,11 @@ export async function recordAuthFailureTx(
   }).where(eq(rateLimits.key, key));
 
   if (blockedUntil) {
-    console.warn("[auth-rate-limit]", JSON.stringify({
-      event: "account_failure_backoff",
+    log.warn("auth.account_failure_backoff", {
+      ...context,
       failureCount,
       blockedUntil: blockedUntil.toISOString(),
-    }));
+    });
   }
 
   return { failureCount, blockedUntil };

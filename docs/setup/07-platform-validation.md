@@ -56,7 +56,7 @@ Move an item to `pass` only when its evidence is committed or linked and a revie
 | # | Item | Owner | Evidence | Status |
 |---|---:|---|---|---|
 | 5.1 | Email verification on signup (prevent stale/typo owners) | @eng | Mailbox-proof account claim: `src/lib/email-verification.ts`, `src/lib/auth-service.ts`, `tests/email-verification.test.ts`, `tests/auth-endpoint.test.ts`, `/verify-email`; PR #118 | in-progress |
-| 5.2 | Password recovery flow | @eng | Issue + PR | todo |
+| 5.2 | Password recovery flow | @eng | `src/lib/email-verification.ts`, `src/lib/auth-service.ts`, `tests/password-reset.test.ts`, `/forgot-password`, `/reset-password` | in-progress |
 | 5.3 | Staff MFA for `admin`/`owner` (and rate-limited owner promotion) | @eng | `src/lib/billing.ts` + Neon RLS + docs | todo |
 | 5.4 | Rate limiting on `/api/auth` and `/api/billing/*` | @eng | `src/lib/rate-limit.ts`, `tests/rate-limit.test.ts`, `tests/auth-endpoint.test.ts`, `npm run rate-limits:report`; auth endpoints covered, billing follow-up | in-progress |
 | 5.5 | Full CSRF strategy for cookie-authenticated POSTs (not just Next.js defaults) | @eng | `src/proxy.ts`, `src/lib/request-security.ts`, `tests/request-security.test.ts`; full-origin + `/api/:path*` matcher | in-progress |

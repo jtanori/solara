@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import { db } from "@/db";
-import { emailTokens, sessions, users } from "@/db/schema";
+import { auditLogs, emailTokens, sessions, users } from "@/db/schema";
 import type { EmailTokenPurpose } from "@/lib/types";
 import { withEmailLock } from "@/lib/account-lock";
 
@@ -110,6 +110,15 @@ export async function finalizeEmailVerificationToken(
   });
 }
 
+export async function createPasswordResetToken(
+  userId: string,
+): Promise<EmailTokenCreation> {
+  return createEmailVerificationToken(userId, "password_reset", {
+    ttlHours: 1,
+    cooldownSeconds: EMAIL_TOKEN_COOLDOWN_SECONDS,
+  });
+}
+
 export async function discardEmailVerificationToken(tokenHash: string): Promise<void> {
   await db.delete(emailTokens).where(and(
     eq(emailTokens.tokenHash, tokenHash),
@@ -207,12 +216,93 @@ export async function claimAccountWithToken(
   });
 }
 
+export type PasswordResetResult =
+  | { status: "reset"; userId: string }
+  | { status: "used" }
+  | { status: "expired" }
+  | { status: "invalid" };
+
+export async function resetPasswordWithToken(
+  token: string,
+  passwordHash: string,
+): Promise<PasswordResetResult> {
+  const tokenHash = hashEmailToken(token);
+
+  const [hint] = await db
+    .select({ email: users.email, userId: users.id })
+    .from(emailTokens)
+    .innerJoin(users, eq(users.id, emailTokens.userId))
+    .where(and(eq(emailTokens.tokenHash, tokenHash), eq(emailTokens.purpose, "password_reset")))
+    .limit(1);
+
+  if (!hint) return { status: "invalid" };
+
+  return withEmailLock(hint.email, async (tx) => {
+    const now = new Date();
+
+    const [user] = await tx
+      .select({ id: users.id, emailVerifiedAt: users.emailVerifiedAt })
+      .from(users)
+      .where(eq(users.id, hint.userId))
+      .for("update");
+    if (!user || !user.emailVerifiedAt) return { status: "invalid" };
+
+    const [row] = await tx
+      .select()
+      .from(emailTokens)
+      .where(and(
+        eq(emailTokens.tokenHash, tokenHash),
+        eq(emailTokens.purpose, "password_reset"),
+        eq(emailTokens.userId, user.id),
+      ))
+      .for("update");
+
+    if (!row) return { status: "invalid" };
+    if (row.usedAt) return { status: "used" };
+    if (row.expiresAt.getTime() <= now.getTime()) return { status: "expired" };
+
+    await tx.update(users)
+      .set({ passwordHash })
+      .where(eq(users.id, user.id));
+
+    await tx.update(emailTokens)
+      .set({ usedAt: now })
+      .where(eq(emailTokens.tokenHash, tokenHash));
+
+    await tx.delete(emailTokens).where(and(
+      eq(emailTokens.userId, user.id),
+      eq(emailTokens.purpose, "password_reset"),
+      isNull(emailTokens.usedAt),
+    ));
+
+    await tx.delete(sessions).where(eq(sessions.userId, user.id));
+    await tx.insert(auditLogs).values({
+      actorId: user.id,
+      action: "password:reset",
+      target: user.id,
+    });
+
+    return { status: "reset", userId: user.id };
+  });
+}
+
 export function emailVerificationUrl(
   token: string,
   locale: "en" | "es",
   appUrl: string,
 ): string {
   const url = new URL("/verify-email", appUrl);
+  url.searchParams.set("lang", locale);
+  url.hash = `token=${token}`;
+  return url.toString();
+}
+
+export function passwordResetUrl(
+  token: string,
+  locale: "en" | "es",
+  appUrl: string,
+): string {
+  const url = new URL("/reset-password", appUrl);
   url.searchParams.set("lang", locale);
   url.hash = `token=${token}`;
   return url.toString();
