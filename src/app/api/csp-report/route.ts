@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { log, requestMeta } from "@/lib/log";
 import {
   AUTH_RATE_LIMITS,
   clientIp,
@@ -79,12 +80,13 @@ export async function POST(request: Request) {
     return new NextResponse(null, { status: 400 });
   }
 
-  console.warn("[csp-report]", JSON.stringify({
+  log.warn("csp.violation", {
+    ...requestMeta(request),
     documentPath: safePath(report["document-uri"]),
     directive: report["violated-directive"] ?? report["effective-directive"],
     blocked: safeBlocked(report["blocked-uri"]),
     disposition: report.disposition,
-  }));
+  });
 
   return new NextResponse(null, { status: 204 });
 }

@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { rateLimits } from "@/db/schema";
 import type { DbTransaction } from "@/lib/account-lock";
+import { log } from "@/lib/log";
 
 export type RateLimitPolicy = {
   limit: number;
@@ -32,6 +33,10 @@ export const AUTH_RATE_LIMITS = {
   claimIp: { limit: 10, windowSeconds: 60 * 60 },
   verifyRequestEmail: { limit: 3, windowSeconds: 15 * 60 },
   verifyRequestIp: { limit: 10, windowSeconds: 60 * 60 },
+  resetRequestEmail: { limit: 3, windowSeconds: 60 * 60 },
+  resetRequestIp: { limit: 5, windowSeconds: 60 * 60 },
+  resetConfirmIp: { limit: 10, windowSeconds: 60 * 60 },
+  placesIp: { limit: 30, windowSeconds: 60 },
   cspReportIp: { limit: 60, windowSeconds: 60 },
 } as const satisfies Record<string, RateLimitPolicy>;
 
@@ -69,13 +74,12 @@ export function keyFor(kind: string, value: string): string {
 }
 
 function logLimit(kind: string, result: RateLimitResult): void {
-  console.warn("[auth-rate-limit]", JSON.stringify({
-    event: "rate_limit_triggered",
+  log.warn("auth.rate_limit", {
     kind,
     retryAfterSeconds: result.retryAfterSeconds,
     resetAt: result.resetAt.toISOString(),
     blockedUntil: result.blockedUntil?.toISOString() ?? null,
-  }));
+  });
 }
 
 async function consumeRateLimitIn(
@@ -193,11 +197,10 @@ export async function recordAuthFailure(
   });
 
   if (result.blockedUntil) {
-    console.warn("[auth-rate-limit]", JSON.stringify({
-      event: "failure_backoff",
+    log.warn("auth.failure_backoff", {
       failureCount: result.failureCount,
       blockedUntil: result.blockedUntil.toISOString(),
-    }));
+    });
   }
   return result;
 }
@@ -291,11 +294,10 @@ export async function recordAuthFailureTx(
   }).where(eq(rateLimits.key, key));
 
   if (blockedUntil) {
-    console.warn("[auth-rate-limit]", JSON.stringify({
-      event: "account_failure_backoff",
+    log.warn("auth.account_failure_backoff", {
       failureCount,
       blockedUntil: blockedUntil.toISOString(),
-    }));
+    });
   }
 
   return { failureCount, blockedUntil };

@@ -11,16 +11,21 @@ import { canonicalAppUrl } from "@/lib/app-url";
 import {
   claimAccountWithToken,
   createEmailVerificationToken,
+  createPasswordResetToken,
   discardEmailVerificationToken,
   emailVerificationUrl,
+  passwordResetUrl,
   finalizeEmailVerificationToken,
   lookupClaimToken,
+  resetPasswordWithToken,
 } from "@/lib/email-verification";
 import {
   accountClaimMessage,
   accountExistsMessage,
+  passwordResetMessage,
 } from "@/lib/email-messages";
 import { reportServerError } from "@/lib/error-report";
+import { requestMeta, type LogFields } from "@/lib/log";
 import {
   MailAmbiguousError,
   MailConfigurationError,
@@ -124,12 +129,13 @@ export async function deliverClaimEmail(
   mail: MailTransport,
   appUrl: string,
   deps: ClaimDeliveryDeps = {},
+  context: LogFields = {},
 ): Promise<void> {
   let token: Awaited<ReturnType<typeof createEmailVerificationToken>>;
   try {
     token = await (deps.createToken ?? createEmailVerificationToken)(user.id, "account_claim");
   } catch (error) {
-    reportServerError("auth.claim_token_issue_failed", error);
+    reportServerError("auth.claim_token_issue_failed", error, context);
     return;
   }
   if (token.status !== "created") return;
@@ -146,11 +152,11 @@ export async function deliverClaimEmail(
       try {
         await (deps.discardToken ?? discardEmailVerificationToken)(token.tokenHash);
       } catch (discardError) {
-        reportServerError("auth.claim_discard_failed", discardError);
+        reportServerError("auth.claim_discard_failed", discardError, context);
       }
-      reportServerError("auth.claim_email_failed", error);
+      reportServerError("auth.claim_email_failed", error, context);
     } else {
-      reportServerError("auth.claim_email_ambiguous", error);
+      reportServerError("auth.claim_email_ambiguous", error, context);
     }
     return;
   }
@@ -162,7 +168,51 @@ export async function deliverClaimEmail(
       "account_claim",
     );
   } catch (error) {
-    reportServerError("auth.claim_finalize_failed", error);
+    reportServerError("auth.claim_finalize_failed", error, context);
+  }
+}
+
+export async function deliverPasswordResetEmail(
+  user: { id: string; email: string; name: string },
+  locale: Locale,
+  mail: MailTransport,
+  appUrl: string,
+  context: LogFields = {},
+): Promise<void> {
+  let token: Awaited<ReturnType<typeof createPasswordResetToken>>;
+  try {
+    token = await createPasswordResetToken(user.id);
+  } catch (error) {
+    reportServerError("auth.reset_token_issue_failed", error, context);
+    return;
+  }
+  if (token.status !== "created") return;
+
+  try {
+    await mail.send(passwordResetMessage({
+      to: user.email,
+      name: user.name,
+      url: passwordResetUrl(token.token, locale, appUrl),
+      locale,
+    }));
+  } catch (error) {
+    if (error instanceof MailDeliveryError || error instanceof MailConfigurationError) {
+      try {
+        await discardEmailVerificationToken(token.tokenHash);
+      } catch (discardError) {
+        reportServerError("auth.reset_discard_failed", discardError, context);
+      }
+      reportServerError("auth.reset_email_failed", error, context);
+    } else {
+      reportServerError("auth.reset_email_ambiguous", error, context);
+    }
+    return;
+  }
+
+  try {
+    await finalizeEmailVerificationToken(token.tokenHash, user.id, "password_reset");
+  } catch (error) {
+    reportServerError("auth.reset_finalize_failed", error, context);
   }
 }
 
@@ -171,8 +221,9 @@ function claimTask(
   locale: Locale,
   mail: MailTransport,
   appUrl: string,
+  context: LogFields,
 ): Task {
-  return () => deliverClaimEmail(user, locale, mail, appUrl);
+  return () => deliverClaimEmail(user, locale, mail, appUrl, {}, context);
 }
 
 function accountExistsTask(
@@ -180,6 +231,7 @@ function accountExistsTask(
   locale: Locale,
   mail: MailTransport,
   appUrl: string,
+  context: LogFields,
 ): Task {
   return async () => {
     try {
@@ -190,7 +242,7 @@ function accountExistsTask(
         locale,
       }));
     } catch (error) {
-      reportServerError("auth.account_exists_email_failed", error);
+      reportServerError("auth.account_exists_email_failed", error, context);
     }
   };
 }
@@ -232,6 +284,7 @@ async function handleSignup(
 
   const mail = deps.mail();
   const appUrl = canonicalAppUrl(deps.appUrl);
+  const context = requestMeta(request);
 
   const [created] = await db.insert(users).values({
     name,
@@ -249,7 +302,7 @@ async function handleSignup(
   if (created) {
     return {
       response: NextResponse.json({ ok: true }),
-      tasks: [claimTask(created, deps.locale, mail, appUrl)],
+      tasks: [claimTask(created, deps.locale, mail, appUrl, context)],
     };
   }
 
@@ -271,8 +324,8 @@ async function handleSignup(
   return {
     response: NextResponse.json({ ok: true }),
     tasks: [existing.emailVerifiedAt
-      ? accountExistsTask(existing, deps.locale, mail, appUrl)
-      : claimTask(existing, deps.locale, mail, appUrl)],
+      ? accountExistsTask(existing, deps.locale, mail, appUrl, context)
+      : claimTask(existing, deps.locale, mail, appUrl, context)],
   };
 }
 
@@ -477,7 +530,7 @@ export async function handleAuth(request: Request, deps: AuthDeps): Promise<Auth
     if (error instanceof ScryptBusyError) {
       return { response: serviceUnavailable(es), tasks: [] };
     }
-    reportServerError("auth.request_failed", error);
+    reportServerError("auth.request_failed", error, requestMeta(request));
     return {
       response: NextResponse.json(
         {
@@ -536,6 +589,7 @@ export async function handleClaimRequest(
 
     const mail = deps.mail();
     const appUrl = canonicalAppUrl(deps.appUrl);
+    const context = requestMeta(request);
 
     const user = deps.lookupUser
       ? await deps.lookupUser(email)
@@ -556,7 +610,7 @@ export async function handleClaimRequest(
 
     return {
       response: NextResponse.json({ ok: true }),
-      tasks: [claimTask(user, deps.locale, mail, appUrl)],
+      tasks: [claimTask(user, deps.locale, mail, appUrl, context)],
     };
   } catch (error) {
     if (error instanceof MailConfigurationError) {
@@ -572,7 +626,7 @@ export async function handleClaimRequest(
         tasks: [],
       };
     }
-    reportServerError("auth.claim_request_failed", error);
+    reportServerError("auth.claim_request_failed", error, requestMeta(request));
     return {
       response: NextResponse.json(
         {
@@ -584,6 +638,189 @@ export async function handleClaimRequest(
       ),
       tasks: [],
     };
+  }
+}
+
+export async function handleResetRequest(
+  request: Request,
+  deps: AuthDeps,
+): Promise<AuthOutcome> {
+  const es = deps.locale === "es";
+  let data: { email?: unknown };
+  try {
+    data = await request.json() as { email?: unknown };
+  } catch {
+    return {
+      response: NextResponse.json(
+        { error: es ? "Solicitud no válida." : "Invalid request." },
+        { status: 400 },
+      ),
+      tasks: [],
+    };
+  }
+
+  const email = typeof data.email === "string" ? data.email.trim().toLowerCase() : "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return { response: NextResponse.json({ ok: true }), tasks: [] };
+  }
+
+  try {
+    const ipLimit = await consumeRateLimit(
+      keyFor("reset-request:ip", clientIp(request)),
+      AUTH_RATE_LIMITS.resetRequestIp,
+      "reset_request_ip",
+    );
+    if (!ipLimit.allowed) {
+      return { response: tooManyAttempts(es, ipLimit.retryAfterSeconds), tasks: [] };
+    }
+
+    const emailLimit = await consumeRateLimit(
+      keyFor("reset-request:email", email),
+      AUTH_RATE_LIMITS.resetRequestEmail,
+      "reset_request_email",
+    );
+    if (!emailLimit.allowed) {
+      return { response: tooManyAttempts(es, emailLimit.retryAfterSeconds), tasks: [] };
+    }
+
+    const mail = deps.mail();
+    const appUrl = canonicalAppUrl(deps.appUrl);
+    const context = requestMeta(request);
+
+    const user = deps.lookupUser
+      ? await deps.lookupUser(email)
+      : (await db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          emailVerifiedAt: users.emailVerifiedAt,
+        })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1))[0];
+
+    if (!user || !user.emailVerifiedAt) {
+      return { response: NextResponse.json({ ok: true }), tasks: [] };
+    }
+
+    return {
+      response: NextResponse.json({ ok: true }),
+      tasks: [() => deliverPasswordResetEmail(user, deps.locale, mail, appUrl, context)],
+    };
+  } catch (error) {
+    if (error instanceof MailConfigurationError) {
+      return {
+        response: NextResponse.json(
+          {
+            error: es
+              ? "El envío de correo aún no está configurado."
+              : "Email delivery is not configured yet.",
+          },
+          { status: 503 },
+        ),
+        tasks: [],
+      };
+    }
+    reportServerError("auth.reset_request_failed", error, requestMeta(request));
+    return {
+      response: NextResponse.json(
+        {
+          error: es
+            ? "No pudimos completar tu solicitud. Inténtalo de nuevo."
+            : "Unable to complete your request. Please try again.",
+        },
+        { status: 500 },
+      ),
+      tasks: [],
+    };
+  }
+}
+
+export async function handleResetConfirm(
+  request: Request,
+  locale: Locale,
+  deps: { hashPassword?: typeof hashPassword } = {},
+): Promise<Response> {
+  const es = locale === "es";
+  let data: { token?: unknown; password?: unknown };
+  try {
+    data = await request.json() as { token?: unknown; password?: unknown };
+  } catch {
+    return NextResponse.json(
+      { error: es ? "Solicitud no válida." : "Invalid request." },
+      { status: 400 },
+    );
+  }
+
+  const token = typeof data.token === "string" ? data.token.trim() : "";
+  const password = typeof data.password === "string" ? data.password : "";
+  if (!/^[A-Za-z0-9_-]{20,128}$/.test(token)) {
+    return NextResponse.json(
+      { error: es ? "Este enlace no es válido." : "This link is invalid.", code: "invalid" },
+      { status: 400 },
+    );
+  }
+  if (password.length < 10 || password.length > 128) {
+    return NextResponse.json(
+      {
+        error: es
+          ? "Elige una contraseña de 10 a 128 caracteres."
+          : "Choose a password of 10–128 characters.",
+        code: "password",
+      },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const ipLimit = await consumeRateLimit(
+      keyFor("reset-confirm:ip", clientIp(request)),
+      AUTH_RATE_LIMITS.resetConfirmIp,
+      "reset_confirm_ip",
+    );
+    if (!ipLimit.allowed) return tooManyAttempts(es, ipLimit.retryAfterSeconds);
+
+    const tokenState = await lookupClaimToken(token, "password_reset");
+    if (tokenState !== "valid") {
+      return NextResponse.json(
+        {
+          error: es
+            ? "Este enlace no es válido, ya se usó o caducó."
+            : "This link is invalid, already used, or expired.",
+          code: tokenState,
+        },
+        { status: 400 },
+      );
+    }
+
+    const passwordHash = await (deps.hashPassword ?? hashPassword)(password);
+    const result = await resetPasswordWithToken(token, passwordHash);
+
+    if (result.status !== "reset") {
+      return NextResponse.json(
+        {
+          error: es
+            ? "Este enlace no es válido, ya se usó o caducó."
+            : "This link is invalid, already used, or expired.",
+          code: result.status,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    if (error instanceof ScryptBusyError) return serviceUnavailable(es);
+    reportServerError("auth.reset_confirm_failed", error, requestMeta(request));
+    return NextResponse.json(
+      {
+        error: es
+          ? "No pudimos restablecer tu contraseña. Inténtalo de nuevo."
+          : "We could not reset your password. Please try again.",
+      },
+      { status: 500 },
+    );
   }
 }
 
@@ -664,7 +901,7 @@ export async function handleClaim(
     if (error instanceof ScryptBusyError) {
       return serviceUnavailable(es);
     }
-    reportServerError("auth.claim_failed", error);
+    reportServerError("auth.claim_failed", error, requestMeta(request));
     return NextResponse.json(
       {
         error: es

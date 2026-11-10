@@ -3,6 +3,7 @@ import {
   MailConfigurationError,
   MailDeliveryError,
 } from "@/lib/mail";
+import { log, type LogFields } from "@/lib/log";
 
 export function safeErrorCategory(error: unknown): string {
   if (error instanceof MailConfigurationError) return "mail_configuration";
@@ -15,6 +16,14 @@ export function safeErrorCategory(error: unknown): string {
   return "unknown";
 }
 
-export function reportServerError(event: string, error: unknown): void {
-  console.error(`[${event}]`, JSON.stringify({ category: safeErrorCategory(error) }));
+export function reportServerError(
+  event: string,
+  error: unknown,
+  context: LogFields = {},
+): void {
+  log.error(event, {
+    ...context,
+    category: safeErrorCategory(error),
+    error,
+  });
 }

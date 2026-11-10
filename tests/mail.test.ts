@@ -101,7 +101,11 @@ test("writes local messages to the outbox without logging the body", async () =>
   const before = new Set(await readdir(directory).catch(() => []));
   const logs: string[] = [];
   const originalLog = console.log;
+  const originalInfo = console.info;
   console.log = (...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  };
+  console.info = (...args: unknown[]) => {
     logs.push(args.map(String).join(" "));
   };
 
@@ -127,10 +131,11 @@ test("writes local messages to the outbox without logging the body", async () =>
 
     const output = logs.join("\n");
     assert.doesNotMatch(output, /secret-token/);
-    assert.match(output, /wrote .*\.eml/);
+    assert.match(output, /mail\.outbox_written/);
 
     await rm(path.join(directory, files[0]), { force: true });
   } finally {
     console.log = originalLog;
+    console.info = originalInfo;
   }
 });

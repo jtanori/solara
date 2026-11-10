@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { readings } from "@/db/schema";
 import { currentUser } from "@/lib/auth";
 import { calculateSolarReturn } from "@/lib/solar";
+import { log, requestMeta } from "@/lib/log";
 import type { ChartInput, ChartResult } from "@/lib/types";
 
 export async function POST(request: Request) {
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
     const [saved] = await db.insert(readings).values({ userId: user.id, year: input.year, input, result }).returning({ id: readings.id });
     return NextResponse.json({ id: saved.id });
   } catch (error) {
-    console.error("Unable to save solar return", error);
+    log.error("readings.save_failed", { ...requestMeta(request), userId: user.id, error });
     return NextResponse.json({ error: "Unable to save your chart. Please try again." }, { status: 500 });
   }
 }

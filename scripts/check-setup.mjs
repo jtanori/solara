@@ -114,7 +114,9 @@ try {
   if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname) throw new Error("invalid");
   report("OK", "DATABASE_URL is present and has a PostgreSQL URL format.");
   if (profile !== "local" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname)) report("WARN", "Hosted environments normally need their own reachable database, not localhost.");
-  if (profile !== "local" && !url.searchParams.has("sslmode")) report("WARN", "Confirm TLS is enforced for the hosted database connection.");
+  if (profile !== "local" && url.searchParams.get("sslmode") !== "verify-full") {
+    report("WARN", "Hosted DATABASE_URL should use sslmode=verify-full; require/prefer change meaning in pg 9.");
+  }
 } catch { report("ERROR", "DATABASE_URL is missing or is not a valid PostgreSQL URL."); }
 const appUrl = value("APP_URL");
 if (!appUrl) report(profile === "local" ? "WARN" : "ERROR", "APP_URL is missing; set the canonical origin for Stripe redirects.");

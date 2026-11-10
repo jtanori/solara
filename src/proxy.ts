@@ -3,6 +3,7 @@ import {
   evaluateMutationOrigin,
   isGuardedApiPath,
   isMutatingMethod,
+  vercelOrigins,
 } from "@/lib/request-security";
 import {
   buildCsp,
@@ -14,18 +15,9 @@ function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
-function vercelOrigins(): string[] {
-  return [
-    process.env.VERCEL_BRANCH_URL,
-    process.env.VERCEL_URL,
-    process.env.VERCEL_PROJECT_PRODUCTION_URL,
-  ]
-    .filter((value): value is string => Boolean(value))
-    .map((value) => value.startsWith("http") ? value : `https://${value}`);
-}
-
 export function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  const requestId = crypto.randomUUID();
 
   if (isGuardedApiPath(pathname) && isMutatingMethod(request.method)) {
     const decision = evaluateMutationOrigin({
@@ -37,12 +29,18 @@ export function proxy(request: NextRequest) {
     });
 
     if (!decision.allowed) {
-      return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
+      const response = NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
+      response.headers.set("x-request-id", requestId);
+      return response;
     }
   }
 
   if (isApiPath(pathname)) {
-    return NextResponse.next();
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set("x-request-id", requestId);
+    const response = NextResponse.next({ request: { headers: requestHeaders } });
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
@@ -54,6 +52,7 @@ export function proxy(request: NextRequest) {
   });
 
   const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-request-id", requestId);
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("Content-Security-Policy", csp);
 
@@ -61,6 +60,7 @@ export function proxy(request: NextRequest) {
     request: { headers: requestHeaders },
   });
   response.headers.set(cspHeaderName(resolveCspMode()), csp);
+  response.headers.set("x-request-id", requestId);
   return response;
 }
 

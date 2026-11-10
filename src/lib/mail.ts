@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { log } from "@/lib/log";
 
 export type MailMessage = {
   to: string;
@@ -140,7 +141,7 @@ async function sendOutbox(env: Environment, message: MailMessage): Promise<void>
   } catch {
     throw new MailDeliveryError("Unable to write the local outbox message.");
   }
-  console.log(`[mail] wrote ${filename} to ${directory}`);
+  log.info("mail.outbox_written", { filename, directory });
 }
 
 export type MailTransport = {

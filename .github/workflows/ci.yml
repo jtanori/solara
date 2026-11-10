@@ -65,6 +65,7 @@ jobs:
           echo "$HEADERS" | grep -qi '^referrer-policy: strict-origin-when-cross-origin'
           echo "$HEADERS" | grep -qi '^permissions-policy: camera=(), microphone=(), geolocation=()'
           echo "$HEADERS" | grep -qi '^content-security-policy-report-only:'
+          echo "$HEADERS" | grep -qi '^x-request-id:'
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/api/auth -H 'Content-Type: application/json' -d '{}')" = "403"
           test "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH http://localhost:3000/api/profile -H 'Content-Type: application/json' -d '{}')" = "403"
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/api/readings -H 'Content-Type: application/json' -d '{}')" = "403"

@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { useBraveAutofill } from "@/components/use-brave-autofill";
@@ -100,10 +101,15 @@ export function AuthForm({
           {mode === "signup" ? (es ? "Inicia sesión" : "Sign in") : (es ? "Crear una cuenta" : "Create an account")}
         </button>
       </div>
+      {mode === "login" && (
+        <p className="auth-legal">
+          <Link href="/forgot-password">{es ? "¿Olvidaste tu contraseña?" : "Forgot your password?"}</Link>
+        </p>
+      )}
       <p className="auth-legal">
         {es
-          ? "Revisa tu correo para reclamar tu cuenta y elegir tu contraseña. La recuperación de contraseña y otros controles de seguridad siguen pendientes."
-          : "Check your email to claim your account and choose your password. Password recovery and additional production security controls are still planned."}
+          ? "Revisa tu correo para reclamar tu cuenta y elegir tu contraseña. Si ya tienes una cuenta, puedes restablecer la contraseña desde el inicio de sesión."
+          : "Check your email to claim your account and choose your password. If you already have an account, you can reset it from sign-in."}
       </p>
     </div>
   );
