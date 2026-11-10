@@ -12,6 +12,7 @@ import {
 import { getCachedPlaces, setCachedPlaces } from "@/lib/places-cache";
 import { Semaphore, SemaphoreQueueFullError } from "@/lib/semaphore";
 import { log, requestMeta } from "@/lib/log";
+import { buildUpstreamUrl } from "@/lib/places-url";
 
 type GeocodingResult = {
   name?: string;
@@ -41,22 +42,13 @@ function tooMany(retryAfterSeconds: number) {
   );
 }
 
-export function buildUpstreamUrl(name: string, language: "en" | "es", apiKey: string | undefined): URL {
-  const url = new URL(apiKey ? "https://customer-geocoding-api.open-meteo.com/v1/search" : "https://geocoding-api.open-meteo.com/v1/search");
-  url.searchParams.set("name", name);
-  url.searchParams.set("count", "6");
-  url.searchParams.set("language", language);
-  url.searchParams.set("format", "json");
-  if (apiKey) url.searchParams.set("apikey", apiKey);
-  return url;
-}
-
 export async function handlePlaces(request: Request, deps: PlacesDeps = {}): Promise<Response> {
   const env = deps.env ?? process.env;
   const params = new URL(request.url).searchParams;
   const name = params.get("q")?.trim() ?? "";
   const language = params.get("lang") === "es" ? "es" : "en";
   if (name.length < 2 || name.length > 100) return NextResponse.json({ places: [] });
+  const context = requestMeta(request);
 
   const origin = evaluateMutationOrigin({
     origin: request.headers.get("origin"),
@@ -73,6 +65,7 @@ export async function handlePlaces(request: Request, deps: PlacesDeps = {}): Pro
     keyFor("places:ip", clientIp(request)),
     AUTH_RATE_LIMITS.placesIp,
     "places_ip",
+    context,
   );
   if (!ipLimit.allowed) return tooMany(ipLimit.retryAfterSeconds);
 
@@ -86,9 +79,10 @@ export async function handlePlaces(request: Request, deps: PlacesDeps = {}): Pro
     budgetKey,
     { limit: hourlyBudget(env), windowSeconds: 60 * 60 },
     "places_budget",
+    context,
   );
   if (!budget.allowed) {
-    log.warn("places.budget_exceeded", { ...requestMeta(request), retryAfterSeconds: budget.retryAfterSeconds });
+    log.warn("places.budget_exceeded", { ...context, retryAfterSeconds: budget.retryAfterSeconds });
     return NextResponse.json({ places: [], error: "unavailable" }, { status: 503 });
   }
 
@@ -123,7 +117,7 @@ export async function handlePlaces(request: Request, deps: PlacesDeps = {}): Pro
     setCachedPlaces(cacheKey, places, apiKey ? 60 * 60 : 24 * 60 * 60);
     return NextResponse.json({ places });
   } catch (error) {
-    log.error("places.fetch_failed", { ...requestMeta(request), category: "upstream_error" });
+    log.error("places.fetch_failed", { ...context, category: "upstream_error" });
     return NextResponse.json({ places: [], error: "unavailable" }, { status: 503 });
   } finally {
     upstreamSlots.release();

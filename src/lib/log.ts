@@ -9,7 +9,7 @@ const WEBHOOK_SECRET = /\bwhsec_[A-Za-z0-9]+\b/g;
 const RESEND_KEY = /\bre_[A-Za-z0-9_]{8,}\b/g;
 const QUERY_SECRET = /((?:password|token|apikey|secret|email)=)[^&\s]+/gi;
 const LONG_HEX = /\b[A-Fa-f0-9]{32,}\b/g;
-const LONG_OPAQUE = /\b[A-Za-z0-9+/=_-]{48,}\b/g;
+const LONG_OPAQUE = /\b[A-Za-z0-9+/=_-]{40,}\b/g;
 
 export type LogFields = Record<string, unknown>;
 

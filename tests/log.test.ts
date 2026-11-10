@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomBytes } from "node:crypto";
 import { log, redactString, redactValue, safeError } from "../src/lib/log";
 
 test("redacts common credential and PII strings", () => {
@@ -22,6 +23,17 @@ test("redacts common credential and PII strings", () => {
   assert.doesNotMatch(redacted, /re_123/);
   assert.doesNotMatch(redacted, /abcdef/);
   assert.doesNotMatch(redacted, /a{64}/);
+});
+
+test("redacts 43-character opaque tokens but preserves UUIDs", () => {
+  const token = randomBytes(32).toString("base64url");
+  assert.equal(token.length, 43);
+  const redacted = redactString(`verification token ${token}`);
+  assert.doesNotMatch(redacted, new RegExp(token));
+  assert.match(redacted, /\[opaque\]/);
+
+  const userId = "11111111-1111-4111-8111-111111111111";
+  assert.match(redactString(`user ${userId}`), new RegExp(userId));
 });
 
 test("redacts sensitive object keys recursively", () => {

@@ -110,7 +110,7 @@ All server logs go through `src/lib/log.ts`. `src/proxy.ts` generates an `x-requ
 
 - Database errors emit only the name, SQLSTATE, a generic `"database error"` message, and a stack hash. Drizzle query parameters are never logged.
 - Non-database messages are redacted.
-- Redaction strips: email addresses, Bearer values, `postgres(ql)://` URLs, Stripe/mail keys, webhook secrets, `password/token/apikey/secret/email` query values, long hex, and long opaque strings.
+- Redaction strips: email addresses, Bearer values, `postgres(ql)://` URLs, Stripe/mail keys, webhook secrets, `password/token/apikey/secret/email` query values, long hex, and 40+ character opaque strings (including 43-character base64url tokens), while preserving UUIDs.
 - Sensitive object keys (`password`, `token`, `secret`, `email`, `birth`, `stripe`, `authorization`, `cookie`) become `[redacted]`.
 - Bare `console.*` under `src/` fails ESLint; only `src/lib/log.ts` is allowlisted.
 - Do not pass request bodies, chart inputs, birth data, or raw Error objects to a logger. `log.error(event, { error })` is safe; `console.error(error)` is not.

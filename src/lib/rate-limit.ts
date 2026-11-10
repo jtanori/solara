@@ -18,6 +18,11 @@ export type RateLimitResult = {
   blockedUntil: Date | null;
 };
 
+export type RateLimitContext = {
+  requestId?: string;
+  route?: string;
+};
+
 export type FailureBackoff = {
   threshold: number;
   baseDelaySeconds: number;
@@ -73,8 +78,9 @@ export function keyFor(kind: string, value: string): string {
   return `${kind}:${hashRateLimitKey(value)}`;
 }
 
-function logLimit(kind: string, result: RateLimitResult): void {
-  log.warn("auth.rate_limit", {
+function logLimit(kind: string, result: RateLimitResult, context: RateLimitContext = {}): void {
+  log.warn("rate_limit", {
+    ...context,
     kind,
     retryAfterSeconds: result.retryAfterSeconds,
     resetAt: result.resetAt.toISOString(),
@@ -136,9 +142,10 @@ export async function consumeRateLimitTx(
   key: string,
   policy: RateLimitPolicy,
   kind: string,
+  context: RateLimitContext = {},
 ): Promise<RateLimitResult> {
   const result = await consumeRateLimitIn(tx, key, policy);
-  if (!result.allowed) logLimit(kind, result);
+  if (!result.allowed) logLimit(kind, result, context);
   return result;
 }
 
@@ -146,13 +153,15 @@ export async function consumeRateLimit(
   key: string,
   policy: RateLimitPolicy,
   kind: string,
+  context: RateLimitContext = {},
 ): Promise<RateLimitResult> {
-  return db.transaction((tx) => consumeRateLimitTx(tx, key, policy, kind));
+  return db.transaction((tx) => consumeRateLimitTx(tx, key, policy, kind, context));
 }
 
 export async function recordAuthFailure(
   key: string,
   config: FailureBackoff = AUTH_FAILURE_BACKOFF,
+  context: RateLimitContext = {},
 ): Promise<{ failureCount: number; blockedUntil: Date | null }> {
   const now = new Date();
   const result = await db.transaction(async (tx) => {
@@ -198,6 +207,7 @@ export async function recordAuthFailure(
 
   if (result.blockedUntil) {
     log.warn("auth.failure_backoff", {
+      ...context,
       failureCount: result.failureCount,
       blockedUntil: result.blockedUntil.toISOString(),
     });
@@ -254,6 +264,7 @@ export async function recordAuthFailureTx(
   tx: DbTransaction,
   key: string,
   config: FailureBackoff = ACCOUNT_FAILURE_BACKOFF,
+  context: RateLimitContext = {},
 ): Promise<{ failureCount: number; blockedUntil: Date | null }> {
   const now = new Date();
   await tx.insert(rateLimits).values({
@@ -295,6 +306,7 @@ export async function recordAuthFailureTx(
 
   if (blockedUntil) {
     log.warn("auth.account_failure_backoff", {
+      ...context,
       failureCount,
       blockedUntil: blockedUntil.toISOString(),
     });

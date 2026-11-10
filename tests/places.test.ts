@@ -9,10 +9,11 @@ import { handlePlaces } from "../src/lib/places";
 import { clearPlacesCacheForTests } from "../src/lib/places-cache";
 import { keyFor } from "../src/lib/rate-limit";
 
-function request(query: string, ip: string, origin = "same-origin"): Request {
+function request(query: string, ip: string, origin = "same-origin", requestId?: string): Request {
   return new Request(`https://solara.example/api/places?q=${encodeURIComponent(query)}&lang=en`, {
     headers: {
       "x-forwarded-for": ip,
+      ...(requestId ? { "x-request-id": requestId } : {}),
       ...(origin === "same-origin" ? { "Sec-Fetch-Site": "same-origin" } : { Origin: origin }),
     },
   });
@@ -100,9 +101,18 @@ test("the 31st places request in a minute returns 429", {
       const response = await handlePlaces(request("Mexicali", ip), deps);
       assert.equal(response.status, 200);
     }
-    const limited = await handlePlaces(request("Mexicali", ip), deps);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    let limited: Response;
+    try {
+      limited = await handlePlaces(request("Mexicali", ip, "same-origin", "places-test-id"), deps);
+    } finally {
+      console.warn = originalWarn;
+    }
     assert.equal(limited.status, 429);
     assert.ok(limited.headers.get("retry-after"));
+    assert.match(warnings.join("\n"), /places-test-id/);
   } finally {
     await cleanup(keys);
   }

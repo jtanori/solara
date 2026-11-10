@@ -16,11 +16,14 @@ function normalizeDatabaseUrl(raw: string): string {
   const url = new URL(raw);
   if (isLoopback(url.hostname)) return url.toString();
 
-  const sslmode = url.searchParams.get("sslmode");
-  if (sslmode === "disable") {
+  const sslmode = url.searchParams.get("sslmode")?.trim().toLowerCase();
+  const sslFlag = url.searchParams.get("ssl")?.trim().toLowerCase();
+  if (sslmode === "disable" || sslFlag === "false" || sslFlag === "0") {
     throw new Error("Hosted DATABASE_URL must not disable TLS.");
   }
-  if (!sslmode || sslmode === "require" || sslmode === "prefer") {
+
+  url.searchParams.delete("ssl");
+  if (sslmode !== "verify-full") {
     url.searchParams.set("sslmode", "verify-full");
   }
   return url.toString();

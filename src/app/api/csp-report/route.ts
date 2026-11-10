@@ -51,10 +51,12 @@ function readReport(value: unknown): Record<string, unknown> | null {
 }
 
 export async function POST(request: Request) {
+  const context = requestMeta(request);
   const limit = await consumeRateLimit(
     keyFor("csp:ip", clientIp(request)),
     AUTH_RATE_LIMITS.cspReportIp,
     "csp_report_ip",
+    context,
   );
   if (!limit.allowed) return new NextResponse(null, { status: 204 });
 
@@ -81,7 +83,7 @@ export async function POST(request: Request) {
   }
 
   log.warn("csp.violation", {
-    ...requestMeta(request),
+    ...context,
     documentPath: safePath(report["document-uri"]),
     directive: report["violated-directive"] ?? report["effective-directive"],
     blocked: safeBlocked(report["blocked-uri"]),

@@ -1,8 +1,7 @@
-import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
-import { buildUpstreamUrl } from "../src/lib/places";
+import { buildUpstreamUrl } from "../src/lib/places-url";
 
 test("geocoding selects the right endpoint and keeps the customer key server-side", () => {
   const key = randomBytes(20).toString("hex");

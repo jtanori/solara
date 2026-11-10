@@ -4,7 +4,7 @@
 
 Next.js App Router runs on Node.js with PostgreSQL through Drizzle. The app reads `DATABASE_URL`; `drizzle.config.ts` reads the same variable. The repository contains the initial migration in `drizzle/` and CI in `.github/workflows/ci.yml`. CI uses an isolated PostgreSQL service, applies migrations, checks types/lint, runs tests, audits production dependencies and builds.
 
-The application pool is explicitly bounded (`DB_POOL_MAX`, default 5, max 20) with 30s idle and 10s connection timeouts, a 15s statement timeout, and an error listener. Hosted URLs should use `sslmode=verify-full`; the application normalizes `require`/`prefer` to `verify-full` and rejects `disable`. Local loopback URLs keep their existing form. `pg@9` changes the meaning of `require`, so the explicit normalization is intentional.
+The application pool is explicitly bounded (`DB_POOL_MAX`, default 5, max 20) with 30s idle and 10s connection timeouts, a 15s statement timeout, and an error listener. Hosted URLs should use `sslmode=verify-full`; the application normalizes every hosted `sslmode` other than `verify-full` (including absent, `require`, `prefer`, `verify-ca`, `no-verify`, and `allow`) to `verify-full`, removes an ambiguous `ssl` flag, and rejects `disable`/`ssl=false`. Local loopback URLs keep their existing form. `pg@9` changes the meaning of `require`, so the explicit normalization is intentional.
 
 Branching is `feature → staging → main` (see `docs/decisions.md` ADR 001). `main` (production) and `staging` are intended to be long-lived protected branches at `166539f` — **target, not yet protected** (see verification below); feature branches are short-lived from `staging` as `<type>/<issue>-<slug>`, squash-merged with auto-delete (target).
 

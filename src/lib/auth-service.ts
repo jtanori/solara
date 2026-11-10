@@ -264,10 +264,12 @@ async function handleSignup(
     };
   }
 
+  const context = requestMeta(request);
   const ipLimit = await consumeRateLimit(
     keyFor("signup:ip", clientIp(request)),
     AUTH_RATE_LIMITS.signupIp,
     "signup_ip",
+    context,
   );
   if (!ipLimit.allowed) {
     return { response: tooManyAttempts(es, ipLimit.retryAfterSeconds), tasks: [] };
@@ -277,6 +279,7 @@ async function handleSignup(
     keyFor("signup:email", email),
     AUTH_RATE_LIMITS.signupEmail,
     "signup_email",
+    context,
   );
   if (!emailLimit.allowed) {
     return { response: tooManyAttempts(es, emailLimit.retryAfterSeconds), tasks: [] };
@@ -284,7 +287,6 @@ async function handleSignup(
 
   const mail = deps.mail();
   const appUrl = canonicalAppUrl(deps.appUrl);
-  const context = requestMeta(request);
 
   const [created] = await db.insert(users).values({
     name,
@@ -347,6 +349,7 @@ async function handleLogin(
 
   try {
     const ip = clientIp(request);
+    const context = requestMeta(request);
     const ipFailureKey = keyFor("login:ip-failures", ip);
     const accountKey = keyFor("login:account", email);
 
@@ -356,6 +359,7 @@ async function handleLogin(
         keyFor("login:ip", ip),
         AUTH_RATE_LIMITS.loginIp,
         "login_ip",
+        context,
       );
       if (!ipLimit.allowed) {
         return { kind: "blocked" as const, retryAfter: ipLimit.retryAfterSeconds };
@@ -400,12 +404,13 @@ async function handleLogin(
       }
 
       if (!user || !passwordMatches || !user.emailVerifiedAt) {
-        await recordAuthFailureTx(tx, accountKey, ACCOUNT_FAILURE_BACKOFF);
+        await recordAuthFailureTx(tx, accountKey, ACCOUNT_FAILURE_BACKOFF, context);
         const ipFailure = await consumeRateLimitTx(
           tx,
           ipFailureKey,
           AUTH_RATE_LIMITS.loginIpFailures,
           "login_ip_failures",
+          context,
         );
         return {
           kind: "invalid" as const,
@@ -568,11 +573,13 @@ export async function handleClaimRequest(
     return { response: NextResponse.json({ ok: true }), tasks: [] };
   }
 
+  const context = requestMeta(request);
   try {
     const ipLimit = await consumeRateLimit(
       keyFor("verify-request:ip", clientIp(request)),
       AUTH_RATE_LIMITS.verifyRequestIp,
       "verify_request_ip",
+      context,
     );
     if (!ipLimit.allowed) {
       return { response: tooManyAttempts(es, ipLimit.retryAfterSeconds), tasks: [] };
@@ -582,6 +589,7 @@ export async function handleClaimRequest(
       keyFor("verify-request:email", email),
       AUTH_RATE_LIMITS.verifyRequestEmail,
       "verify_request_email",
+      context,
     );
     if (!emailLimit.allowed) {
       return { response: tooManyAttempts(es, emailLimit.retryAfterSeconds), tasks: [] };
@@ -589,7 +597,6 @@ export async function handleClaimRequest(
 
     const mail = deps.mail();
     const appUrl = canonicalAppUrl(deps.appUrl);
-    const context = requestMeta(request);
 
     const user = deps.lookupUser
       ? await deps.lookupUser(email)
@@ -664,11 +671,13 @@ export async function handleResetRequest(
     return { response: NextResponse.json({ ok: true }), tasks: [] };
   }
 
+  const context = requestMeta(request);
   try {
     const ipLimit = await consumeRateLimit(
       keyFor("reset-request:ip", clientIp(request)),
       AUTH_RATE_LIMITS.resetRequestIp,
       "reset_request_ip",
+      context,
     );
     if (!ipLimit.allowed) {
       return { response: tooManyAttempts(es, ipLimit.retryAfterSeconds), tasks: [] };
@@ -678,6 +687,7 @@ export async function handleResetRequest(
       keyFor("reset-request:email", email),
       AUTH_RATE_LIMITS.resetRequestEmail,
       "reset_request_email",
+      context,
     );
     if (!emailLimit.allowed) {
       return { response: tooManyAttempts(es, emailLimit.retryAfterSeconds), tasks: [] };
@@ -685,7 +695,6 @@ export async function handleResetRequest(
 
     const mail = deps.mail();
     const appUrl = canonicalAppUrl(deps.appUrl);
-    const context = requestMeta(request);
 
     const user = deps.lookupUser
       ? await deps.lookupUser(email)
@@ -773,11 +782,13 @@ export async function handleResetConfirm(
     );
   }
 
+  const context = requestMeta(request);
   try {
     const ipLimit = await consumeRateLimit(
       keyFor("reset-confirm:ip", clientIp(request)),
       AUTH_RATE_LIMITS.resetConfirmIp,
       "reset_confirm_ip",
+      context,
     );
     if (!ipLimit.allowed) return tooManyAttempts(es, ipLimit.retryAfterSeconds);
 
@@ -860,11 +871,13 @@ export async function handleClaim(
     );
   }
 
+  const context = requestMeta(request);
   try {
     const ipLimit = await consumeRateLimit(
       keyFor("claim:ip", clientIp(request)),
       AUTH_RATE_LIMITS.claimIp,
       "claim_ip",
+      context,
     );
     if (!ipLimit.allowed) return tooManyAttempts(es, ipLimit.retryAfterSeconds);
 

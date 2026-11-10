@@ -2,7 +2,7 @@
 
 ## What is implemented
 
-City search is proxied through `/api/places` to Open-Meteo, returning coordinates and an IANA time zone. The route requires a same-origin request, is limited to 30 requests/minute per IP, caches identical `(query, language)` responses in a bounded server cache, caps concurrent upstream calls, and enforces `PLACES_HOURLY_BUDGET` upstream calls per hour before failing closed with `503`. The map uses React Leaflet and OpenStreetMap tiles by default; clicking a point derives a current IANA zone with `tz-lookup`. Manual coordinates and zone entry remain available. The map does not reverse-geocode a clicked point into a city name. Current geographic zone boundaries are **not** a guarantee of historical correctness.
+City search is proxied through `/api/places` to Open-Meteo, returning coordinates and an IANA time zone. The route requires a same-origin request, is limited to 30 requests/minute per IP, caches identical `(query, language)` responses in a bounded per-instance server cache, caps concurrent upstream calls, and enforces the shared `PLACES_HOURLY_BUDGET` upstream calls per hour before failing closed with `503`. Exhausting the budget affects all users until the next hour. The map uses React Leaflet and OpenStreetMap tiles by default; clicking a point derives a current IANA zone with `tz-lookup`. Manual coordinates and zone entry remain available. The map does not reverse-geocode a clicked point into a city name. Current geographic zone boundaries are **not** a guarantee of historical correctness.
 
 ## Variables
 
