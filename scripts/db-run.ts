@@ -33,6 +33,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 import { Client } from "pg";
+import { findMissingColumns, REQUIRED_COLUMNS } from "../src/lib/schema-verification";
 
 type Target = "staging" | "production" | "local";
 type Command = "migrate" | "status" | "verify";
@@ -253,7 +254,9 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
   const REQUIRED = [
     "public.users", "public.sessions", "public.readings", "public.knowledge",
     "public.subscriptions", "public.stripe_events", "public.audit_logs",
+    "public.rate_limits", "public.email_tokens",
   ];
+  const REQUIRED_INDEXES = ["rate_limits_expires_idx", "email_tokens_user_idx"];
   const r = resolveAndCheck(env);
   const { url, source, id, warnings, errors } = r;
   if (!json) printTarget(r, env);
@@ -263,19 +266,48 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
     const reg = await client.query<Record<string, string | null>>(
       `select ${REQUIRED.map((r, i) => `to_regclass($${i + 1}) as t${i}`).join(", ")}`, REQUIRED);
     const missing = REQUIRED.filter((r, i) => !reg.rows[0]?.[`t${i}`]);
+
+    const columns = await client.query<{
+      table_name: string;
+      column_name: string;
+      is_nullable: string;
+      data_type: string;
+      column_default: string | null;
+    }>(`
+      select table_name, column_name, is_nullable, data_type, column_default
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name in ('users', 'rate_limits', 'email_tokens')
+    `);
+    const missingColumns = findMissingColumns(columns.rows);
+
+    const indexes = await client.query<{ indexname: string }>(
+      "select indexname from pg_indexes where schemaname = 'public' and indexname = any($1)",
+      [REQUIRED_INDEXES],
+    );
+    const presentIndexes = new Set(indexes.rows.map(row => row.indexname));
+    const missingIndexes = REQUIRED_INDEXES.filter(index => !presentIndexes.has(index));
+
     const applied = await readApplied(client);
     const pendingTags = entries.filter(e => !applied.hashes.includes(journalHash(e, readFileSync(path.resolve(process.cwd(), `drizzle/${e.tag}.sql`), "utf8")))).map(e => e.tag);
 
-    const ok = missing.length === 0 && pendingTags.length === 0 && errors.length === 0;
+    const ok = missing.length === 0
+      && missingColumns.length === 0
+      && missingIndexes.length === 0
+      && pendingTags.length === 0
+      && errors.length === 0;
     const out = {
       env, source,
       target: `${id.user}@${id.host}/${id.database}`,
-      warnings, errors, required: REQUIRED, missing, pending: pendingTags, ok,
+      warnings, errors, required: REQUIRED, missing,
+      missingColumns, missingIndexes, pending: pendingTags, ok,
     };
 
     if (json) console.log(JSON.stringify(out, null, 2));
     else {
       console.log(`tables   ${REQUIRED.length - missing.length}/${REQUIRED.length} present${missing.length ? ` — missing: ${missing.join(", ")}` : ""}`);
+      console.log(`columns  ${REQUIRED_COLUMNS.length - missingColumns.length}/${REQUIRED_COLUMNS.length} present${missingColumns.length ? ` — missing: ${missingColumns.join(", ")}` : ""}`);
+      console.log(`indexes  ${REQUIRED_INDEXES.length - missingIndexes.length}/${REQUIRED_INDEXES.length} present${missingIndexes.length ? ` — missing: ${missingIndexes.join(", ")}` : ""}`);
       console.log(`pending  ${pendingTags.length ? pendingTags.join(", ") : "none"}`);
       console.log(ok ? "OK       schema and journal are up to date" : "FAIL     environment is not ready");
     }

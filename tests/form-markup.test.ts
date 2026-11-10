@@ -25,7 +25,7 @@ test("authentication fields stay in a named POST form with password-manager toke
   const source=parse("src/components/auth-form.tsx");const inputs=openings(source,"input");
   const email=inputs.find(input=>literal(input,"id")==="auth-email");const password=inputs.find(input=>literal(input,"id")==="auth-password");const name=inputs.find(input=>literal(input,"id")==="auth-name");
   assert.ok(email&&password&&name);assert.equal(literal(email,"name"),"email");assert.equal(literal(email,"type"),"email");assert.match(attribute(email,"autoComplete")!.getText(source),/personalAutocomplete\("email",\s*limitProfileAutofill\)/);
-  assert.equal(literal(name,"name"),"name");assert.equal(literal(password,"name"),"password");assert.match(attribute(password,"autoComplete")!.getText(source),/new-password/);assert.match(attribute(password,"autoComplete")!.getText(source),/current-password/);
+  assert.equal(literal(name,"name"),"name");assert.equal(literal(password,"name"),"password");assert.match(attribute(password,"autoComplete")!.getText(source),/current-password/);
   assert.ok(inputs.every(insideForm));const form=openings(source,"form")[0];assert.equal(literal(form,"method"),"post");assert.equal(literal(form,"action"),"/api/auth");
 });
 

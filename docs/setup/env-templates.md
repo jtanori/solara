@@ -34,6 +34,8 @@ node scripts/check-setup.mjs production --strict
 - `DATABASE_URL` in Vercel is always the **pooled** Neon URL (`-pooler.` + `?sslmode=require`). Keep the **direct** (non-pooler) URL only in your secure migration shell, never in Vercel.
 - `NEXT_PUBLIC_*` vars are baked into the build — redeploy after changing them.
 - Never set `ALLOW_LOCAL_SEED*` or `LOCAL_SEED_PASSWORD` in Vercel — the app refuses them when `VERCEL` is set.
+- Hosted environments require `MAIL_TRANSPORT=resend|postmark`, `MAIL_FROM`, and the matching provider key. Never use `MAIL_TRANSPORT=outbox` in Vercel.
+- Start with `CSP_MODE=report-only`; set `CSP_MODE=enforce` only after the observation window in `docs/setup/08-auth-security-hardening.md`.
 
 
 ## Two ways to migrate — pick by where the credential lives

@@ -68,7 +68,7 @@ async function main() {
     const id = randomBytes(8).toString("hex");
     const emailFull = `${id}-${email}`;
     const passwordHash = "not-a-login-" + randomBytes(4).toString("hex");
-    const [user] = await db.insert(users).values({ email: emailFull, name: `Verify ${role}`, role, passwordHash }).returning({ id: users.id });
+    const [user] = await db.insert(users).values({ email: emailFull, name: `Verify ${role}`, role, passwordHash, emailVerifiedAt: new Date() }).returning({ id: users.id });
     const subIds: string[] = [];
     if (plan === "paid") {
       const subId = `sub_verify_${id}`;

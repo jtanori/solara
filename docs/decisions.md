@@ -110,4 +110,34 @@ Launch limitations are listed in `README.md` and `docs/setup/README.md`: calcula
 
 ---
 
+> **ADR 006 is reserved** for #72 (identity, credential ownership and the Neon Auth decision).
+
+## ADR 007 — Auth and transport hardening for launch
+
+**Date:** 2026-11-09
+**Status:** Accepted
+**Issues:** #53, #54, #56, #57
+
+### Context
+The prototype had unlimited auth attempts, synchronous scrypt, no email channel, a same-origin check that accepted a missing `Origin`, and no security headers or CSP. These are launch blockers under the ADR 003 platform-validation gate.
+
+### Decision
+- Password hashing uses async `scrypt` so auth bursts cannot block the event loop.
+- Sign-up collects name and email only. No session or usable password exists before mailbox proof. The mailbox owner claims the account by choosing a password; claim revokes all sessions and invalidates sibling tokens.
+- Sign-in is unavailable until the claim completes. Per-IP and per-account attempts are serialized with transaction-scoped locks in IP → account order; the counters, password check, and session creation share that transaction. Ten account failures trigger progressive 30s-to-15m backoff; IP ceilings are 100 all-attempts and 50 failures per 15m. Scrypt is capped at four concurrent operations with a bounded queue; saturation returns a generic 503. Responses use `429` + `Retry-After` and never reveal whether an email exists.
+- Email delivery runs in `after()` so provider latency does not reveal account existence. Tokens are hashed at rest and never stored in queues or logs. The previous token stays valid until a new message is delivered; ambiguous outcomes keep both tokens; finalization is generation-aware and uses the same user → token lock order as claim; claim invalidates siblings and refuses verified accounts. A post-send finalization failure keeps the delivered token.
+- `src/proxy.ts` centrally rejects cookie-authenticated mutating API requests unless the complete `Origin` (scheme, host, port) matches a trusted origin or `Sec-Fetch-Site: same-origin`. Stripe webhooks and CSP reports are exempt. There is no Bearer exemption until a real bearer flow exists.
+- Migration `0002` does not backfill legacy accounts as verified, and `db-run verify` rejects a verification column with a default. It revokes unverified sessions; legacy users must claim with a new password.
+- `src/lib/security-headers.ts` owns the security headers and the nonce CSP allowlist. CSP starts in `report-only` mode and moves to `enforce` only after a clean observation window.
+
+### Consequences
+- New mutating routes inherit the origin guard; do not duplicate it per route.
+- New third-party origins must be added to the CSP allowlist and documented in `docs/setup/08-auth-security-hardening.md`.
+- Rate-limit keys are hashed; operational inspection uses `npm run rate-limits:report`, never raw emails or IPs.
+- Existing unverified users are logged out and must claim; seed fixtures are local-only and verified.
+- Production promotion requires the separate exact-SHA migration-gate PR.
+- #57 remains open until CSP enforcement is verified after the observation window.
+
+---
+
 *This file is the canonical rationale; update it when a decision changes and link to the superseding PR.*
