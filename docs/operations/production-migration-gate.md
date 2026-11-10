@@ -45,6 +45,16 @@ Additionally, outside the gate:
 - `scripts/db-remote.ts` refuses `--env production` for a PR whose base branch is `staging`,
   and refuses to dispatch a production `migrate` without `--rehearsal-pr`.
 
+The manual staging preflight (`npx tsx scripts/db-remote.ts --pr ...`) uses the operator's
+`gh` token to inspect the selected PR and dispatch the workflow. The production gate itself runs
+inside GitHub Actions with the workflow's `GITHUB_TOKEN` (`GH_TOKEN: ${{ github.token }}`). Its
+least-privilege workflow permissions are `contents: read` (checkout), `actions: read` (staging
+run lookup and artifact access), and `pull-requests: read` (the gate's `gh pr view` calls for PR
+state and head SHA). If `pull-requests: read` is missing, those `gh pr view` calls fail with 403
+before any DDL can run. The static regression test
+`tests/migration-workflow-permissions.test.ts` guards these workflow-level permissions; it does
+not exercise GitHub's runtime authorization.
+
 The `production` GitHub Environment is still a real boundary for **secret isolation**: its
 `DATABASE_URL` is only reachable by a job declaring `environment: production`. Keep it that way.
 
