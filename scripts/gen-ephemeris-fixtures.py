@@ -77,19 +77,20 @@ def jd_ut(iso):
     return swe.julday(y,m,dd, int(hh)+int(mm)/60+float(ss)/3600)
 
 def angles(jd, lat, lon):
-    """(cusps, ascendant, midheaven, armc, placidus_refused) from the reference.
+    """(cusps, placidus_cusps, ascendant, midheaven, armc, placidus_refused) from the reference.
 
     'W' is whole-sign: the cusps are the Ascendant's sign start + 30° increments. The
-    Placidus call is a probe, not the system we record — its outcome is stored as an
-    observed fact and nothing stronger is claimed from it.
+    Placidus call records both its outcome and, when it succeeds, its cusps — the
+    implementation under test is validated against them (0.05°).
     """
     cusps, ascmc = swe.houses(jd, lat, lon, b"W")
     try:
-        swe.houses(jd, lat, lon, b"P")
+        placidus_cusps, _ = swe.houses(jd, lat, lon, b"P")
         placidus_refused = False
     except swe.Error:
+        placidus_cusps = None
         placidus_refused = True
-    return cusps, ascmc[0], ascmc[1], ascmc[2], placidus_refused
+    return cusps, placidus_cusps, ascmc[0], ascmc[1], ascmc[2], placidus_refused
 
 def polar_reason(lat, ascendant, placidus_refused, polar_circle):
     """Why the fixture records ascendant: null — Solara policy, stated as such.
@@ -122,7 +123,7 @@ def build_case(case):
     eps = swe.calc_ut(jd, swe.ECL_NUT)[0][0]
     polar_circle = 90 - eps
 
-    cusps, ascendant, midheaven, armc, placidus_refused = angles(jd, case["latitude"], case["longitude"])
+    cusps, placidus_cusps, ascendant, midheaven, armc, placidus_refused = angles(jd, case["latitude"], case["longitude"])
     polar = abs(case["latitude"]) >= POLAR_LIMIT
 
     out = {"id":case["id"],"note":case["note"],"birth":case["birth"],"timezone":case["timezone"],
@@ -143,6 +144,7 @@ def build_case(case):
         out["ascendantOmittedReason"] = polar_reason(case["latitude"], ascendant, placidus_refused, polar_circle)
         out["placidusRefused"] = placidus_refused
         out["cusps"] = None
+        out["placidusCusps"] = None
     else:
         # A cusp fixture is only meaningful when the Ascendant is not within tolerance of a
         # sign boundary — there a 0.05° error flips its sign and changes every cusp.
@@ -156,6 +158,20 @@ def build_case(case):
             raise SystemExit(f"{case['id']}: Swiss Ephemeris 'W' cusps {cusps} are not the ASC sign boundaries {expected}")
         out["ascendant"] = round(ascendant,4)
         out["cusps"] = [round(c,4) for c in cusps]
+        # Placidus cusps, recorded only when the reference computed them. Guard the two
+        # fixed cusps first: SE's Placidus cusp 1 is the same Ascendant and cusp 10 the
+        # same Midheaven as every other system — if that ever failed, the fixture would
+        # be comparing our implementation against a different convention.
+        if placidus_refused:
+            raise SystemExit(f"{case['id']}: Swiss Ephemeris refused Placidus below 66° — unexpected, regenerate and inspect")
+        def degrees_off(a, b):
+            d = (a - b) % 360.0
+            return d if d <= 180 else 360 - d
+        for label, got, want in (("cusp 1", placidus_cusps[0], ascendant), ("cusp 10", placidus_cusps[9], midheaven)):
+            if degrees_off(got, want) > TOLERANCE:
+                raise SystemExit(f"{case['id']}: SE Placidus {label} {got:.4f}° disagrees with the shared angle {want:.4f}°")
+        out["placidusRefused"] = False
+        out["placidusCusps"] = [round(c,4) for c in placidus_cusps]
     return out
 
 def build_cutoff_probes():
@@ -164,7 +180,7 @@ def build_cutoff_probes():
     polar_circle = 90 - eps
     probes = []
     for lat in CUTOFF_PROBE_LATITUDES:
-        cusps, ascendant, midheaven, armc, placidus_refused = angles(jd, lat, CUTOFF_PROBE_LONGITUDE)
+        cusps, placidus_cusps, ascendant, midheaven, armc, placidus_refused = angles(jd, lat, CUTOFF_PROBE_LONGITUDE)
         polar = abs(lat) >= POLAR_LIMIT
         probe = {"latitude":lat,"polar":polar,"armc":round(armc,4),"midheaven":round(midheaven,4)}
         if polar:
@@ -172,12 +188,17 @@ def build_cutoff_probes():
             probe["ascendantOmittedReason"] = polar_reason(lat, ascendant, placidus_refused, polar_circle)
             probe["placidusRefused"] = placidus_refused
             probe["cusps"] = None
+            probe["placidusCusps"] = None
         else:
             edge = min(ascendant % 30, 30 - ascendant % 30)
             if edge < TOLERANCE:
                 raise SystemExit(f"cutoff probe at {lat}°: Ascendant {ascendant:.4f}° is only {edge:.4f}° from a sign boundary")
             probe["ascendant"] = round(ascendant,4)
             probe["cusps"] = [round(c,4) for c in cusps]
+            if placidus_refused:
+                raise SystemExit(f"cutoff probe at {lat}°: Swiss Ephemeris refused Placidus below 66° — unexpected")
+            probe["placidusRefused"] = False
+            probe["placidusCusps"] = [round(c,4) for c in placidus_cusps]
         probes.append(probe)
     return {"castAt":CUTOFF_PROBE_CASTAT,"longitude":CUTOFF_PROBE_LONGITUDE,
             "note":("Latitude probes pinning the |latitude| >= 66 cutoff: both hemispheres, exactly ±66° and "
@@ -186,10 +207,11 @@ def build_cutoff_probes():
             "probes":probes}
 
 def main():
-    payload = {"generated":"2026-11-08","ephemeris":EPHEMERIS,
-               "houses":(f"{EPHEMERIS} swe.houses(tjd_ut, lat, lon, 'W') — ASC/MC/ARMC from ascmc, whole-sign "
-                         "cusps; polar cases (|lat| >= 66°) record the Ascendant omission explicitly — Solara "
-                         "policy, with the reference's whole-sign value and Placidus outcome quoted as observed"),
+    payload = {"generated":"2026-11-09","ephemeris":EPHEMERIS,
+               "houses":(f"{EPHEMERIS} swe.houses(tjd_ut, lat, lon, 'W' and 'P') — ASC/MC/ARMC from ascmc, whole-sign "
+                         "cusps and Placidus cusps (the latter only where the reference computed them); polar "
+                         "cases (|lat| >= 66°) record the Ascendant omission explicitly — Solara policy, with "
+                         "the reference's whole-sign value and Placidus outcome quoted as observed"),
                "toleranceDegrees":TOLERANCE,
                "cutoffProbes":build_cutoff_probes(),
                "cases":[build_case(case) for case in CASES]}
