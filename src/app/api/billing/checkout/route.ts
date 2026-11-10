@@ -2,16 +2,23 @@ import { and, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { subscriptions, users } from "@/db/schema";
-import { currentUser, sameOrigin } from "@/lib/auth";
+import { currentUser } from "@/lib/auth";
 import { appOrigin, billingIsConfigured, getStripe, priceIdFor, type BillingCurrency } from "@/lib/billing";
 import { getLocale } from "@/lib/i18n-server";
 
 export const runtime = "nodejs";
 export async function POST(request: Request) {
-  if (!sameOrigin(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
   const user = await currentUser();
   if (!user) return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
   const locale = await getLocale();
+  if (!user.emailVerifiedAt) {
+    return NextResponse.json({
+      error: locale === "es"
+        ? "Verifica tu correo antes de iniciar el pago."
+        : "Verify your email before starting checkout.",
+      code: "email_not_verified",
+    }, { status: 403 });
+  }
   const stripe = getStripe();
   if (!stripe || !billingIsConfigured()) return NextResponse.json({ error: locale === "es" ? "Los pagos aún no están configurados." : "Payments are not configured yet." }, { status: 503 });
   const data = await request.json().catch(() => ({})) as { currency?: string };

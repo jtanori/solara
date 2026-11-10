@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { auditLogs, knowledge } from "@/db/schema";
-import { canEditKnowledge, currentUser, sameOrigin } from "@/lib/auth";
+import { canEditKnowledge, currentUser } from "@/lib/auth";
 import { contentKey, CONTENT_CATEGORIES, SIGNS_FOR_CONTENT, type ContentCategory } from "@/lib/content";
 import type { Locale } from "@/lib/i18n";
 
 export async function PUT(request:Request) {
-  if(!sameOrigin(request)) return NextResponse.json({error:"Invalid request origin."},{status:403});
   const actor=await currentUser(); if(!actor||!canEditKnowledge(actor.role)) return NextResponse.json({error:"Not authorized."},{status:403});
   const data=await request.json().catch(()=>null) as {category?:ContentCategory;item?:string;sign?:string;locale?:Locale;body?:string}|null;
   const category=data?.category??"sun"; const item=data?.item??data?.sign??""; const locale=data?.locale==="es"?"es":"en";

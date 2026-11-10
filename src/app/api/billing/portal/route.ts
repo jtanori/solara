@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-import { currentUser, sameOrigin } from "@/lib/auth";
+import { currentUser } from "@/lib/auth";
 import { appOrigin, getStripe } from "@/lib/billing";
 import { getLocale } from "@/lib/i18n-server";
 
 export const runtime = "nodejs";
 export async function POST(request: Request) {
-  if (!sameOrigin(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
   const user = await currentUser();
   const locale = await getLocale();
   if (!user) return NextResponse.json({ error: "Please sign in." }, { status: 401 });

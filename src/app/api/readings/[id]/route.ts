@@ -2,10 +2,9 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { readings } from "@/db/schema";
-import { currentUser, sameOrigin } from "@/lib/auth";
+import { currentUser } from "@/lib/auth";
 
-export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  if (!sameOrigin(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
+export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await currentUser();
   if (!user) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
   const { id } = await params;
