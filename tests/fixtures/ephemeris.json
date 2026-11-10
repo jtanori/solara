@@ -1,7 +1,7 @@
 {
- "generated": "2026-11-08",
+ "generated": "2026-11-09",
  "ephemeris": "Swiss Ephemeris 2.10.03 (pyswisseph)",
- "houses": "Swiss Ephemeris 2.10.03 (pyswisseph) swe.houses(tjd_ut, lat, lon, 'W') \u2014 ASC/MC/ARMC from ascmc, whole-sign cusps; polar cases (|lat| >= 66\u00b0) record the Ascendant omission explicitly \u2014 Solara policy, with the reference's whole-sign value and Placidus outcome quoted as observed",
+ "houses": "Swiss Ephemeris 2.10.03 (pyswisseph) swe.houses(tjd_ut, lat, lon, 'W' and 'P') \u2014 ASC/MC/ARMC from ascmc, whole-sign cusps and Placidus cusps (the latter only where the reference computed them); polar cases (|lat| >= 66\u00b0) record the Ascendant omission explicitly \u2014 Solara policy, with the reference's whole-sign value and Placidus outcome quoted as observed",
  "toleranceDegrees": 0.05,
  "cutoffProbes": {
   "castAt": "1975-06-20T03:45:00.000Z",
@@ -16,7 +16,8 @@
     "ascendant": null,
     "ascendantOmittedReason": "polar latitude |-69.65|\u00b0 >= 66\u00b0, above the true polar circle (90\u00b0 - obliquity = 66.56\u00b0): Solara omits the Ascendant and houses by policy, pending independent validation. At this instant Swiss Ephemeris's whole-sign system still returns 35.4755\u00b0 \u2014 above the polar circle that value is circumpolar-ambiguous: the ascendant formula returns the setting point for part of each sidereal day, which Swiss Ephemeris flips by 180\u00b0. swe.houses raises for Placidus at this instant and place. The Midheaven is latitude-independent and remains valid.",
     "placidusRefused": true,
-    "cusps": null
+    "cusps": null,
+    "placidusCusps": null
    },
    {
     "latitude": -66.0,
@@ -26,7 +27,8 @@
     "ascendant": null,
     "ascendantOmittedReason": "latitude |-66.0|\u00b0 is at or above Solara's 66\u00b0 cutoff but below the true polar circle (90\u00b0 - obliquity = 66.56\u00b0): the Ascendant is still computable \u2014 Swiss Ephemeris whole-sign returns 39.4341\u00b0 here, and its Placidus call succeeds \u2014 but the product omits the Ascendant and houses by policy; the cutoff deliberately sits below the polar circle, where the ascendant's daily sweep through the zodiac turns retrograde. The Midheaven is latitude-independent and remains valid.",
     "placidusRefused": false,
-    "cusps": null
+    "cusps": null,
+    "placidusCusps": null
    },
    {
     "latitude": -65.9,
@@ -47,6 +49,21 @@
      300.0,
      330.0,
      0.0
+    ],
+    "placidusRefused": false,
+    "placidusCusps": [
+     39.5354,
+     65.0231,
+     109.8466,
+     161.5162,
+     190.6491,
+     208.1146,
+     219.5354,
+     245.0231,
+     289.8466,
+     341.5162,
+     10.6491,
+     28.1146
     ]
    },
    {
@@ -68,6 +85,21 @@
      30.0,
      60.0,
      90.0
+    ],
+    "placidusRefused": false,
+    "placidusCusps": [
+     122.9758,
+     130.5772,
+     142.0338,
+     161.5162,
+     200.6994,
+     272.9591,
+     302.9758,
+     310.5772,
+     322.0338,
+     341.5162,
+     20.6994,
+     92.9591
     ]
    },
    {
@@ -78,7 +110,8 @@
     "ascendant": null,
     "ascendantOmittedReason": "latitude |66.0|\u00b0 is at or above Solara's 66\u00b0 cutoff but below the true polar circle (90\u00b0 - obliquity = 66.56\u00b0): the Ascendant is still computable \u2014 Swiss Ephemeris whole-sign returns 123.1517\u00b0 here, and its Placidus call succeeds \u2014 but the product omits the Ascendant and houses by policy; the cutoff deliberately sits below the polar circle, where the ascendant's daily sweep through the zodiac turns retrograde. The Midheaven is latitude-independent and remains valid.",
     "placidusRefused": false,
-    "cusps": null
+    "cusps": null,
+    "placidusCusps": null
    }
   ]
  },
@@ -157,6 +190,21 @@
     330.0,
     0.0,
     30.0
+   ],
+   "placidusRefused": false,
+   "placidusCusps": [
+    88.9101,
+    108.9747,
+    129.8129,
+    155.0798,
+    188.5906,
+    230.0123,
+    268.9101,
+    288.9747,
+    309.8129,
+    335.0798,
+    8.5906,
+    50.0123
    ]
   },
   {
@@ -232,6 +280,21 @@
     30.0,
     60.0,
     90.0
+   ],
+   "placidusRefused": false,
+   "placidusCusps": [
+    145.5476,
+    168.099,
+    195.8015,
+    228.8049,
+    264.1265,
+    296.9942,
+    325.5476,
+    348.099,
+    15.8015,
+    48.8049,
+    84.1265,
+    116.9942
    ]
   },
   {
@@ -307,6 +370,21 @@
     180.0,
     210.0,
     240.0
+   ],
+   "placidusRefused": false,
+   "placidusCusps": [
+    298.6225,
+    344.7876,
+    23.9149,
+    51.8637,
+    73.864,
+    94.496,
+    118.6225,
+    164.7876,
+    203.9149,
+    231.8637,
+    253.864,
+    274.496
    ]
   },
   {
@@ -382,6 +460,21 @@
     330.0,
     0.0,
     30.0
+   ],
+   "placidusRefused": false,
+   "placidusCusps": [
+    71.9135,
+    94.0848,
+    114.5667,
+    137.6083,
+    167.6762,
+    208.3498,
+    251.9135,
+    274.0848,
+    294.5667,
+    317.6083,
+    347.6762,
+    28.3498
    ]
   },
   {
@@ -457,6 +550,21 @@
     330.0,
     0.0,
     30.0
+   ],
+   "placidusRefused": false,
+   "placidusCusps": [
+    77.1271,
+    110.3183,
+    147.3945,
+    182.6333,
+    211.824,
+    235.7381,
+    257.1271,
+    290.3183,
+    327.3945,
+    2.6333,
+    31.824,
+    55.7381
    ]
   },
   {
@@ -521,7 +629,8 @@
    "ascendant": null,
    "ascendantOmittedReason": "polar latitude |69.65|\u00b0 >= 66\u00b0, above the true polar circle (90\u00b0 - obliquity = 66.56\u00b0): Solara omits the Ascendant and houses by policy, pending independent validation. At this instant Swiss Ephemeris's whole-sign system still returns 130.0455\u00b0 \u2014 above the polar circle that value is circumpolar-ambiguous: the ascendant formula returns the setting point for part of each sidereal day, which Swiss Ephemeris flips by 180\u00b0. swe.houses raises for Placidus at this instant and place. The Midheaven is latitude-independent and remains valid.",
    "placidusRefused": true,
-   "cusps": null
+   "cusps": null,
+   "placidusCusps": null
   },
   {
    "id": "pre-1970-1962",
@@ -596,6 +705,21 @@
     60.0,
     90.0,
     120.0
+   ],
+   "placidusRefused": false,
+   "placidusCusps": [
+    179.6521,
+    209.0241,
+    239.377,
+    269.6623,
+    299.9344,
+    330.2684,
+    359.6521,
+    29.0241,
+    59.377,
+    89.6623,
+    119.9344,
+    150.2684
    ]
   }
  ]
