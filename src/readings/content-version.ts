@@ -3,13 +3,15 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { SECTION_KEYS } from "@/readings/types";
 import { sectionJsonSchema } from "@/readings/schemas";
+import { modelForTier, SECTION_MODEL_TIER } from "@/readings/config";
 
 /**
  * contentVersion (`docs/plan-readings-engine-epic.md` §4.5) — the version stamp
- * on everything a generated word depends on: prompt files, output schemas, and
- * the code-level generation policy. Bump POLICY_REVISION when a *code* policy
- * changes (validation rules, repair policy, prompt assembly in generate.ts);
- * file changes are picked up by hashing automatically.
+ * on everything a generated word depends on: prompt files, output schemas, the
+ * model-per-section tiering, and the resolved model ids (model swaps change
+ * content as surely as prompt edits do). Bump POLICY_REVISION when a *code*
+ * policy changes (validation rules, repair policy, prompt assembly in
+ * generate.ts); file and config changes are picked up by hashing automatically.
  *
  * The version is a cache dimension: same digest + same version ⇒ reuse the
  * frozen row; new version ⇒ new rows, old rows preserved (freeze).
@@ -17,20 +19,21 @@ import { sectionJsonSchema } from "@/readings/schemas";
 
 const PROMPTS_DIR = path.join(process.cwd(), "src", "readings", "prompts");
 
-const POLICY_REVISION = "1";
+const POLICY_REVISION = "2";
 
 /**
- * Pure core: version from prompt file contents (name → bytes) and per-section
- * JSON Schemas. Deterministic and order-independent (names are sorted), so the
- * same sources always produce the same version and any edit to any source
- * produces a different one.
+ * Pure core: version from prompt file contents (name → bytes), per-section
+ * JSON Schemas, and a canonical policy JSON. Deterministic and
+ * order-independent (names are sorted), so the same sources always produce the
+ * same version and any edit to any source produces a different one.
  */
 export function contentVersionFromSources(
   promptFiles: Record<string, string>,
   schemas: Record<string, Record<string, unknown>>,
+  policyJson: string,
 ): string {
   const hash = createHash("sha256");
-  hash.update(`policy:${POLICY_REVISION}\n`);
+  hash.update(`policy:${policyJson}\n`);
   for (const name of Object.keys(promptFiles).sort()) {
     hash.update(`file:${name}\n`);
     hash.update(promptFiles[name]);
@@ -53,7 +56,12 @@ export function computeContentVersion(): string {
   for (const file of files) promptFiles[file] = readFileSync(path.join(PROMPTS_DIR, file), "utf8");
   const schemas: Record<string, Record<string, unknown>> = {};
   for (const key of SECTION_KEYS) schemas[key] = sectionJsonSchema(key);
-  cached = contentVersionFromSources(promptFiles, schemas);
+  const policy = JSON.stringify({
+    revision: POLICY_REVISION,
+    sectionModelTier: SECTION_MODEL_TIER,
+    models: { cheap: modelForTier("cheap"), strong: modelForTier("strong") },
+  });
+  cached = contentVersionFromSources(promptFiles, schemas, policy);
   return cached;
 }
 

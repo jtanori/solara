@@ -70,6 +70,12 @@ export type ReadingDocument = {
   tier: SectionTier;
   sections: ReadingSection[];
   lockedSections: LockedSection[];
-  /** Cost accounting, asserted against the tier ceiling. */
+  /**
+   * Cost accounting, asserted against the tier ceiling: costMxn is the spend
+   * that produced the published sections (cache hits add 0); wastedCostMxn is
+   * spend on attempts that produced nothing (failed primaries, repairs, and
+   * post-ceiling discards). Honest accounting records both.
+   */
   costMxn: number;
+  wastedCostMxn: number;
 };

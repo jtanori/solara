@@ -255,8 +255,9 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
     "public.users", "public.sessions", "public.readings", "public.knowledge",
     "public.subscriptions", "public.stripe_events", "public.audit_logs",
     "public.rate_limits", "public.email_tokens",
+    "public.reading_documents", "public.generation_cache",
   ];
-  const REQUIRED_INDEXES = ["rate_limits_expires_idx", "email_tokens_user_idx"];
+  const REQUIRED_INDEXES = ["rate_limits_expires_idx", "email_tokens_user_idx", "reading_documents_reading_idx"];
   const r = resolveAndCheck(env);
   const { url, source, id, warnings, errors } = r;
   if (!json) printTarget(r, env);

@@ -25,7 +25,7 @@ export type SectionResult =
       costMxn: number;
       latencyMs: number;
     }
-  | { key: SectionKey; status: "failed"; failureReason: string };
+  | { key: SectionKey; status: "failed"; failureReason: string; /** MXN wasted on attempts that produced nothing. */ costMxn?: number };
 
 /** The digest facts each section is grounded in — also the fallback content. */
 function sectionFacts(digest: ChartDigest, key: SectionKey): Record<string, unknown> {
@@ -94,6 +94,7 @@ export function buildReadingDocument(args: {
   const sections: ReadingSection[] = [];
   const models: Partial<Record<SectionKey, string>> = {};
   let costMxn = 0;
+  let wastedCostMxn = 0;
 
   for (const key of SECTION_KEYS) {
     const result = results.find(r => r.key === key);
@@ -114,6 +115,7 @@ export function buildReadingDocument(args: {
         closingQuestion: result.output.closingQuestion,
       });
     } else {
+      wastedCostMxn += result.costMxn ?? 0;
       sections.push({
         key,
         tier: definition.tier,
@@ -146,5 +148,20 @@ export function buildReadingDocument(args: {
     sections,
     lockedSections,
     costMxn: Number(costMxn.toFixed(6)),
+    wastedCostMxn: Number(wastedCostMxn.toFixed(6)),
   };
+}
+
+/**
+ * A document is persisted only if it carries generated content under a real
+ * contentVersion. An all-fallback document (outage, missing provider config,
+ * unpersistable version) must NOT occupy the insert-only
+ * (readingId, locale, contentVersion) slot — that would permanently block
+ * regeneration for that reading after the outage clears.
+ */
+export function persistableDocument(document: ReadingDocument): boolean {
+  return (
+    document.contentVersion !== "unavailable" &&
+    document.sections.some(section => section.status === "generated")
+  );
 }

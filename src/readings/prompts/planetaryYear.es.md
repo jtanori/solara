@@ -1,6 +1,6 @@
 ## Guía de sección: El Año Planetario — el regente del año
 
-Esta sección lee el regente derivado de la profesión (profección): el planeta que ocupa la silla del año.
+Esta sección lee el regente derivado de la profección: el planeta que ocupa la silla del año.
 
 Cubre:
 - La edad de profección con su signo y casa, y el regente que nombra el digest (`chart.profections`) — qué significa que este planeta, entre todos, dirija el año.

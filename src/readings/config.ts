@@ -36,15 +36,39 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   "fixture-1": { inputMxnPerMillion: 15, outputMxnPerMillion: 60 },
 };
 
-export function modelPrices(): Record<string, ModelPrice> {
+function validPrice(entry: unknown): entry is ModelPrice {
+  if (typeof entry !== "object" || entry === null) return false;
+  const { inputMxnPerMillion, outputMxnPerMillion } = entry as Record<string, unknown>;
+  return (
+    typeof inputMxnPerMillion === "number" && Number.isFinite(inputMxnPerMillion) && inputMxnPerMillion >= 0 &&
+    typeof outputMxnPerMillion === "number" && Number.isFinite(outputMxnPerMillion) && outputMxnPerMillion >= 0
+  );
+}
+
+/**
+ * The active price table. Unset ⇒ defaults. Set ⇒ the env is authoritative
+ * (it REPLACES the defaults). Set-but-invalid ⇒ null, and every caller treats
+ * null as "do not dispatch": an unpriceable model must never be priced at
+ * 0 MXN and silently bypass the ceilings.
+ */
+export function modelPrices(): Record<string, ModelPrice> | null {
   const raw = process.env.READINGS_MODEL_PRICES;
   if (!raw) return DEFAULT_MODEL_PRICES;
   try {
-    const parsed = JSON.parse(raw) as Record<string, ModelPrice>;
-    return { ...DEFAULT_MODEL_PRICES, ...parsed };
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    for (const entry of Object.values(parsed as Record<string, unknown>)) {
+      if (!validPrice(entry)) return null;
+    }
+    return parsed as Record<string, ModelPrice>;
   } catch {
-    return DEFAULT_MODEL_PRICES;
+    return null;
   }
+}
+
+/** Price of one model, or null when unpriced — callers must fail closed on null. */
+export function priceFor(model: string): ModelPrice | null {
+  return modelPrices()?.[model] ?? null;
 }
 
 /** Section → model tier (§9b.1). Short formulaic sections are cheap; synthesis is strong. */
@@ -78,9 +102,14 @@ export function providerName(): string | null {
   return process.env.READINGS_PROVIDER ?? null;
 }
 
-export function costMxn(model: string, usage: { inputTokens: number; outputTokens: number }): number {
-  const price = modelPrices()[model];
-  if (!price) return 0;
+/**
+ * MXN cost of a completion, or null when the model is unpriced. Null is the
+ * fail-closed signal: callers skip dispatch / discard output rather than
+ * record a 0 MXN cost that was never real.
+ */
+export function costMxn(model: string, usage: { inputTokens: number; outputTokens: number }): number | null {
+  const price = priceFor(model);
+  if (!price) return null;
   return (
     (usage.inputTokens / 1_000_000) * price.inputMxnPerMillion +
     (usage.outputTokens / 1_000_000) * price.outputMxnPerMillion

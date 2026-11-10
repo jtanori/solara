@@ -8,6 +8,7 @@ import { log, requestMeta } from "@/lib/log";
 import { getLocale } from "@/lib/i18n-server";
 import { generationEnabled } from "@/readings/config";
 import { generateReadingDocument } from "@/readings/generate";
+import { persistableDocument } from "@/readings/document";
 import { DbSectionCache } from "@/readings/db-cache";
 import type { ChartInput, ChartResult } from "@/lib/types";
 
@@ -42,15 +43,23 @@ export async function POST(request: Request) {
           digest: chartDigest(facts),
           cache: new DbSectionCache(),
         });
-        await db.insert(readingDocuments).values({
-          readingId: saved.id,
-          locale,
-          contentVersion: document.contentVersion,
-          chartVersion: document.chartVersion,
-          tier: document.tier,
-          document,
-        }).onConflictDoNothing(); // freeze: an existing row for this key always wins
-        return NextResponse.json({ id: saved.id, documentId: document.id });
+        // Persist only documents worth freezing: a real contentVersion and at
+        // least one generated section. An all-fallback document must not occupy
+        // the insert-only (readingId, locale, contentVersion) slot and block
+        // regeneration once the outage clears.
+        if (persistableDocument(document)) {
+          await db.insert(readingDocuments).values({
+            id: document.id,
+            readingId: saved.id,
+            locale,
+            contentVersion: document.contentVersion,
+            chartVersion: document.chartVersion,
+            tier: document.tier,
+            document,
+          }).onConflictDoNothing(); // freeze: an existing row for this key always wins
+          return NextResponse.json({ id: saved.id, documentId: document.id });
+        }
+        return NextResponse.json({ id: saved.id });
       } catch (error) {
         log.error("readings.generation_failed", { ...requestMeta(request), readingId: saved.id, userId: user.id, error });
       }

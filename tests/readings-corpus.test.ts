@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, before, test } from "node:test";
 import { calculateSolarReturnChart } from "../src/lib/solar";
 import { chartDigest, type ChartDigest } from "../src/lib/chart";
 import type { ChartInput } from "../src/lib/types";
@@ -20,7 +20,15 @@ import type { Locale } from "../src/lib/i18n";
  * degrades to fallback instead of throwing.
  */
 
-process.env.READINGS_GENERATION_ENABLED = "true";
+// Env hygiene: enable generation for this file's tests only, and restore it
+// afterwards — module-level mutation without restore leaks into anything that
+// shares this process.
+before(() => {
+  process.env.READINGS_GENERATION_ENABLED = "true";
+});
+after(() => {
+  delete process.env.READINGS_GENERATION_ENABLED;
+});
 
 const INPUTS: ChartInput[] = [
   {
@@ -136,8 +144,12 @@ test("corpus: charts × locales through the pipeline — validity, cost, latency
         generatedSections += 1;
       }
 
+      // every section of this (chart, locale) pair is a cache miss: exactly the
+      // free sections are dispatched, no more, no fewer
+      assert.equal(spyCalls.length, 2, `${input()} dispatched exactly the free sections`);
       // cost within the free ceiling, and latency recorded per section
       assert.ok(document.costMxn > 0 && document.costMxn <= TIER_CEILING_MXN.free, `${input()} cost ${document.costMxn} within free ceiling`);
+      assert.equal(document.wastedCostMxn, 0, `${input()} nothing wasted on the happy path`);
       costByLocale[locale] += document.costMxn;
       assert.ok(document.sections.every(section => document.models[section.key] === "fixture-1"));
 
@@ -181,6 +193,7 @@ test("corpus: paid tier for every chart — 9 sections, no locks, under the paid
       assert.equal(document.lockedSections.length, 0);
       assert.ok(document.sections.every(section => section.status === "generated"));
       assert.ok(document.costMxn > 0 && document.costMxn <= TIER_CEILING_MXN.paid, `${input.name}/${locale} cost ${document.costMxn}`);
+      assert.equal(document.wastedCostMxn, 0, `${input.name}/${locale} nothing wasted on the happy path`);
       for (const section of document.sections) {
         assert.ok(validateSectionOutput(section.key, { blocks: section.blocks, closingQuestion: section.closingQuestion }).ok);
       }
@@ -268,8 +281,12 @@ test("corpus: forced provider failure degrades without throwing, chart always re
         assert.ok(section.failureReason);
         assert.equal(section.closingQuestion, undefined);
       }
-      assert.equal(document.costMxn, 0);
-      // the failure still produces a persistable document with locked copy
+      assert.equal(document.costMxn, 0); // nothing was published
+      // honest accounting: garbage responses reported usage, so their attempts
+      // are recorded as waste; a throwing provider reports nothing
+      if (provider === garbageProvider) assert.ok(document.wastedCostMxn > 0, `${provider.name}/${tier} wasted spend recorded`);
+      else assert.equal(document.wastedCostMxn, 0, `${provider.name}/${tier} no spend invented for throws`);
+      // the failure still produces a renderable document with locked copy
       assert.ok(document.contentVersion.length > 0);
     }
   }

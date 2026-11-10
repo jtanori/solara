@@ -6,6 +6,7 @@ import type { ChartInput } from "../src/lib/types";
 import { SECTION_REGISTRY, availableSections, sectionsForTier } from "../src/readings/registry";
 import { contentVersionFromSources, computeContentVersion, resetContentVersionCacheForTests } from "../src/readings/content-version";
 import { sectionJsonSchema, validateSectionOutput } from "../src/readings/schemas";
+import { persistableDocument } from "../src/readings/document";
 import { createFixtureProvider, type ReadingProvider } from "../src/readings/provider";
 import {
   MemorySectionCache,
@@ -28,7 +29,7 @@ const baseInput: ChartInput = {
 };
 const baseDigest = chartDigest(calculateSolarReturnChart(baseInput).facts);
 
-const ENV_KEYS = ["READINGS_GENERATION_ENABLED", "READINGS_PROVIDER", "READINGS_MODEL_PRICES"] as const;
+const ENV_KEYS = ["READINGS_GENERATION_ENABLED", "READINGS_PROVIDER", "READINGS_MODEL_PRICES", "READINGS_CHEAP_MODEL", "READINGS_STRONG_MODEL"] as const;
 
 async function withEnv(overrides: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
   const saved: Record<string, string | undefined> = {};
@@ -112,18 +113,33 @@ test("registry: sections without engine facts are not available", () => {
 
 // ------------------------------------------------------------------ content version
 
-test("contentVersionFromSources: deterministic and sensitive to prompts and schemas", () => {
+test("contentVersionFromSources: deterministic and sensitive to prompts, schemas, and policy", () => {
   const promptFiles = { "_wrapper.md": "wrapper", "overview.en.md": "brief-en", "overview.es.md": "brief-es" };
   const schemas = { overview: { type: "object" }, sun: { type: "object" } };
-  const version = contentVersionFromSources(promptFiles, schemas);
+  const policy = JSON.stringify({ revision: "1", sectionModelTier: {}, models: { cheap: "fixture-1", strong: "fixture-1" } });
+  const version = contentVersionFromSources(promptFiles, schemas, policy);
   assert.match(version, /^[0-9a-f]{16}$/);
-  assert.equal(version, contentVersionFromSources(promptFiles, schemas));
+  assert.equal(version, contentVersionFromSources(promptFiles, schemas, policy));
   // any prompt byte change → new version
-  assert.notEqual(version, contentVersionFromSources({ ...promptFiles, "overview.en.md": "brief-en " }, schemas));
+  assert.notEqual(version, contentVersionFromSources({ ...promptFiles, "overview.en.md": "brief-en " }, schemas, policy));
   // any schema change → new version
-  assert.notEqual(version, contentVersionFromSources(promptFiles, { ...schemas, sun: { type: "string" } }));
+  assert.notEqual(version, contentVersionFromSources(promptFiles, { ...schemas, sun: { type: "string" } }, policy));
+  // any policy change — revision, section tiering, model swap — → new version
+  assert.notEqual(version, contentVersionFromSources(promptFiles, schemas, JSON.stringify({ revision: "2", sectionModelTier: {}, models: { cheap: "fixture-1", strong: "fixture-1" } })));
+  assert.notEqual(version, contentVersionFromSources(promptFiles, schemas, JSON.stringify({ revision: "1", sectionModelTier: { guidance: "strong" }, models: { cheap: "fixture-1", strong: "fixture-1" } })));
+  assert.notEqual(version, contentVersionFromSources(promptFiles, schemas, JSON.stringify({ revision: "1", sectionModelTier: {}, models: { cheap: "fixture-1", strong: "other-model" } })));
   // key order does not matter (sources are sorted by name)
-  assert.equal(version, contentVersionFromSources({ "overview.es.md": "brief-es", "_wrapper.md": "wrapper", "overview.en.md": "brief-en" }, schemas));
+  assert.equal(version, contentVersionFromSources({ "overview.es.md": "brief-es", "_wrapper.md": "wrapper", "overview.en.md": "brief-en" }, schemas, policy));
+});
+
+test("computeContentVersion: swapping the configured strong model changes the version", async () => {
+  await withEnv({ READINGS_STRONG_MODEL: "model-a" }, async () => {
+    const a = computeContentVersion();
+    process.env.READINGS_STRONG_MODEL = "model-b";
+    resetContentVersionCacheForTests();
+    const b = computeContentVersion();
+    assert.notEqual(a, b);
+  });
 });
 
 test("computeContentVersion: stable across calls and reads the real prompt files", () => {
@@ -168,11 +184,17 @@ test("fixture provider output validates for every available section in both loca
   }
 });
 
-test("validateSectionOutput: rejects unknown properties and missing cliffhanger", () => {
-  assert.ok(!validateSectionOutput("moon", { blocks: [], extra: 1 }).ok);
-  assert.ok(!validateSectionOutput("overview", { blocks: [{ kind: "prose", text: "hi" }] }).ok); // missing closingQuestion
-  const okMoon = validateSectionOutput("moon", { blocks: [{ kind: "prose", text: "hi" }] });
-  assert.ok(okMoon.ok);
+test("validateSectionOutput: rejects unknown properties (top-level and nested) and missing cliffhanger", () => {
+  const goodMoon = { blocks: [{ kind: "prose", text: "hi" }] };
+  assert.ok(validateSectionOutput("moon", goodMoon).ok, "baseline: a valid moon output passes");
+  // unknown TOP-LEVEL property, with valid blocks — isolates strictness from the min(1) rule
+  assert.ok(!validateSectionOutput("moon", { ...goodMoon, extra: 1 }).ok, "unknown top-level properties rejected");
+  // unknown property NESTED inside a block
+  assert.ok(!validateSectionOutput("moon", { blocks: [{ kind: "prose", text: "hi", bogus: 1 }] }).ok, "unknown properties inside blocks rejected");
+  // unknown block kind
+  assert.ok(!validateSectionOutput("moon", { blocks: [{ kind: "hologram", text: "hi" }] }).ok, "unknown block kinds rejected");
+  // the free sections must carry the cliffhanger
+  assert.ok(!validateSectionOutput("overview", { blocks: [{ kind: "prose", text: "hi" }] }).ok, "missing closingQuestion rejected on overview");
 });
 
 // ------------------------------------------------------------------ memory cache
@@ -231,6 +253,7 @@ test("kill switch: unset flag ⇒ every section fails closed with generation_dis
     }
     assert.equal(spy.calls.length, 0, "no dispatch happens when disabled");
     assert.equal(document.costMxn, 0);
+    assert.equal(document.wastedCostMxn, 0);
   });
 });
 
@@ -258,6 +281,7 @@ test("cost ceiling: astronomic prices ⇒ pre-dispatch failure, zero spend, char
     const document = await generate({ tier: "paid", cache: new MemorySectionCache(), provider: spy.provider });
     assert.equal(spy.calls.length, 0, "nothing dispatched when the projection breaches the ceiling");
     assert.equal(document.costMxn, 0);
+    assert.equal(document.wastedCostMxn, 0);
     for (const section of document.sections) {
       assert.equal(section.status, "failed");
       assert.match(section.failureReason ?? "", /^cost_ceiling/);
@@ -292,6 +316,124 @@ test("validation: one repair attempt rescues a bad first response", async () => 
   });
 });
 
+test("accounting: a rescued repair counts BOTH attempts in spend, cache, and document", async () => {
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_MODEL_PRICES: JSON.stringify({ "fixture-1": { inputMxnPerMillion: 1, outputMxnPerMillion: 0 } }),
+  }, async () => {
+    // Every attempt reports a flat 1M input tokens ⇒ exactly 1 MXN per attempt.
+    let overviewAttempts = 0;
+    const metered: ReadingProvider = {
+      name: "metered-repairable",
+      async complete(request) {
+        const inner = request.section === "overview" && ++overviewAttempts === 1 ? garbageProvider : createFixtureProvider();
+        const completion = await inner.complete(request);
+        return { ...completion, usage: { inputTokens: 1_000_000, outputTokens: 0 } };
+      },
+    };
+    const cache = new MemorySectionCache();
+    const document = await generate({ tier: "free", cache, provider: metered });
+    assert.equal(overviewAttempts, 2, "one bad primary, one repair");
+    const rows = cache.snapshot();
+    const overviewRow = rows.find(row => row.key.section === "overview");
+    const sunRow = rows.find(row => row.key.section === "sun");
+    assert.ok(overviewRow && Math.abs(overviewRow.value.costMxn - 2) < 1e-6, `overview cache cost ${overviewRow?.value.costMxn} = primary + repair`);
+    assert.ok(sunRow && Math.abs(sunRow.value.costMxn - 1) < 1e-6, `sun cache cost ${sunRow?.value.costMxn}`);
+    assert.ok(Math.abs(document.costMxn - 3) < 1e-6, `document cost ${document.costMxn} includes the wasted primary`);
+    assert.equal(document.wastedCostMxn, 0, "rescued attempts are published cost, not waste");
+    assert.ok(document.sections.every(section => section.status === "generated"));
+  });
+});
+
+test("pricing: unpriced model ⇒ no dispatch, fail closed", async () => {
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_MODEL_PRICES: JSON.stringify({ "some-other-model": { inputMxnPerMillion: 10, outputMxnPerMillion: 10 } }),
+  }, async () => {
+    const spy = spyAround(createFixtureProvider());
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: spy.provider });
+    assert.equal(spy.calls.length, 0, "an unpriced model is never dispatched");
+    for (const section of document.sections) {
+      assert.equal(section.status, "failed");
+      assert.match(section.failureReason ?? "", /^pricing_unavailable/);
+    }
+    assert.equal(document.costMxn, 0);
+    assert.equal(document.wastedCostMxn, 0);
+  });
+});
+
+test("pricing: invalid READINGS_MODEL_PRICES JSON ⇒ fail closed, never silent defaults", async () => {
+  await withEnv({ READINGS_GENERATION_ENABLED: "true", READINGS_MODEL_PRICES: "not json at all" }, async () => {
+    const spy = spyAround(createFixtureProvider());
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: spy.provider });
+    assert.equal(spy.calls.length, 0);
+    for (const section of document.sections) assert.match(section.failureReason ?? "", /^pricing_unavailable/);
+  });
+});
+
+test("pricing: non-numeric price entries ⇒ fail closed", async () => {
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_MODEL_PRICES: JSON.stringify({ "fixture-1": { inputMxnPerMillion: "cheap", outputMxnPerMillion: 1 } }),
+  }, async () => {
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: createFixtureProvider() });
+    for (const section of document.sections) assert.match(section.failureReason ?? "", /^pricing_unavailable/);
+  });
+});
+
+test("ceiling: every attempt counts — post-dispatch breach discards, accumulated spend gates later sections", async () => {
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_MODEL_PRICES: JSON.stringify({ "fixture-1": { inputMxnPerMillion: 2.2, outputMxnPerMillion: 0 } }),
+  }, async () => {
+    // Flat 1M input tokens per attempt ⇒ exactly 2.2 MXN per attempt.
+    const metered: ReadingProvider = {
+      name: "metered",
+      async complete(request) {
+        const completion = await createFixtureProvider().complete(request);
+        return { ...completion, usage: { inputTokens: 1_000_000, outputTokens: 0 } };
+      },
+    };
+    const document = await generate({ tier: "paid", cache: new MemorySectionCache(), provider: metered });
+    const generated = document.sections.filter(section => section.status === "generated");
+    const failed = document.sections.filter(section => section.status === "failed");
+    assert.equal(generated.length, 4, "four 2.2-MXN sections fit the 10-MXN paid ceiling");
+    assert.equal(failed.length, 5);
+    assert.equal(failed.filter(section => section.failureReason === "cost_ceiling_exceeded_after_dispatch").length, 1, "the section whose actual spend crossed the ceiling is discarded after dispatch");
+    assert.equal(failed.filter(section => (section.failureReason ?? "").startsWith("cost_ceiling:")).length, 4, "later sections are blocked pre-dispatch by accumulated spend");
+    assert.ok(Math.abs(document.costMxn - 8.8) < 1e-6, `published cost ${document.costMxn}`);
+    assert.ok(Math.abs(document.wastedCostMxn - 2.2) < 1e-6, `wasted cost ${document.wastedCostMxn}`);
+  });
+});
+
+test("model tiering: guidance uses the strong model, everything else the cheap one", async () => {
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_CHEAP_MODEL: "cheap-x",
+    READINGS_STRONG_MODEL: "strong-x",
+    READINGS_MODEL_PRICES: JSON.stringify({
+      "cheap-x": { inputMxnPerMillion: 15, outputMxnPerMillion: 60 },
+      "strong-x": { inputMxnPerMillion: 15, outputMxnPerMillion: 60 },
+    }),
+  }, async () => {
+    const document = await generate({ tier: "paid", cache: new MemorySectionCache(), provider: createFixtureProvider() });
+    assert.equal(document.models.guidance, "strong-x");
+    for (const key of ["overview", "sun", "moon", "ascendant", "aspects", "houses", "planets", "nodes"] as const) {
+      assert.equal(document.models[key], "cheap-x", key);
+    }
+  });
+});
+
+test("persistableDocument: all-fallback and unversioned documents never occupy the insert-only slot", async () => {
+  await withEnv({ READINGS_GENERATION_ENABLED: "true" }, async () => {
+    const good = await generate({ tier: "free", cache: new MemorySectionCache(), provider: createFixtureProvider() });
+    assert.ok(persistableDocument(good), "a document with generated content is persistable");
+    const allFailed = await generate({ tier: "free", cache: new MemorySectionCache(), provider: garbageProvider });
+    assert.ok(!persistableDocument(allFailed), "an all-fallback document must not block regeneration after an outage");
+    assert.ok(!persistableDocument({ ...allFailed, contentVersion: "unavailable" }), "an unversioned document is never persistable");
+  });
+});
+
 test("validation: unrepairable output ⇒ failed section with fallback, document survives", async () => {
   await withEnv({ READINGS_GENERATION_ENABLED: "true" }, async () => {
     let calls = 0;
@@ -309,7 +451,8 @@ test("validation: unrepairable output ⇒ failed section with fallback, document
       assert.match(section.failureReason ?? "", /^invalid_output/);
       assert.ok(section.blocks.length >= 1, "fallback blocks render");
     }
-    assert.equal(document.costMxn, 0);
+    assert.equal(document.costMxn, 0); // nothing was published
+    assert.ok(document.wastedCostMxn > 0, `wasted attempt spend is recorded, not dropped (${document.wastedCostMxn})`);
   });
 });
 
@@ -321,6 +464,8 @@ test("provider throw ⇒ provider_error, never a throw out of the pipeline", asy
       assert.match(section.failureReason ?? "", /^provider_error/);
       assert.ok(section.blocks.length >= 1);
     }
+    assert.equal(document.costMxn, 0);
+    assert.equal(document.wastedCostMxn, 0, "a throw reports no usage, so no spend is invented");
   });
 });
 
@@ -336,6 +481,7 @@ test("document: free tier shape, ordering, models, cost accounting, locked secti
     assert.ok(document.models.overview && document.models.sun);
     assert.equal(spy.calls.length, 2);
     assert.ok(document.costMxn > 0 && document.costMxn <= TIER_CEILING_MXN.free);
+    assert.equal(document.wastedCostMxn, 0);
     assert.equal(document.chartVersion, baseDigest.chartVersion);
     // free sections always end on the cliffhanger
     for (const section of document.sections) assert.ok(section.closingQuestion);
@@ -356,6 +502,7 @@ test("document: paid tier generates every available paid section, none locked", 
     );
     assert.equal(document.lockedSections.length, 0);
     assert.ok(document.costMxn > 0 && document.costMxn <= TIER_CEILING_MXN.paid);
+    assert.equal(document.wastedCostMxn, 0);
     assert.equal(Object.keys(document.models).length, 9);
   });
 });
