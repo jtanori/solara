@@ -42,6 +42,20 @@ export function approxTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
+/**
+ * A provider's reported usage is untrusted input like any other: token counts
+ * must be finite, non-negative numbers. NaN slips past `!== null` checks and
+ * poisons every downstream `spent > ceiling` comparison into `false`
+ * (NaN > x is false), silently disabling both ceilings; negative counts would
+ * let one attempt offset another's spend.
+ */
+export function validUsage(usage: ProviderUsage): boolean {
+  return (
+    Number.isFinite(usage.inputTokens) && Number.isFinite(usage.outputTokens) &&
+    usage.inputTokens >= 0 && usage.outputTokens >= 0
+  );
+}
+
 // ------------------------------------------------------------------ fixture
 
 const ASPECT_ES: Record<string, string> = {

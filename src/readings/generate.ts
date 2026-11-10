@@ -15,7 +15,7 @@ import {
 } from "@/readings/config";
 import { availableSections, sectionDefinition, sectionsForTier } from "@/readings/registry";
 import { computeContentVersion } from "@/readings/content-version";
-import { approxTokens, PROVIDERS, type ProviderUsage, type ReadingProvider } from "@/readings/provider";
+import { approxTokens, PROVIDERS, validUsage, type ProviderUsage, type ReadingProvider } from "@/readings/provider";
 import { sectionJsonSchema, validateSectionOutput, type SectionOutput } from "@/readings/schemas";
 import { buildReadingDocument, type SectionResult } from "@/readings/document";
 import type { ReadingDocument, SectionKey, SectionTier } from "@/readings/types";
@@ -230,6 +230,11 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
         let sectionLatency = 0;
         let sectionCost = 0;
         const account = (completion: { model: string; usage: ProviderUsage; latencyMs: number }): string | null => {
+          // Provider-reported usage is untrusted: NaN would poison every later
+          // ceiling comparison into false, negatives would offset spend.
+          if (!validUsage(completion.usage)) {
+            return `usage_invalid: provider reported non-finite or negative token counts (${JSON.stringify(completion.usage)})`;
+          }
           const cost = costMxn(completion.model, completion.usage);
           if (cost === null) return `pricing_unavailable: provider reported unpriced model "${completion.model}"`;
           spent += cost;
@@ -280,8 +285,8 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
             });
             const repairPricingFailure = account(repaired);
             if (repairPricingFailure) {
-              // Cannot price the repair: do not use its output.
-              log.warn("readings.repair_unpriced", { section: key, model: repaired.model });
+              // Cannot price or trust the repair's usage: do not use its output.
+              log.warn("readings.repair_rejected", { section: key, model: repaired.model, reason: repairPricingFailure });
             } else {
               const revalidated = validateSectionOutput(key, repaired.output);
               if (revalidated.ok) {

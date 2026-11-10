@@ -4,10 +4,10 @@ import { calculateSolarReturnChart } from "../src/lib/solar";
 import { chartDigest } from "../src/lib/chart";
 import type { ChartInput } from "../src/lib/types";
 import { SECTION_REGISTRY, availableSections, sectionsForTier } from "../src/readings/registry";
-import { contentVersionFromSources, computeContentVersion, resetContentVersionCacheForTests } from "../src/readings/content-version";
+import { contentVersionFromSources, computeContentVersion, policyJson, resetContentVersionCacheForTests } from "../src/readings/content-version";
 import { sectionJsonSchema, validateSectionOutput } from "../src/readings/schemas";
 import { persistableDocument } from "../src/readings/document";
-import { createFixtureProvider, type ReadingProvider } from "../src/readings/provider";
+import { createFixtureProvider, validUsage, type ReadingProvider } from "../src/readings/provider";
 import {
   MemorySectionCache,
   digestHashOf,
@@ -16,7 +16,7 @@ import {
   type SectionCacheKey,
 } from "../src/readings/generate";
 import type { SectionKey, SectionTier } from "../src/readings/types";
-import { TIER_CEILING_MXN } from "../src/readings/config";
+import { costMxn, TIER_CEILING_MXN } from "../src/readings/config";
 
 // The digest every test shares — the real pipeline input, computed once.
 const baseInput: ChartInput = {
@@ -124,12 +124,26 @@ test("contentVersionFromSources: deterministic and sensitive to prompts, schemas
   assert.notEqual(version, contentVersionFromSources({ ...promptFiles, "overview.en.md": "brief-en " }, schemas, policy));
   // any schema change → new version
   assert.notEqual(version, contentVersionFromSources(promptFiles, { ...schemas, sun: { type: "string" } }, policy));
-  // any policy change — revision, section tiering, model swap — → new version
+  // any policy change — revision, section tiering, model swap, limits — → new version
+  assert.notEqual(version, contentVersionFromSources(promptFiles, schemas, JSON.stringify({ revision: "1", sectionModelTier: {}, models: { cheap: "fixture-1", strong: "fixture-1" }, limits: { maxOutputTokensPerSection: 1000, tierCeilingMxn: { free: 5, paid: 10 } } })));
   assert.notEqual(version, contentVersionFromSources(promptFiles, schemas, JSON.stringify({ revision: "2", sectionModelTier: {}, models: { cheap: "fixture-1", strong: "fixture-1" } })));
   assert.notEqual(version, contentVersionFromSources(promptFiles, schemas, JSON.stringify({ revision: "1", sectionModelTier: { guidance: "strong" }, models: { cheap: "fixture-1", strong: "fixture-1" } })));
   assert.notEqual(version, contentVersionFromSources(promptFiles, schemas, JSON.stringify({ revision: "1", sectionModelTier: {}, models: { cheap: "fixture-1", strong: "other-model" } })));
   // key order does not matter (sources are sorted by name)
   assert.equal(version, contentVersionFromSources({ "overview.es.md": "brief-es", "_wrapper.md": "wrapper", "overview.en.md": "brief-en" }, schemas, policy));
+});
+
+test("policyJson: the versioned policy names tiering, models, and the spend limits", () => {
+  const policy = JSON.parse(policyJson()) as {
+    revision: string;
+    sectionModelTier: Record<string, string>;
+    models: { cheap: string; strong: string };
+    limits: { maxOutputTokensPerSection: number; tierCeilingMxn: { free: number; paid: number } };
+  };
+  assert.equal(policy.sectionModelTier.guidance, "strong");
+  assert.ok(policy.models.cheap && policy.models.strong);
+  assert.equal(policy.limits.maxOutputTokensPerSection, 2000);
+  assert.deepEqual(policy.limits.tierCeilingMxn, { free: 5, paid: 10 });
 });
 
 test("computeContentVersion: swapping the configured strong model changes the version", async () => {
@@ -431,6 +445,103 @@ test("persistableDocument: all-fallback and unversioned documents never occupy t
     const allFailed = await generate({ tier: "free", cache: new MemorySectionCache(), provider: garbageProvider });
     assert.ok(!persistableDocument(allFailed), "an all-fallback document must not block regeneration after an outage");
     assert.ok(!persistableDocument({ ...allFailed, contentVersion: "unavailable" }), "an unversioned document is never persistable");
+  });
+});
+
+// ------------------------------------------------------------------ provider-reported usage is untrusted
+
+test("usage validation: NaN token counts fail closed — output discarded, ceilings stay armed", async () => {
+  await withEnv({ READINGS_GENERATION_ENABLED: "true" }, async () => {
+    const nanUsage: ReadingProvider = {
+      name: "nan-usage",
+      async complete(request) {
+        const completion = await createFixtureProvider().complete(request);
+        return { ...completion, usage: { inputTokens: Number.NaN, outputTokens: Number.NaN } };
+      },
+    };
+    const spy = spyAround(nanUsage);
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: spy.provider });
+    assert.equal(spy.calls.length, 2, "one dispatch per section — then discarded");
+    for (const section of document.sections) {
+      assert.equal(section.status, "failed", `${section.key} discarded, not published on NaN usage`);
+      assert.match(section.failureReason ?? "", /^usage_invalid/);
+      assert.ok(section.blocks.length >= 1, "fallback blocks render");
+    }
+    assert.ok(Number.isFinite(document.costMxn), `document cost stays finite (${document.costMxn})`);
+    assert.ok(Number.isFinite(document.wastedCostMxn), `wasted cost stays finite (${document.wastedCostMxn})`);
+    assert.equal(document.costMxn, 0);
+    // nothing was cached — a NaN completion must never be frozen
+    const cache = new MemorySectionCache();
+    await generate({ tier: "free", cache, provider: nanUsage });
+    assert.equal(cache.size, 0);
+  });
+});
+
+test("usage validation: negative token counts fail closed (no spend offsetting)", async () => {
+  await withEnv({ READINGS_GENERATION_ENABLED: "true" }, async () => {
+    const negativeUsage: ReadingProvider = {
+      name: "negative-usage",
+      async complete(request) {
+        const completion = await createFixtureProvider().complete(request);
+        return { ...completion, usage: { inputTokens: -5_000_000, outputTokens: 0 } };
+      },
+    };
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: negativeUsage });
+    for (const section of document.sections) {
+      assert.equal(section.status, "failed");
+      assert.match(section.failureReason ?? "", /^usage_invalid/);
+    }
+    assert.equal(document.costMxn, 0, "negative usage cannot offset or create spend");
+  });
+});
+
+test("usage validation: costMxn and validUsage treat bad usage as unpriceable", () => {
+  assert.ok(validUsage({ inputTokens: 0, outputTokens: 0 }));
+  assert.ok(validUsage({ inputTokens: 10, outputTokens: 20 }));
+  assert.ok(!validUsage({ inputTokens: Number.NaN, outputTokens: 0 }));
+  assert.ok(!validUsage({ inputTokens: 0, outputTokens: Number.NaN }));
+  assert.ok(!validUsage({ inputTokens: Number.POSITIVE_INFINITY, outputTokens: 0 }));
+  assert.ok(!validUsage({ inputTokens: -1, outputTokens: 0 }));
+  assert.ok(!validUsage({ inputTokens: 0, outputTokens: -1 }));
+  assert.equal(costMxn("fixture-1", { inputTokens: Number.NaN, outputTokens: 1 }), null, "NaN usage is unpriceable, never NaN cost");
+  assert.equal(costMxn("fixture-1", { inputTokens: -5, outputTokens: 1 }), null, "negative usage is unpriceable");
+  assert.ok(costMxn("fixture-1", { inputTokens: 1_000_000, outputTokens: 0 }) !== null);
+});
+
+// ------------------------------------------------------------------ guards the review found untested
+
+test("repair ceiling: a repair that would cross the ceiling is skipped, the section fails honestly", async () => {
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    // Primary reports 1M input ⇒ 2.7 MXN; a repair at max output would cost
+    // ~2.4 MXN more (output priced at 1200/M), crossing the 5-MXN free ceiling.
+    READINGS_MODEL_PRICES: JSON.stringify({ "fixture-1": { inputMxnPerMillion: 2.7, outputMxnPerMillion: 1200 } }),
+  }, async () => {
+    let overviewAttempts = 0;
+    const metered: ReadingProvider = {
+      name: "repair-ceiling",
+      async complete(request) {
+        const inner = request.section === "overview" && ++overviewAttempts === 1 ? garbageProvider : createFixtureProvider();
+        const completion = await inner.complete(request);
+        return { ...completion, usage: { inputTokens: 1_000_000, outputTokens: 0 } };
+      },
+    };
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: metered });
+    assert.equal(overviewAttempts, 1, "the repair is NOT dispatched once its projection crosses the ceiling");
+    const overview = document.sections.find(section => section.key === "overview");
+    assert.equal(overview?.status, "failed");
+    assert.match(overview?.failureReason ?? "", /^cost_ceiling: repair projected/, `reason: ${overview?.failureReason}`);
+    assert.ok(Math.abs((document.wastedCostMxn ?? 0) - 2.7) < 1e-6, `primary spend recorded as waste (${document.wastedCostMxn})`);
+  });
+});
+
+test("pricing: negative price entries ⇒ fail closed", async () => {
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_MODEL_PRICES: JSON.stringify({ "fixture-1": { inputMxnPerMillion: -5, outputMxnPerMillion: 60 } }),
+  }, async () => {
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: createFixtureProvider() });
+    for (const section of document.sections) assert.match(section.failureReason ?? "", /^pricing_unavailable/, "a negative price is an invalid table, not a subsidy");
   });
 });
 

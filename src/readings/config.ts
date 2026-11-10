@@ -110,6 +110,15 @@ export function providerName(): string | null {
 export function costMxn(model: string, usage: { inputTokens: number; outputTokens: number }): number | null {
   const price = priceFor(model);
   if (!price) return null;
+  // Defensive invariant: costMxn never returns NaN or a negative number.
+  // Non-finite or negative usage is unpriceable (null), same as an unpriced
+  // model — callers fail closed on both.
+  if (
+    !Number.isFinite(usage.inputTokens) || !Number.isFinite(usage.outputTokens) ||
+    usage.inputTokens < 0 || usage.outputTokens < 0
+  ) {
+    return null;
+  }
   return (
     (usage.inputTokens / 1_000_000) * price.inputMxnPerMillion +
     (usage.outputTokens / 1_000_000) * price.outputMxnPerMillion

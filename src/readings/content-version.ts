@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { SECTION_KEYS } from "@/readings/types";
 import { sectionJsonSchema } from "@/readings/schemas";
-import { modelForTier, SECTION_MODEL_TIER } from "@/readings/config";
+import { MAX_OUTPUT_TOKENS_PER_SECTION, modelForTier, SECTION_MODEL_TIER, TIER_CEILING_MXN } from "@/readings/config";
 
 /**
  * contentVersion (`docs/plan-readings-engine-epic.md` §4.5) — the version stamp
@@ -47,6 +47,20 @@ export function contentVersionFromSources(
   return hash.digest("hex").slice(0, 16);
 }
 
+/**
+ * The code-level policy that generated words depend on, as canonical JSON.
+ * Exported so a test can assert exactly what is versioned: revision, section
+ * tiering, resolved models, and the spend limits.
+ */
+export function policyJson(): string {
+  return JSON.stringify({
+    revision: POLICY_REVISION,
+    sectionModelTier: SECTION_MODEL_TIER,
+    models: { cheap: modelForTier("cheap"), strong: modelForTier("strong") },
+    limits: { maxOutputTokensPerSection: MAX_OUTPUT_TOKENS_PER_SECTION, tierCeilingMxn: TIER_CEILING_MXN },
+  });
+}
+
 let cached: string | undefined;
 
 export function computeContentVersion(): string {
@@ -56,12 +70,7 @@ export function computeContentVersion(): string {
   for (const file of files) promptFiles[file] = readFileSync(path.join(PROMPTS_DIR, file), "utf8");
   const schemas: Record<string, Record<string, unknown>> = {};
   for (const key of SECTION_KEYS) schemas[key] = sectionJsonSchema(key);
-  const policy = JSON.stringify({
-    revision: POLICY_REVISION,
-    sectionModelTier: SECTION_MODEL_TIER,
-    models: { cheap: modelForTier("cheap"), strong: modelForTier("strong") },
-  });
-  cached = contentVersionFromSources(promptFiles, schemas, policy);
+  cached = contentVersionFromSources(promptFiles, schemas, policyJson());
   return cached;
 }
 

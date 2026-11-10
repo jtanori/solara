@@ -49,8 +49,9 @@ export const readingDocuments = pgTable("reading_documents", {
   document: jsonb("document").$type<ReadingDocument>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, table => [
+  // (readingId) alone needs no index: it is the leading column of the unique
+  // index below, which serves those lookups.
   uniqueIndex("reading_documents_reading_locale_version_key").on(table.readingId, table.locale, table.contentVersion),
-  index("reading_documents_reading_idx").on(table.readingId),
 ]);
 
 /**

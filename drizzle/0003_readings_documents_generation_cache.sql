@@ -24,5 +24,4 @@ CREATE TABLE "reading_documents" (
 );
 --> statement-breakpoint
 ALTER TABLE "reading_documents" ADD CONSTRAINT "reading_documents_reading_id_readings_id_fk" FOREIGN KEY ("reading_id") REFERENCES "public"."readings"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "reading_documents_reading_locale_version_key" ON "reading_documents" USING btree ("reading_id","locale","content_version");--> statement-breakpoint
-CREATE INDEX "reading_documents_reading_idx" ON "reading_documents" USING btree ("reading_id");
+CREATE UNIQUE INDEX "reading_documents_reading_locale_version_key" ON "reading_documents" USING btree ("reading_id","locale","content_version");

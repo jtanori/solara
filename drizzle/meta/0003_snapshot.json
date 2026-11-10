@@ -1,5 +1,5 @@
 {
-  "id": "0e875189-a87d-4643-b69b-f41f979ed8a0",
+  "id": "344c7bb5-0cfa-4ac2-93b4-b175b40cd444",
   "prevId": "f5a27910-b911-40f6-9d6a-37c2761a9e8d",
   "version": "7",
   "dialect": "postgresql",
@@ -418,21 +418,6 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "reading_documents_reading_idx": {
-          "name": "reading_documents_reading_idx",
-          "columns": [
-            {
-              "expression": "reading_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
