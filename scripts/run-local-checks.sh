@@ -38,9 +38,9 @@ echo "==> 3/6 typecheck + lint"
 ./node_modules/.bin/eslint src tests scripts --max-warnings=0 && echo "PASS eslint"
 
 echo "==> 4/6 unit + billing matrix tests"
-DATABASE_URL="$DATABASE_URL" npx tsx --test tests/*.test.ts 2>&1 | tail -20
+RUN_INTEGRATION_TESTS=1 DATABASE_URL="$DATABASE_URL" npx tsx --test tests/*.test.ts 2>&1 | tail -20
 RUN_BILLING_INTEGRATION_TESTS=1 DATABASE_URL="$DATABASE_URL" npx tsx --test tests/*.test.ts 2>&1 | grep -E "pass|fail|skipped" | tail -5
-echo "PASS tests (see above: 41 tests / 38 pass / 3 skipped on loopback without billing DB)"
+echo "PASS tests (see above for pass/fail/skipped counts)"
 
 echo "==> 5/6 seed 9-account fixtures (local-only)"
 ALLOW_LOCAL_SEED=true LOCAL_SEED_PASSWORD="local-test-$(date +%s)-longenough" DATABASE_URL="$DATABASE_URL" npx tsx scripts/local/seed-users.ts 2>&1 | tail -15
@@ -70,7 +70,7 @@ import("dotenv/config").then(async()=>{
   const {randomBytes,createHash}=await import("node:crypto");
   const {eq}=await import("drizzle-orm");
   const email="dash-check-"+Date.now()+"@example.test";
-  const [u]=await db.insert(users).values({email,name:"Dash Check",role:"user",passwordHash:"x"}).returning({id:users.id});
+  const [u]=await db.insert(users).values({email,name:"Dash Check",role:"user",passwordHash:"x",emailVerifiedAt:new Date()}).returning({id:users.id});
   const tok=randomBytes(32).toString("base64url"); const h=createHash("sha256").update(tok).digest("hex");
   await db.insert(sessions).values({tokenHash:h,userId:u.id,expiresAt:new Date(Date.now()+3600000)});
   const res=await fetch("http://localhost:3000/dashboard",{headers:{Cookie:`solara_session=${tok}`}});

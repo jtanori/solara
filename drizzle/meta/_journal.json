@@ -8,6 +8,20 @@
       "when": 1794029500342,
       "tag": "0000_initial",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794163484410,
+      "tag": "0001_rate_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794163672763,
+      "tag": "0002_email_verification",
+      "breakpoints": true
     }
   ]
 }
