@@ -8,7 +8,6 @@ set -euo pipefail
 #   ./scripts/deploy.sh --pr 43 --env staging          # env optional — inferred from PR base
 #   ./scripts/deploy.sh --pr 44 --env production --yes
 #   ./scripts/deploy.sh --pr 43 --skip-migrate
-#   ./scripts/deploy.sh --pr 43 --skip-freshness       # override the base-freshness gate (not recommended)
 #
 # Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=require&channel_binding=require)
 # Merge policy (see ADR 004): feature → staging uses --squash (linear), promotion staging→main uses --merge (preserve ancestry).
@@ -17,7 +16,6 @@ set -euo pipefail
 PR=""
 ENV=""
 SKIP_MIGRATE=false
-SKIP_FRESHNESS=false
 YES=false
 
 while [[ $# -gt 0 ]]; do
@@ -27,7 +25,6 @@ while [[ $# -gt 0 ]]; do
     --env) ENV="$2"; shift 2;;
     --env=*) ENV="${1#*=}"; shift;;
     --skip-migrate) SKIP_MIGRATE=true; shift;;
-    --skip-freshness) SKIP_FRESHNESS=true; shift;;
     --yes|-y) YES=true; shift;;
     -h|--help) sed -n '1,130p' "$0"; exit 0;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
@@ -70,38 +67,55 @@ echo "== Gate: base freshness =="
 # conflicted (obvious) or clean-but-untested (insidious: CI verified each side, never the
 # combination — GitHub signals this as mergeStateStatus BEHIND, and it must not ride to a
 # squash unreviewed). Trial-merge in memory with `git merge-tree --write-tree`: nothing
-# touches the working tree or index, exit 1 means conflicts.
-git fetch origin "$BASE_BRANCH" "$HEAD_REF" --quiet
+# touches the working tree or index; exit 0 = clean, 1 = conflicts, >1 = fatal git error.
+# Deliberately no override flag: the rulesets (strict required status checks, no bypass
+# actors) reject merging a BEHIND PR anyway, and a bypass here would only dispatch
+# migrations before a merge GitHub then refuses.
+if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+  echo "ERROR: shallow clone — merge-base and the trial merge need full history; use a full clone or 'git fetch --unshallow' first" >&2
+  exit 1
+fi
+# Explicit refspecs, not bare branch names: `git fetch origin <branch>` only writes FETCH_HEAD,
+# so narrow-refspec checkouts either crash on origin/$BASE_BRANCH or silently use a stale
+# tracking ref. refs/pull/$PR/head also resolves forked or deleted head branches.
+git fetch origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" "refs/pull/$PR/head" --quiet
 if ! git cat-file -e "$HEAD_SHA" 2>/dev/null; then
-  echo "ERROR: PR head $HEAD_SHA not found after fetching $HEAD_REF — is the branch pushed?" >&2; exit 1
+  echo "ERROR: PR head $HEAD_SHA not found after fetching refs/pull/$PR/head — is the branch pushed?" >&2; exit 1
 fi
 BASE_SHA=$(git rev-parse "origin/$BASE_BRANCH")
-if git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" 2>/dev/null; then
+ANC_RC=0
+git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" || ANC_RC=$?
+if [[ "$ANC_RC" -eq 0 ]]; then
   echo "Base fresh: $HEAD_REF contains $BASE_BRANCH@${BASE_SHA:0:7}"
-else
+elif [[ "$ANC_RC" -eq 1 ]]; then
   BEHIND=$(git rev-list --count "$HEAD_SHA..$BASE_SHA")
   echo "WARN: $BASE_BRANCH moved $BEHIND commit(s) since $HEAD_REF last merged it in:"
-  git log --oneline --no-decorate "$HEAD_SHA..$BASE_SHA" | head -5 | sed 's/^/    /'
+  git log -n 5 --oneline --no-decorate "$HEAD_SHA..$BASE_SHA" | sed 's/^/    /'
   if [[ "$BEHIND" -gt 5 ]]; then echo "    ... and $((BEHIND - 5)) more"; fi
-  if git merge-tree --write-tree "$HEAD_SHA" "$BASE_SHA" >/dev/null 2>&1; then
+  MERGE_RC=0
+  MERGE_OUT=$(git merge-tree --write-tree --name-only --no-messages "$HEAD_SHA" "$BASE_SHA" 2>&1) || MERGE_RC=$?
+  if [[ "$MERGE_RC" -eq 0 ]]; then
     VERDICT="conflict-free"
     DETAIL="the combined tree has NOT been tested by CI (each side was)"
-  else
+  elif [[ "$MERGE_RC" -eq 1 ]]; then
     VERDICT="CONFLICTED"
     DETAIL="merging would conflict in these files:"
+  else
+    echo "ERROR: trial merge failed (git merge-tree exit $MERGE_RC): $MERGE_OUT" >&2
+    exit 1
   fi
   echo "Trial merge (in memory, nothing touched): $VERDICT — $DETAIL"
   if [[ "$VERDICT" == "CONFLICTED" ]]; then
-    git merge-tree --write-tree --name-only --no-messages "$HEAD_SHA" "$BASE_SHA" 2>/dev/null | tail -n +2 | sed 's/^/    /' | head -10
+    printf '%s
+' "$MERGE_OUT" | sed -n '2,11s/^/    /p'
   fi
-  echo "Recovery: git fetch origin && git merge origin/$BASE_BRANCH && git push"
+  echo "Recovery: git fetch origin && git switch $HEAD_REF && git merge origin/$BASE_BRANCH && git push"
   echo "          then wait for the verify job on the new head and re-run this script."
-  if [[ "$SKIP_FRESHNESS" == true ]]; then
-    echo "WARN: --skip-freshness set — proceeding despite the stale base ($VERDICT)."
-  else
-    echo "ERROR: refusing to deploy a $VERDICT stale PR — update the branch first, or pass --skip-freshness to override." >&2
-    exit 1
-  fi
+  echo "ERROR: refusing to deploy a $VERDICT stale PR — update the branch first." >&2
+  exit 1
+else
+  echo "ERROR: git merge-base --is-ancestor failed (exit $ANC_RC) — are both refs valid commits? fetch full history and retry" >&2
+  exit 1
 fi
 
 echo "== Gate: CI checks =="
@@ -113,7 +127,7 @@ if [[ "$MSTS" != *"CLEAN"* ]]; then
 fi
 
 echo "== Detect migrations =="
-git fetch origin "$BASE_BRANCH" --quiet
+git fetch origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" --quiet
 BASE_SHA=$(git rev-parse "origin/$BASE_BRANCH")
 echo "Head $HEAD_SHA vs base origin/$BASE_BRANCH $BASE_SHA"
 NEEDS_MIGRATE=false
