@@ -78,7 +78,7 @@ jobs:
           fi
           echo "target=$TARGET_ENV sha=$SHA mode=$MODE"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.sha }}
 
