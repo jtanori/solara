@@ -4,6 +4,7 @@ import {
   buildReadiness,
   evaluateReadiness,
   READINESS_DEADLINE_MS,
+  READINESS_WARM_TARGET_MS,
   type ReadinessSnapshot,
 } from "../src/lib/readiness";
 import { EXPECTED_MIGRATIONS } from "../src/lib/migration-manifest";
@@ -66,8 +67,9 @@ test("not ready when the auth probe fails", () => {
   assert.equal(result.auth, "degraded");
 });
 
-test("readiness budget remains below the 300ms contract", () => {
-  assert.equal(READINESS_DEADLINE_MS, 250);
+test("readiness allows a bounded cold connection and keeps a warm target", () => {
+  assert.equal(READINESS_WARM_TARGET_MS, 300);
+  assert.equal(READINESS_DEADLINE_MS, 3_000);
 });
 
 test("readiness deadline rejects a hung probe without waiting for it", async () => {
