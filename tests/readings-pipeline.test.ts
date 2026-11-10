@@ -461,15 +461,30 @@ test("usage validation: NaN token counts fail closed — output discarded, ceili
     };
     const spy = spyAround(nanUsage);
     const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: spy.provider });
-    assert.equal(spy.calls.length, 2, "one dispatch per section — then discarded");
+    // #129: the FIRST unmeasurable report halts the run. The free tier is two
+    // sections, so the second is never dispatched — the whole point of the fix,
+    // because otherwise a provider that always misreports dispatches everything
+    // and the ledger reads 0/0 with nothing for the ceiling to gate.
+    assert.equal(spy.calls.length, 1, "a NaN report halts the run after the first dispatch");
+    assert.equal(spy.calls[0].section, "overview", "the halted section is the one that reported");
     for (const section of document.sections) {
       assert.equal(section.status, "failed", `${section.key} discarded, not published on NaN usage`);
-      assert.match(section.failureReason ?? "", /^usage_invalid/);
+      assert.match(section.failureReason ?? "", /^(usage_invalid|generation_halted)/);
       assert.ok(section.blocks.length >= 1, "fallback blocks render");
     }
+    assert.match(
+      document.sections[1].failureReason ?? "",
+      /^generation_halted: usage_invalid/,
+      "the un-dispatched section carries the run-level reason",
+    );
     assert.ok(Number.isFinite(document.costMxn), `document cost stays finite (${document.costMxn})`);
     assert.ok(Number.isFinite(document.wastedCostMxn), `wasted cost stays finite (${document.wastedCostMxn})`);
     assert.equal(document.costMxn, 0);
+    // The spend is real but unmeasurable, so it is booked as a worst-case
+    // estimate rather than the 0 it used to be: 2000 output tokens at the
+    // fixture price (60 MXN/M output) = 0.12 MXN, plus the prompt estimate.
+    assert.ok(document.wastedCostMxn > 0, `an unmeasurable attempt is not free (${document.wastedCostMxn})`);
+    assert.ok(document.wastedCostMxn >= 0.12, "at least the max-output component of the estimate");
     // nothing was cached — a NaN completion must never be frozen
     const cache = new MemorySectionCache();
     await generate({ tier: "free", cache, provider: nanUsage });
@@ -489,9 +504,11 @@ test("usage validation: negative token counts fail closed (no spend offsetting)"
     const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: negativeUsage });
     for (const section of document.sections) {
       assert.equal(section.status, "failed");
-      assert.match(section.failureReason ?? "", /^usage_invalid/);
+      assert.match(section.failureReason ?? "", /^(usage_invalid|generation_halted)/);
     }
     assert.equal(document.costMxn, 0, "negative usage cannot offset or create spend");
+    // Negative counts must not become a negative estimate either.
+    assert.ok(document.wastedCostMxn >= 0, `no negative spend from a negative report (${document.wastedCostMxn})`);
   });
 });
 
@@ -685,5 +702,143 @@ test("prompt: Spanish sections get the Spanish brief", async () => {
     for (const call of spy.calls) {
       assert.ok(call.prompt.includes("Guía de sección"), "Spanish brief file is loaded for es");
     }
+  });
+});
+
+// ------------------------------------------------------------------ #128: the repair branch of the usage guard
+
+test("#128 repair branch: a repair that reports invalid usage is discarded, the primary's spend is still recorded", async () => {
+  await withEnv({ READINGS_GENERATION_ENABLED: "true" }, async () => {
+    // Primary: schema-invalid output but perfectly measurable usage.
+    // Repair:  same request, returns output that is *valid* if trusted — so the
+    // only reason to reject it is its unusable usage report.
+    let attempt = 0;
+    const provider: ReadingProvider = {
+      name: "primary-garbage-repair-nan",
+      async complete(request) {
+        attempt += 1;
+        const fixture = await createFixtureProvider().complete(request);
+        if (attempt === 1 && request.section !== "sun") {
+          return { ...fixture, output: { nope: true }, usage: { inputTokens: 100, outputTokens: 100 } };
+        }
+        if (attempt === 2 && request.section !== "sun") {
+          return { ...fixture, usage: { inputTokens: Number.NaN, outputTokens: Number.NaN } };
+        }
+        return fixture;
+      },
+    };
+    const spy = spyAround(provider);
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: spy.provider });
+
+    const overview = document.sections.find(section => section.key === "overview");
+    assert.ok(overview, "overview section exists");
+    assert.equal(overview.status, "failed", "a repair with invalid usage cannot rescue the section");
+    assert.match(
+      overview.failureReason ?? "",
+      /^invalid_output/,
+      "the ORIGINAL validation failure stands — the repair's usage report is not a new failure reason",
+    );
+    // The primary attempt's spend is measurable and must not be lost. Failed
+    // sections surface their spend on the document's wasted ledger (see
+    // buildReadingDocument), which is what #128 asks to be asserted.
+    assert.ok(
+      document.wastedCostMxn > 0,
+      `the discarded attempt's spend is still recorded (wastedCostMxn=${document.wastedCostMxn})`,
+    );
+    assert.equal(document.costMxn, 0, "nothing was published, so published spend is zero");
+    // The repair was actually dispatched (the branch is reachable), then discarded.
+    const overviewCalls = spy.calls.filter(call => call.section === "overview");
+    assert.equal(overviewCalls.length, 2, "primary + exactly one repair dispatch");
+    assert.match(overviewCalls[1].prompt, /previous response was rejected/, "the second call is the repair prompt");
+  });
+});
+
+test("#128 repair branch: a repair that reports an unpriced model is discarded too (no silent rescue)", async () => {
+  await withEnv({ READINGS_GENERATION_ENABLED: "true" }, async () => {
+    let attempt = 0;
+    const provider: ReadingProvider = {
+      name: "repair-unpriced",
+      async complete(request) {
+        attempt += 1;
+        const fixture = await createFixtureProvider().complete(request);
+        if (attempt === 1 && request.section === "overview") {
+          return { ...fixture, output: { nope: true }, usage: { inputTokens: 10, outputTokens: 10 } };
+        }
+        if (attempt === 2 && request.section === "overview") {
+          return { ...fixture, model: "a-model-with-no-price", usage: { inputTokens: 10, outputTokens: 10 } };
+        }
+        return fixture;
+      },
+    };
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider });
+    const overview = document.sections.find(section => section.key === "overview");
+    assert.equal(overview?.status, "failed");
+    assert.match(overview?.failureReason ?? "", /^invalid_output/);
+    assert.ok(document.wastedCostMxn > 0, "the priced primary attempt is still counted");
+  });
+});
+
+// ------------------------------------------------------------------ #129: invalid usage cannot be invisible to the ledger
+
+test("#129 a provider that always misreports usage cannot force the full dispatch set", async () => {
+  await withEnv({ READINGS_GENERATION_ENABLED: "true" }, async () => {
+    const alwaysInvalid: ReadingProvider = {
+      name: "always-invalid",
+      async complete(request) {
+        const fixture = await createFixtureProvider().complete(request);
+        return { ...fixture, usage: { inputTokens: Number.NaN, outputTokens: 1 } };
+      },
+    };
+    const spy = spyAround(alwaysInvalid);
+    const document = await generate({ tier: "paid", cache: new MemorySectionCache(), provider: spy.provider });
+
+    // Paid tier is nine available sections; the run must stop after the first.
+    assert.ok(spy.calls.length < 9, `not every paid section is dispatched (dispatched ${spy.calls.length})`);
+    assert.equal(spy.calls.length, 1, "exactly one dispatch, then the run halts");
+    const halted = document.sections.filter(section => /^generation_halted/.test(section.failureReason ?? ""));
+    assert.ok(halted.length >= 8, `the remainder fail with the run-level reason (${halted.length})`);
+
+    // The ledger is no longer 0/0: unmeasurable spend is booked at worst case,
+    // which is what keeps the ceiling meaningful.
+    assert.ok(document.costMxn + document.wastedCostMxn > 0, "the ledger records spend for an unmeasurable attempt");
+    assert.ok(
+      document.costMxn + document.wastedCostMxn <= TIER_CEILING_MXN.paid,
+      "the booked estimate never breaches the tier ceiling",
+    );
+  });
+});
+
+test("#129 the worst-case estimate makes later sections ceiling-gated, not free", async () => {
+  // Price the output budget so ONE worst-case estimate is most of the ceiling:
+  // 2000 output tokens at 4000 MXN/M = 8 MXN, against a 10 MXN paid ceiling.
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_MODEL_PRICES: JSON.stringify({ "fixture-1": { inputMxnPerMillion: 1, outputMxnPerMillion: 4000 } }),
+  }, async () => {
+    const alwaysInvalid: ReadingProvider = {
+      name: "always-invalid",
+      async complete(request) {
+        const fixture = await createFixtureProvider().complete(request);
+        return { ...fixture, usage: { inputTokens: Number.NaN, outputTokens: 0 } };
+      },
+    };
+    const document = await generate({ tier: "paid", cache: new MemorySectionCache(), provider: alwaysInvalid });
+    const reasons = document.sections.map(section => section.failureReason ?? "");
+    assert.ok(
+      reasons.some(reason => /^cost_ceiling/.test(reason)),
+      `the booked estimate pushes the run into the ceiling (${reasons.join(" | ")})`,
+    );
+  });
+});
+
+test("#129 pricing_unavailable still fails every section (the halt does not replace table-level fail-closed)", async () => {
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_MODEL_PRICES: JSON.stringify({ "some-other-model": { inputMxnPerMillion: 10, outputMxnPerMillion: 10 } }),
+  }, async () => {
+    const spy = spyAround(createFixtureProvider());
+    const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: spy.provider });
+    assert.equal(spy.calls.length, 0, "an unpriced model is still never dispatched");
+    for (const section of document.sections) assert.match(section.failureReason ?? "", /^pricing_unavailable/);
   });
 });
