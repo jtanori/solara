@@ -30,8 +30,10 @@ echo "-> DATABASE_URL host: $HOST (ok)"
 echo "==> 1/6 npm ci"
 npm ci
 
-echo "==> 2/6 drizzle migrate (disposable DB)"
-npx drizzle-kit migrate
+echo "==> 2/6 drizzle migrate (disposable DB) + drift check"
+npm run db:migrate
+npm run db:manifest:check
+npm run db:check
 
 echo "==> 3/6 typecheck + lint"
 ./node_modules/.bin/tsc --noEmit --pretty false && echo "PASS tsc"
@@ -52,9 +54,12 @@ npm run build
 PORT=3000 npx next start &
 PID=$!
 trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null || true' EXIT
-echo "waiting for http://localhost:3000/api/health..."
+echo "waiting for http://localhost:3000/api/health (liveness)..."
 for i in {1..15}; do curl -sf http://localhost:3000/api/health | grep -q '"ok":true' && break; sleep 2; done
-curl -sf http://localhost:3000/api/health | grep -q '"ok":true' || { echo "health never ready"; exit 1; }
+curl -sf http://localhost:3000/api/health | grep -q '"ok":true' || { echo "liveness never ready"; exit 1; }
+echo "waiting for http://localhost:3000/api/ready..."
+for i in {1..15}; do curl -sf http://localhost:3000/api/ready | grep -q '"ok":true' && break; sleep 2; done
+curl -sf http://localhost:3000/api/ready | grep -q '"ok":true' || { echo "readiness never ready"; curl -s http://localhost:3000/api/ready; exit 1; }
 echo "-> unauth 404s + public HTML"
 for p in /blueprint /setup /usage-guide; do test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000$p)" = "404" && echo "PASS unauth $p 404" || { echo "FAIL $p"; exit 1; }; done
 APP_URL=http://localhost:3000 DATABASE_URL="$DATABASE_URL" npx tsx scripts/verify-gating-production.ts 2>&1 | tee /tmp/gating.log

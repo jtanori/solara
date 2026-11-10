@@ -110,7 +110,38 @@ Launch limitations are listed in `README.md` and `docs/setup/README.md`: calcula
 
 ---
 
-> **ADR 006 is reserved** for #72 (identity, credential ownership and the Neon Auth decision).
+## ADR 006 — Identity and credential ownership: keep local auth for launch
+
+**Date:** 2026-11-10
+**Status:** Accepted
+**Issue:** #72
+
+### Context
+Solara currently owns password credentials, verification tokens, sessions, and password reset locally. Neon Auth is available as a managed alternative, but adopting it changes the session model, user provisioning, email delivery, and the migration path for existing accounts. The identity decision is a launch prerequisite under ADR 003 and must not be made implicitly by adding a second auth system.
+
+### Decision
+- Keep the current local auth implementation through launch. Do not add Neon Auth at launch.
+- Local auth remains security-critical: password hashing, account claim, email verification, password reset, session revocation, throttling, and audit logging stay behind the existing server-side checks (ADR 007).
+- Revisit Neon Auth only when a trigger below is met and the security review below is recorded:
+  - staff MFA, SSO/SAML, passkeys, or organization/team accounts become a launch requirement;
+  - credential operations become a material operational burden;
+  - another application needs shared identity;
+  - the local auth implementation cannot meet an agreed security or availability requirement.
+- Any future migration must preserve:
+  - mailbox proof and single-use, hashed, expiring tokens;
+  - server-side session issuance and revocation;
+  - password reset audit rows and rate limits;
+  - the `user`/`editor`/`admin`/`owner` role boundary;
+  - no implicit account linking by email, and no login based on unverified provider email.
+- The Neon Auth migration plan must define `auth_provider` data, ambient-auth disablement, JWT cookie and proxy verification, trigger/introspection behavior, canonical HTTPS, password reset mail, user-id mapping, dual-read/rollback, and a tested account-linking path. See `docs/plan-neon-auth-migration.md`.
+- Review this decision by **2027-02-10** or earlier if a trigger is met. A change requires a superseding ADR and a security review, not a configuration toggle.
+
+### Consequences
+- The local auth surface remains in scope for dependency, threat-model, and penetration-test reviews.
+- Neon Auth cannot be introduced as a parallel login path; doing so would violate the single-issuer session invariant.
+- The existing #53/#54/#55/#56/#57 controls remain the launch baseline.
+
+---
 
 ## ADR 007 — Auth and transport hardening for launch
 
@@ -137,6 +168,35 @@ The prototype had unlimited auth attempts, synchronous scrypt, no email channel,
 - Existing unverified users are logged out and must claim; seed fixtures are local-only and verified.
 - Production promotion requires the separate exact-SHA migration-gate PR.
 - #57 remains open until CSP enforcement is verified after the observation window.
+
+---
+
+## ADR 008 — One migration path, deploy order and rollback
+
+**Date:** 2026-11-10
+**Status:** Accepted
+**Issue:** #78
+
+### Context
+The #52 incident came from ad-hoc migration work and database state that did not match the committed journal. Multiple ways to apply DDL (local shell, `drizzle-kit push`, manual SQL, a deploy hook) make the target ambiguous and the rollback story untestable. Production also needs a clear statement of what is reversible: code is, schema history is not.
+
+### Decision
+- **One migration path:** generate with `npx drizzle-kit generate --name=...`, review the SQL and `drizzle/meta`, then apply through `scripts/db-run.ts --env <env> migrate` locally or `.github/workflows/migrate.yml` for hosted environments. `drizzle-kit push` is forbidden on staging and production. No boot-time DDL and no manual schema edits.
+- **One reviewed migration per PR.** The migration SQL, journal, snapshot, and runtime manifest are committed together. Applied migrations are immutable: correcting one requires a new forward migration, never editing history.
+- **Expand/contract for breaking changes.** Add nullable columns/tables first, deploy compatible code, backfill in a separate reviewed step, then remove old structures after the previous release is no longer running.
+- **Destructive changes require explicit review.** Dropping/renaming a table or column, narrowing a type, or rewriting data must be named in the PR body with a backup/restore and rollback note.
+- **Migrate before deploy.** Hosted migrations run before the code that requires them. The new code must tolerate the previous schema for one rollout; a migration must not depend on the new code being live.
+- **Rollback:** code can be rolled back when it is compatible with the migrated schema. Schema rollback is a forward fix or a Neon point-in-time restore, not a down migration. Restore drills are part of ADR 003.
+- **Ownership:** the operator who approves the PR owns the migration and its verification. `staging` runs first for every schema change; `production` runs only after a green exact-SHA staging rehearsal (ADR 007 / #120).
+- **Environment map:** local uses a disposable loopback database; staging uses `solara-staging`; production uses `solara-prod`. Secrets live in the matching GitHub Environment and Vercel environment, never in the repository.
+- **Verification:** CI runs `db:manifest:check`, migrations, and `db:check`. `scripts/deploy.sh` runs a read-only hosted `db-remote --check` against the reviewed ref before merge and requires `/api/ready` after merge. A stale manifest, pending migration, unexpected applied hash, or missing table/index is a hard failure.
+- **Good migration PR:** one logical change, reviewed SQL, a test that would fail without the migration, an explicit risk/rollback section, and evidence from a fresh database plus staging.
+
+### Consequences
+- A schema change cannot bypass the journal or the manifest.
+- Rollback expectations are honest: restore or forward fix, not a down-migration.
+- Any new migration must update `src/lib/migration-manifest.ts` and pass `npm run db:check`.
+- The #52 failure mode (database ahead/behind the journal) is now detected before merge and reflected in `/api/ready`.
 
 ---
 

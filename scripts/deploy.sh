@@ -9,9 +9,14 @@ set -euo pipefail
 #   ./scripts/deploy.sh --pr 44 --env production --yes
 #   ./scripts/deploy.sh --pr 43 --skip-migrate
 #
-# Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=verify-full&channel_binding=require)
+# Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=verify-full&channel_binding=require),
+# and VERCEL_AUTOMATION_BYPASS_SECRET when the Vercel domain is protected (hard-fails on 401/403).
 # Merge policy (see ADR 004): feature → staging uses --squash (linear), promotion staging→main uses --merge (preserve ancestry).
 # Repo needs allow_squash_merge:true + allow_merge_commit:true (Settings → General → Pull Requests).
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/wait-for-vercel-status.sh
+source "$SCRIPT_DIR/lib/wait-for-vercel-status.sh"
 
 PR=""
 ENV=""
@@ -176,6 +181,16 @@ if [[ "$NEEDS_MIGRATE" == true ]]; then
 else echo "Skipping remote migrate step."; fi
 
 echo ""
+echo "== Gate: hosted schema check ($WORKFLOW_ENV) =="
+# Read-only verification against the environment database before merge. This catches a
+# DB that is behind the journal even when the PR itself has no drizzle/ changes. Pin the
+# checkout to HEAD_SHA; HEAD_REF only selects the workflow file version.
+if ! npx tsx scripts/db-remote.ts --check --env "$WORKFLOW_ENV" --branch "$HEAD_REF" --sha "$HEAD_SHA"; then
+  echo "ERROR: hosted $WORKFLOW_ENV schema is not in sync with $HEAD_SHA — refusing to merge." >&2
+  exit 1
+fi
+
+echo ""
 echo "== Merge PR #$PR → $BASE_BRANCH ($ENV) =="
 # Merge policy: squash for feature→staging, merge commit for staging→main (ADR 004 — preserve ancestry)
 if [[ "$BASE" == "main" ]]; then
@@ -195,9 +210,64 @@ else
 fi
 echo "Policy: $MERGE_LABEL — see AGENTS.md & ADR 004."
 if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH ($MERGE_LABEL)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
-gh pr merge "$PR" $MERGE_ARGS --repo jtanori/solara
+CURRENT_HEAD=$(gh pr view "$PR" --repo jtanori/solara --json headRefOid --jq .headRefOid)
+if [[ "$CURRENT_HEAD" != "$HEAD_SHA" ]]; then
+  echo "ERROR: PR #$PR head moved from $HEAD_SHA to $CURRENT_HEAD after review — refusing to merge." >&2
+  exit 1
+fi
+gh pr merge "$PR" $MERGE_ARGS --repo jtanori/solara --match-head-commit "$HEAD_SHA"
 echo "Merged PR #$PR → $BASE_BRANCH ($MERGE_LABEL)"
-echo "Waiting 30s for Vercel $APP_URL ..."
-sleep 30
-if curl -fsS "$APP_URL/api/health" | grep -q '"ok":true'; then echo "✅ $APP_URL/api/health → {\"ok\":true}"; else echo "WARN: $APP_URL/api/health not yet ok — check Vercel Deployments"; curl -i "$APP_URL/api/health" 2>&1 | head -20 || true; fi
+
+# A readiness 200 alone does not prove the new deployment is live: the previous release
+# also serves /api/ready. Wait for Vercel's status on this exact merge SHA first.
+MERGE_SHA=""
+for i in {1..12}; do
+  MERGE_SHA=$(gh pr view "$PR" --repo jtanori/solara --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null || true)
+  if [[ -n "$MERGE_SHA" ]]; then break; fi
+  sleep 5
+done
+if [[ -z "$MERGE_SHA" ]]; then
+  echo "ERROR: could not resolve the merge commit for PR #$PR; refusing to report a successful deploy." >&2
+  exit 1
+fi
+echo "Merge commit: $MERGE_SHA"
+if ! wait_for_vercel_status "jtanori/solara" "$MERGE_SHA" "${VERCEL_STATUS_CONTEXT:-Vercel}" 60 5; then
+  echo "ERROR: the merged deployment is not confirmed live; refusing to report success." >&2
+  exit 1
+fi
+
+echo "Waiting for Vercel $APP_URL /api/ready ..."
+
+READY_TMP="$(mktemp)"
+trap 'rm -f "$READY_TMP"' EXIT
+ready_curl() {
+  if [[ -n "${VERCEL_AUTOMATION_BYPASS_SECRET:-}" ]]; then
+    curl -sS --max-time 5 -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" -o "$READY_TMP" -w '%{http_code}' "$APP_URL/api/ready"
+  else
+    curl -sS --max-time 5 -o "$READY_TMP" -w '%{http_code}' "$APP_URL/api/ready"
+  fi
+}
+
+# Vercel Authentication returns 401/403 before the app sees the request. Fail early with
+# an actionable message instead of polling a protected endpoint until the timeout.
+READY_CODE="$(ready_curl || true)"
+if [[ "$READY_CODE" == "401" || "$READY_CODE" == "403" ]]; then
+  echo "ERROR: $APP_URL/api/ready is blocked by Vercel Authentication (HTTP $READY_CODE)." >&2
+  echo "Set VERCEL_AUTOMATION_BYPASS_SECRET for this environment and re-run." >&2
+  exit 1
+fi
+
+READY=false
+for i in {1..24}; do
+  READY_CODE="$(ready_curl || true)"
+  if [[ "$READY_CODE" == "200" ]] && grep -q '"ok":true' "$READY_TMP"; then READY=true; break; fi
+  sleep 5
+done
+if [[ "$READY" == true ]]; then
+  echo "✅ $APP_URL/api/ready → {\"ok\":true}"
+else
+  echo "ERROR: $APP_URL/api/ready did not become ready (last HTTP $READY_CODE):" >&2
+  cat "$READY_TMP" >&2 || true
+  exit 1
+fi
 echo "Done. Verify sign-in, map, PDF gate, staging Stripe test webhook before promoting."

@@ -156,6 +156,12 @@ Same as P1 with `env=production`, plus:
 
 ## 7. P3 — Guardrails (the actual fix for *this class* of outage)
 
+> **Superseded on 2026-11-10:** T3.1/T3.3/T3.4 were implemented differently by #70/#64/#126.
+> `/api/health` is liveness-only; `/api/ready` is the schema/migration/auth gate. Deploy uses a
+> pre-merge hosted `db-remote --check` plus post-merge Vercel-status/readiness verification.
+> Keep this section as the historical plan; use `docs/setup/01-foundation-and-deployment.md`
+> and ADR 008 for the current procedure.
+
 These are code changes and should land as **one PR** against `staging`.
 
 ### T3.1 `/api/health` becomes a schema gate
