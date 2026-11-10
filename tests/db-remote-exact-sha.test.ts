@@ -49,6 +49,33 @@ test("db-remote --check accepts an exact SHA and dispatches that SHA", () => {
   }
 });
 
+test("db-remote accepts --sha=<sha>", () => {
+  const dir = fakeGh();
+  try {
+    const result = run(
+      ["--check", "--env", "staging", "--branch", "staging", `--sha=${sha}`, "--dry-run", "--json"],
+      { ...process.env, PATH: `${path.join(dir, "bin")}:${process.env.PATH ?? ""}` },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, new RegExp(`-f sha=${sha}`));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("db-remote rejects missing or empty --sha values", () => {
+  for (const args of [
+    ["--check", "--sha"],
+    ["--check", "--sha="],
+    ["--check", "--sha=   "],
+    ["--check", "--sha", "--dry-run"],
+  ]) {
+    const result = run(args);
+    assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
+    assert.match(result.stderr, /--sha requires a non-empty value/);
+  }
+});
+
 test("db-remote rejects --sha without --check", () => {
   const result = run(["--pr", "1", "--sha", sha]);
   assert.equal(result.status, 1);

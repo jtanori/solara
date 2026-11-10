@@ -80,6 +80,24 @@ type Opts = {
   timeout: number; json: boolean; branch: string; sha: string; rehearsalPr: string;
 };
 
+function missingValue(flag: string): never {
+  console.error(`ERROR ${flag} requires a non-empty value`);
+  usage();
+  process.exit(2);
+}
+
+function requireValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index]?.trim() ?? "";
+  if (!value || value.startsWith("--")) missingValue(flag);
+  return value;
+}
+
+function requireInlineValue(value: string, flag: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) missingValue(flag);
+  return trimmed;
+}
+
 function parseArgs(argv: string[]): Opts {
   const o: Opts = { pr: "", env: "", check: false, dryRun: false, skipWait: false, timeout: 900, json: false, branch: "", sha: "", rehearsalPr: "" };
   for (let i = 0; i < argv.length; i++) {
@@ -94,8 +112,8 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--timeout") o.timeout = Number(argv[++i] ?? 900);
     else if (a === "--json") o.json = true;
     else if (a === "--branch") o.branch = argv[++i] ?? "";
-    else if (a === "--sha") o.sha = argv[++i] ?? "";
-    else if (a.startsWith("--sha=")) o.sha = a.slice(6);
+    else if (a === "--sha") o.sha = requireValue(argv, ++i, "--sha");
+    else if (a.startsWith("--sha=")) o.sha = requireInlineValue(a.slice(6), "--sha");
     else if (a === "--rehearsal-pr") o.rehearsalPr = argv[++i] ?? "";
     else if (a.startsWith("--rehearsal-pr=")) o.rehearsalPr = a.slice(15);
     else if (a === "-h" || a === "--help") { usage(); process.exit(0); }
