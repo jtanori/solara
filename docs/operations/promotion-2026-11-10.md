@@ -1,5 +1,10 @@
 # Promotion runbook — `staging → main` (2026-11-10)
 
+> **Superseded in part (2026-11-10, later):** the operator confirmed production has **no accounts**
+> ("everything is new"), the mail provider is **Resend**, and `deploy.sh` can be run with Vercel
+> access. HAZARD A in §1 is therefore a **no-op on an empty database**, and the mitigation below is
+> not needed. Current sequence: `production-bootstrap-2026-11-10.md`.
+
 Status: **prepared, not dispatched.** Steps marked **[HUMAN]** cannot be executed by an agent.
 Prepared against this session's branch `arena/4b7f8e03-solara` (= `staging@750a272`), `main@4490ced`.
 Authority: `docs/operations/production-migration-gate.md`, ADR 004, ADR 008.
