@@ -4,27 +4,84 @@ Run top to bottom. Each step has a command and an expected result. Stop at the f
 
 ---
 
-## Fill these three blanks first
+## Fill these four blanks first
 
 | Blank | Where to get it |
 |---|---|
 | `YOUR_DOMAIN` | The domain you will send mail from, **already verified in Resend** |
-| `RE_YOUR_KEY` | Resend dashboard → API Keys → create, permission **Sending** (`re_…`) |
+| `RE_STAGING_KEY` | Resend → API Keys → create, permission **Sending** (`re_…`) |
+| `RE_PRODUCTION_KEY` | Resend → API Keys → create a **second** key, permission **Sending** |
 | `BYPASS_SECRET` | Vercel → Project `solara` → Settings → Deployment Protection → Protection Bypass for Automation |
 
 If `YOUR_DOMAIN` is not verified in Resend yet, stop here and verify it. Nothing else works without it.
 
 ---
 
-## Step 1 — Set 3 production env vars in Vercel
+## Step 1 — Configure mail in **staging first** (proves Resend before production)
 
-Vercel dashboard → project `solara` → Settings → Environment Variables → add each, Environment = **Production**, type = **Sensitive**:
+Staging (`solara-stg`) currently has **no** `MAIL_*` variables either, and `resolveMailTransportName()`
+throws in production builds. So today a sign-up on staging succeeds but the verification email can
+never be sent — and since `auth.ts` requires `emailVerifiedAt` to hold a session, **nobody can log in
+on staging**. Configure it here first: it is the cheapest possible test of your Resend domain.
+
+Vercel dashboard → project `solara` → Settings → Environment Variables. Add these **three**, each with
+Environment = **Preview** and, under Preview, select branch **`staging`** only:
+
+```
+MAIL_TRANSPORT = resend
+MAIL_FROM      = Solara Staging <no-reply@YOUR_DOMAIN>
+RESEND_API_KEY = RE_STAGING_KEY
+```
+
+Why branch-scoped: Vercel's `Preview` target alone applies to **every** preview deployment, including
+the ~15 Dependabot PR previews. Branch-scoping keeps the key off those builds.
+
+Then redeploy staging so the vars are baked. `staging` is protected (no direct pushes), so this goes
+through a PR like any other change:
+
+```bash
+git fetch origin staging
+git switch -c chore/redeploy-staging-mail origin/staging
+git commit --allow-empty -m "chore: redeploy staging for mail configuration"
+git push origin chore/redeploy-staging-mail
+gh pr create --base staging --head chore/redeploy-staging-mail \
+  --title "chore: redeploy staging for mail configuration" \
+  --body "Empty commit to rebuild the staging preview after adding MAIL_* env vars."
+gh pr merge <that-pr-number> --squash
+```
+
+Expected: `verify` green, merge succeeds, staging deployment rebuilds and succeeds.
+
+---
+
+## Step 1B — Prove mail works on staging
+
+At `https://solara-stg.vercel.app`:
+
+1. **Sign up** with an address you can read.
+2. **Check the inbox.** Mail must arrive and come *from* `YOUR_DOMAIN`.
+3. **Click verify**, then **sign in**.
+
+Expected: all three pass. If step 2 fails, fix the Resend domain/key **here** — do not proceed. This is
+the same failure that would otherwise appear in production after the migration.
+
+Note: if a test gets into a strange state (for example a token already used), just use a different
+address rather than auditing tokens by hand.
+
+---
+
+## Step 1C — Set the same three vars for production
+
+Same dashboard, add the same three keys again, Environment = **Production**, type = **Sensitive**:
 
 ```
 MAIL_TRANSPORT = resend
 MAIL_FROM      = Solara <no-reply@YOUR_DOMAIN>
-RESEND_API_KEY = RE_YOUR_KEY
+RESEND_API_KEY = RE_PRODUCTION_KEY
 ```
+
+Use a **separate API key** from staging, so staging traffic cannot affect production sending
+reputation and you can revoke one without the other.
 
 Expected: 3 rows listed with target `Production`.
 
@@ -159,6 +216,7 @@ Then in a browser at `https://solara-production.vercel.app`:
 | `curl` returns 401/403 | bypass secret missing or wrong | fix `VERCEL_AUTOMATION_BYPASS_SECRET` |
 | Sign-up returns 500, log has `42P01` | migrate did not run | re-run Step 5 |
 | Sign-up works but no email arrives | `YOUR_DOMAIN` not verified in Resend, or `MAIL_FROM` uses a different domain | fix in Resend, update `MAIL_FROM`, redeploy |
+| Staging: sign-in fails right after sign-up | staging mail vars missing or not baked into the deployment | redo Step 1 + redeploy staging |
 | Sign-in fails right after verifying | `RESEND_API_KEY` not `re_`-prefixed | recheck Step 1 |
 | `deploy.sh` says `refusing to deploy a stale PR` | Step 2 not merged | merge it, re-run Step 3–4 with the new SHA |
 | `deploy.sh` says `not CLEAN` | CI red on the promotion PR | fix on `staging`, new SHA, redo Step 4 |
