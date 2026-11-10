@@ -62,6 +62,7 @@ imply an unperformed check passed.
       moved triggers.
 - [ ] **SEC-04 Evidence.** A test, CI run or screenshot proves the change ran.
 - [ ] **SEC-05 APIs and imports.** Every symbol exists in the version this repo actually runs.
+- [ ] **Migration.** Any `drizzle/` diff is reviewed at Blocker severity: additive or justified, the staging migration rehearsal is planned/green, `scripts/db-run.ts`'s required manifest covers new tables, and the promotion path is stated (db-remote rehearsal → `deploy.sh --skip-migrate`).
 
 ### High
 
@@ -70,6 +71,11 @@ imply an unperformed check passed.
 - [ ] **Deletions.** No live callers; removals are intentional.
 - [ ] **Config and permissions.** New env vars, scopes and timeouts are named in the description
       and are wanted.
+- [ ] **Plan adherence.** The diff matches the linked issue and any approved plan document;
+      deviations are listed and justified in the PR body, not discovered by the reviewer.
+- [ ] **Spend accounting.** Any metered resource (LLM tokens, external API quota) fails closed:
+      unpriced usage is never dispatched, ceilings are checked before *and* after dispatch, and
+      failed-attempt spend is recorded (not dropped) in the run's accounting.
 
 ### Medium
 
@@ -77,6 +83,12 @@ imply an unperformed check passed.
 - [ ] **SEC-07 Test quality.** The tests would fail if the code were broken. *See §5 — this is the
       item that caught a real defect here, and it needs mutation, not reading.*
 - [ ] **Performance.** No N+1 queries, unbounded loops or missing pagination on production paths.
+- [ ] **Coherence.** Naming and module boundaries follow the repo; no orphan files; the diff
+      tells one story (title, body and changes agree).
+- [ ] **Code quality.** No silent `catch` blocks, no dead code; comments explain why; error
+      paths are handled, not wished away.
+- [ ] **Config completeness.** Every new env var appears in `.env.example` and the
+      staging/production examples, and is named in the PR body.
 
 ## 4. Mechanics
 
@@ -144,3 +156,31 @@ when explicitly granted for the session. A check you did not run is not a check 
 - The response to a review is posted on the PR, not only in chat — including when a finding is
   disputed, and why.
 - Unresolved threads stay unresolved and block the merge. That is the point of the mechanism.
+
+## 8. Verdict and deploy classification
+
+After the inline review, post exactly one verdict comment on the PR:
+
+```
+Verdict: MERGEABLE | CHANGES REQUESTED @ <head sha>
+Verified: <what was re-executed>
+Not verified: <what was not, and why>
+Deploy: deploy:required | deploy:skip — <one-line reason>
+```
+
+- The verdict names the reviewed SHA and states what was **not** verified (§3
+  doctrine). It is procedural, never a ruleset gate — a missing verdict cannot
+  deadlock a merge (`docs/PR_WORKFLOW.md` §0, the catch-22 rule). In practice it
+  is required by the operator's standing rule: **the operator does not merge
+  without a posted verdict comment naming the reviewed SHA** (waived only in
+  writing on the PR).
+- **Deploy classification** — the reviewer has the final call and corrects the
+  label if the author got it wrong:
+  - `deploy:required` — touches `src/`, `drizzle/`, `next.config.ts`,
+    `package*.json`, `.github/workflows/` → staging QA and, where applicable,
+    migration rehearsal after merge.
+  - `deploy:skip` — docs/chore only → no staging QA, no rehearsal.
+- If the review or verdict endpoint fails (403, permissions), follow
+  `docs/PR_WORKFLOW.md` §6: retry once, then escalate to the operator with the
+  exact command and the prepared payload. Never substitute an issue comment for
+  a review; never claim a post that was not posted.

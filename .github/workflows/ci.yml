@@ -9,6 +9,25 @@ permissions:
   contents: read
 
 jobs:
+  # Advisory paperwork check (title convention, labels, body sections) per
+  # docs/PR_WORKFLOW.md §2.4. Deliberately NOT a required status check: it
+  # fails open on GitHub API errors and a red result informs, never blocks.
+  # Dependabot PRs are exempt (their bodies do not follow our template).
+  pr-lint:
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'dependabot/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: PR paperwork lint (advisory)
+        run: node scripts/pr-lint.mjs
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   verify:
     runs-on: ubuntu-latest
     services:

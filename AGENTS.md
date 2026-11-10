@@ -153,6 +153,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - **Template:** use `.github/pull_request_template.md` (Summary, Linked issues, Evidence `tsc`/`eslint`/`tests`/`build`/smoke, Risk, Rollout/Rollback).
 - **CI gate:** `mergeStateStatus` must be `CLEAN`, `verify` green (1m15s-1m38s) + GitGuardian pass. Vercel and GitGuardian are **advisory** — only `verify` is a required status check, so a failing preview does not block a merge.
 - **Evidence, not adjectives:** the PR body's Evidence section takes command output or a CI link. **Never claim a check passed that was not run**; a check that could not run is reported as unrunnable, not omitted.
+- **Four-phase PR lifecycle:** pre-PR quality gate → filing → review → post-merge, including deploy classification labels (`deploy:required`/`deploy:skip`), the freshness/parallel-work procedure, the 403 escalation path, and the operator's no-merge-without-verdict rule: [`docs/PR_WORKFLOW.md`](docs/PR_WORKFLOW.md).
 
 ---
 
@@ -188,5 +189,7 @@ Full text: [`docs/decisions.md`](docs/decisions.md). Review mechanics: [`docs/CO
 - [ ] CI green (`verify` + GitGuardian) and `mergeStateStatus: CLEAN`.
 - [ ] Any review is **posted to the PR** (`COMMENT` event, inline findings, reviewed SHA named) — not pasted into chat.
 - [ ] For each test guarding a defect: mutation run, and the result recorded in the PR body.
+- [ ] Freshness: `git fetch origin staging`; if behind, merge the base in (never force-push a pushed branch) and re-run the full gates on the merged tree; open PRs checked for file overlap.
+- [ ] Deploy classification label applied (`deploy:required`/`deploy:skip`) and the PR body carries the attestation, deviations, and mutations sections from the template.
 
 *Keep this file current — it is the contract for the next agent.*
