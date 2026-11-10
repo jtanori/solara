@@ -62,6 +62,62 @@ fi
 if [[ "$ENV" == "staging" ]]; then WORKFLOW_ENV="staging"; BASE_BRANCH="staging"; APP_URL="https://solara-stg.vercel.app"
 else WORKFLOW_ENV="production"; BASE_BRANCH="main"; APP_URL="https://solara-production.vercel.app"; fi
 
+echo "== Gate: base freshness =="
+# The PR head must contain the current base tip. A moved base means the merge is either
+# conflicted (obvious) or clean-but-untested (insidious: CI verified each side, never the
+# combination — GitHub signals this as mergeStateStatus BEHIND, and it must not ride to a
+# squash unreviewed). Trial-merge in memory with `git merge-tree --write-tree`: nothing
+# touches the working tree or index; exit 0 = clean, 1 = conflicts, >1 = fatal git error.
+# Deliberately no override flag: the rulesets (strict required status checks, no bypass
+# actors) reject merging a BEHIND PR anyway, and a bypass here would only dispatch
+# migrations before a merge GitHub then refuses.
+if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+  echo "ERROR: shallow clone — merge-base and the trial merge need full history; use a full clone or 'git fetch --unshallow' first" >&2
+  exit 1
+fi
+# Explicit refspecs, not bare branch names: `git fetch origin <branch>` only writes FETCH_HEAD,
+# so narrow-refspec checkouts either crash on origin/$BASE_BRANCH or silently use a stale
+# tracking ref. refs/pull/$PR/head also resolves forked or deleted head branches.
+git fetch origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" "refs/pull/$PR/head" --quiet
+if ! git cat-file -e "$HEAD_SHA" 2>/dev/null; then
+  echo "ERROR: PR head $HEAD_SHA not found after fetching refs/pull/$PR/head — is the branch pushed?" >&2; exit 1
+fi
+BASE_SHA=$(git rev-parse "origin/$BASE_BRANCH")
+ANC_RC=0
+git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" || ANC_RC=$?
+if [[ "$ANC_RC" -eq 0 ]]; then
+  echo "Base fresh: $HEAD_REF contains $BASE_BRANCH@${BASE_SHA:0:7}"
+elif [[ "$ANC_RC" -eq 1 ]]; then
+  BEHIND=$(git rev-list --count "$HEAD_SHA..$BASE_SHA")
+  echo "WARN: $BASE_BRANCH moved $BEHIND commit(s) since $HEAD_REF last merged it in:"
+  git log -n 5 --oneline --no-decorate "$HEAD_SHA..$BASE_SHA" | sed 's/^/    /'
+  if [[ "$BEHIND" -gt 5 ]]; then echo "    ... and $((BEHIND - 5)) more"; fi
+  MERGE_RC=0
+  MERGE_OUT=$(git merge-tree --write-tree --name-only --no-messages "$HEAD_SHA" "$BASE_SHA" 2>&1) || MERGE_RC=$?
+  if [[ "$MERGE_RC" -eq 0 ]]; then
+    VERDICT="conflict-free"
+    DETAIL="the combined tree has NOT been tested by CI (each side was)"
+  elif [[ "$MERGE_RC" -eq 1 ]]; then
+    VERDICT="CONFLICTED"
+    DETAIL="merging would conflict in these files:"
+  else
+    echo "ERROR: trial merge failed (git merge-tree exit $MERGE_RC): $MERGE_OUT" >&2
+    exit 1
+  fi
+  echo "Trial merge (in memory, nothing touched): $VERDICT — $DETAIL"
+  if [[ "$VERDICT" == "CONFLICTED" ]]; then
+    printf '%s
+' "$MERGE_OUT" | sed -n '2,11s/^/    /p'
+  fi
+  echo "Recovery: git fetch origin && git switch $HEAD_REF && git merge origin/$BASE_BRANCH && git push"
+  echo "          then wait for the verify job on the new head and re-run this script."
+  echo "ERROR: refusing to deploy a $VERDICT stale PR — update the branch first." >&2
+  exit 1
+else
+  echo "ERROR: git merge-base --is-ancestor failed (exit $ANC_RC) — are both refs valid commits? fetch full history and retry" >&2
+  exit 1
+fi
+
 echo "== Gate: CI checks =="
 gh pr checks "$PR" --repo jtanori/solara --watch 2>&1 | tail -20 || true
 MSTS=$(gh pr view "$PR" --repo jtanori/solara --json mergeStateStatus,mergeable --jq '"\(.mergeStateStatus) \(.mergeable)"')
@@ -71,11 +127,14 @@ if [[ "$MSTS" != *"CLEAN"* ]]; then
 fi
 
 echo "== Detect migrations =="
-git fetch origin "$BASE_BRANCH" --quiet
+git fetch origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" --quiet
 BASE_SHA=$(git rev-parse "origin/$BASE_BRANCH")
 echo "Head $HEAD_SHA vs base origin/$BASE_BRANCH $BASE_SHA"
 NEEDS_MIGRATE=false
-if git diff --name-only "$BASE_SHA...$HEAD_SHA" 2>/dev/null | grep -qE '^drizzle/'; then
+if ! git diff --name-only "$BASE_SHA...$HEAD_SHA" >/dev/null 2>&1; then
+  echo "ERROR: could not diff $HEAD_SHA against $BASE_SHA — are both refs fetched?" >&2; exit 1
+fi
+if git diff --name-only "$BASE_SHA...$HEAD_SHA" | grep -qE '^drizzle/'; then
   NEEDS_MIGRATE=true
   echo "Migrations changed:"
   git diff --name-only "$BASE_SHA...$HEAD_SHA" | grep -E '^drizzle/' || true
