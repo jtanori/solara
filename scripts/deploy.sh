@@ -183,10 +183,10 @@ else echo "Skipping remote migrate step."; fi
 echo ""
 echo "== Gate: hosted schema check ($WORKFLOW_ENV) =="
 # Read-only verification against the environment database before merge. This catches a
-# DB that is behind the journal even when the PR itself has no drizzle/ changes. The
-# workflow runs on the reviewed PR head, not on a local branch that happens to be checked out.
-if ! npx tsx scripts/db-remote.ts --check --env "$WORKFLOW_ENV" --branch "$HEAD_REF"; then
-  echo "ERROR: hosted $WORKFLOW_ENV schema is not in sync with $HEAD_REF — refusing to merge." >&2
+# DB that is behind the journal even when the PR itself has no drizzle/ changes. Pin the
+# checkout to HEAD_SHA; HEAD_REF only selects the workflow file version.
+if ! npx tsx scripts/db-remote.ts --check --env "$WORKFLOW_ENV" --branch "$HEAD_REF" --sha "$HEAD_SHA"; then
+  echo "ERROR: hosted $WORKFLOW_ENV schema is not in sync with $HEAD_SHA — refusing to merge." >&2
   exit 1
 fi
 
@@ -210,7 +210,12 @@ else
 fi
 echo "Policy: $MERGE_LABEL — see AGENTS.md & ADR 004."
 if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH ($MERGE_LABEL)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
-gh pr merge "$PR" $MERGE_ARGS --repo jtanori/solara
+CURRENT_HEAD=$(gh pr view "$PR" --repo jtanori/solara --json headRefOid --jq .headRefOid)
+if [[ "$CURRENT_HEAD" != "$HEAD_SHA" ]]; then
+  echo "ERROR: PR #$PR head moved from $HEAD_SHA to $CURRENT_HEAD after review — refusing to merge." >&2
+  exit 1
+fi
+gh pr merge "$PR" $MERGE_ARGS --repo jtanori/solara --match-head-commit "$HEAD_SHA"
 echo "Merged PR #$PR → $BASE_BRANCH ($MERGE_LABEL)"
 
 # A readiness 200 alone does not prove the new deployment is live: the previous release

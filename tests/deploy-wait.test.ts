@@ -10,9 +10,20 @@ function runWait(states: string[], attempts = states.length) {
   const bin = path.join(dir, "bin");
   mkdirSync(bin);
   const counter = path.join(dir, "counter");
-  const cases = states
-    .map((state, index) => `${index + 1}) printf '${state}\\n' ;;`)
-    .join("\n      ");
+  states.forEach((state, index) => {
+    const [status, url] = state.split("\t");
+    writeFileSync(
+      path.join(dir, `resp-${index + 1}.json`),
+      JSON.stringify({
+        statuses: [{
+          context: "Vercel",
+          state: status,
+          target_url: url || null,
+          created_at: new Date(index * 1000).toISOString(),
+        }],
+      }),
+    );
+  });
   writeFileSync(
     path.join(bin, "gh"),
     `#!/usr/bin/env bash
@@ -20,10 +31,8 @@ n=0
 [[ -f "${counter}" ]] && n=$(cat "${counter}")
 n=$((n + 1))
 echo "$n" > "${counter}"
-case "$n" in
-      ${cases}
-  *) printf '\\n' ;;
-esac
+resp="${dir}/resp-\${n}.json"
+if [[ -f "$resp" ]]; then cat "$resp"; else printf '{"statuses":[]}\\n'; fi
 `,
   );
   chmodSync(path.join(bin, "gh"), 0o755);

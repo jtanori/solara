@@ -5,8 +5,10 @@ import test from "node:test";
 
 const script = readFileSync(path.resolve("scripts/deploy.sh"), "utf8");
 
-test("deploy gate verifies the reviewed ref, not the checked-out branch", () => {
-  assert.match(script, /db-remote\.ts --check --env "\$WORKFLOW_ENV" --branch "\$HEAD_REF"/);
+test("deploy gate verifies the reviewed SHA, not the branch tip", () => {
+  assert.match(script, /db-remote\.ts --check --env "\$WORKFLOW_ENV" --branch "\$HEAD_REF" --sha "\$HEAD_SHA"/);
+  assert.match(script, /headRefOid/);
+  assert.match(script, /--match-head-commit "\$HEAD_SHA"/);
 });
 
 test("deploy waits for Vercel status on the exact merge SHA", () => {

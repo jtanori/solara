@@ -141,7 +141,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 
 **Verify:** `node scripts/check-setup.mjs staging|production --strict` + `GET /api/health` (liveness) + `GET /api/ready` (DB/schema/migrations/auth) + `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`.
 
-**Deploy gate:** `scripts/deploy.sh` runs a read-only hosted `db-remote --check --env <env> --branch <reviewed-ref>` before merge, then waits for Vercel's status on the merge SHA, then requires `/api/ready` after merge. Protected Vercel environments need `VERCEL_AUTOMATION_BYPASS_SECRET`; missing or 401/403 is a hard failure. `db:check` is local drift; `db:check:remote` is the hosted dispatch.
+**Deploy gate:** `scripts/deploy.sh` runs a read-only hosted `db-remote --check --env <env> --branch <reviewed-ref> --sha <reviewed-sha>` before merge, then merges with `--match-head-commit` on that SHA, waits for Vercel's status on the merge SHA, and requires `/api/ready`. Protected Vercel environments need `VERCEL_AUTOMATION_BYPASS_SECRET`; missing or 401/403 is a hard failure. `db:check` is local drift; `db:check:remote` is the hosted dispatch.
 
 ---
 

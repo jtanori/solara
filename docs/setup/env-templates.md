@@ -54,6 +54,7 @@ connects.
 
 ```bash
 npm run db:check:remote -- --env staging    # read-only: dispatch migrate.yml in verify mode
+npx tsx scripts/db-remote.ts --check --env staging --branch staging --sha <reviewed-sha>
 npm run db:migrate:remote -- --pr 97       # migrate the DB for PR 97, wait, report the verdict
 npm run db:migrate:remote -- --pr 97 --dry-run   # print the plan + exact dispatch payload
 npm run db:migrate:remote -- --pr 98 --env production --rehearsal-pr 97

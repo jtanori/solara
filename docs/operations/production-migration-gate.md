@@ -141,7 +141,7 @@ gh workflow run migrate.yml --repo jtanori/solara \
 npx tsx scripts/db-remote.ts --pr "$PROMO_PR" --env production --rehearsal-pr "$PROMO_PR"
 
 # 6. confirm the production schema and journal
-npx tsx scripts/db-remote.ts --check --env production
+npx tsx scripts/db-remote.ts --check --env production --branch "$PROMO_REF" --sha "$PROMO_SHA"
 
 # 7. after the deploy, require readiness (DB/schema/migrations/auth)
 #    deploy.sh first waits for Vercel's status on the merge SHA; then it polls /api/ready.
