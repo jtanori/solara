@@ -21,6 +21,7 @@
 //   tsx scripts/db-remote.ts --pr 97 --env staging
 //   tsx scripts/db-remote.ts --pr 97 --dry-run          # plan only, no dispatch
 //   tsx scripts/db-remote.ts --check --env staging      # is the staging DB in sync? (dispatch dry-run job)
+//   tsx scripts/db-remote.ts --check --env staging --sha <full-sha> --branch <ref>
 //   tsx scripts/db-remote.ts --pr 97 --json
 //
 // Exit codes: 0 success · 1 the run failed / out of sync · 2 bad usage
@@ -52,13 +53,15 @@ function ghApiJson<T>(args: string[], fields?: string): T {
 
 function usage() {
   console.log(`Usage: tsx scripts/db-remote.ts [--pr <n> | --check] [--env staging|production]
-                                   [--dry-run] [--skip-wait] [--timeout <sec>] [--json]
+                                   [--sha <full-sha>] [--dry-run] [--skip-wait] [--timeout <sec>] [--json]
 
 Dispatches .github/workflows/migrate.yml, which reads the DATABASE_URL secret from the
 GitHub Environment for the target. No local database credential is required or read.
 
   --pr <n>        PR whose head SHA is checked out for the migration (normal path)
   --check         no migration: dispatch in verify-only mode against the current branch head
+  --sha <sha>     exact 40-char commit to check (only with --check)
+
   --env <name>    staging | production (default: inferred from the PR base branch)
   --dry-run       print the plan and the exact workflow_dispatch payload, then exit
   --skip-wait     dispatch and return the run URL without waiting
@@ -74,11 +77,29 @@ run for that PR. All three must hold or no DDL runs.`);
 // ------------------------------------------------------------------ arguments
 type Opts = {
   pr: string; env: string; check: boolean; dryRun: boolean; skipWait: boolean;
-  timeout: number; json: boolean; branch: string; rehearsalPr: string;
+  timeout: number; json: boolean; branch: string; sha: string; rehearsalPr: string;
 };
 
+function missingValue(flag: string): never {
+  console.error(`ERROR ${flag} requires a non-empty value`);
+  usage();
+  process.exit(2);
+}
+
+function requireValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index]?.trim() ?? "";
+  if (!value || value.startsWith("--")) missingValue(flag);
+  return value;
+}
+
+function requireInlineValue(value: string, flag: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) missingValue(flag);
+  return trimmed;
+}
+
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { pr: "", env: "", check: false, dryRun: false, skipWait: false, timeout: 900, json: false, branch: "", rehearsalPr: "" };
+  const o: Opts = { pr: "", env: "", check: false, dryRun: false, skipWait: false, timeout: 900, json: false, branch: "", sha: "", rehearsalPr: "" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--pr") o.pr = argv[++i] ?? "";
@@ -91,6 +112,8 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--timeout") o.timeout = Number(argv[++i] ?? 900);
     else if (a === "--json") o.json = true;
     else if (a === "--branch") o.branch = argv[++i] ?? "";
+    else if (a === "--sha") o.sha = requireValue(argv, ++i, "--sha");
+    else if (a.startsWith("--sha=")) o.sha = requireInlineValue(a.slice(6), "--sha");
     else if (a === "--rehearsal-pr") o.rehearsalPr = argv[++i] ?? "";
     else if (a.startsWith("--rehearsal-pr=")) o.rehearsalPr = a.slice(15);
     else if (a === "-h" || a === "--help") { usage(); process.exit(0); }
@@ -155,10 +178,17 @@ function resolveTarget(o: Opts): Target {
     const here = currentBranch();
     const envRef = env === "staging" ? "staging" : "main";
     const ref = o.branch || (here && refExists(here) && workflowCaps(here).mode ? here : envRef);
-    const sha = fullSha(gh(["api", `repos/${REPO}/commits/${ref}`, "--jq", ".sha"]));
+    const sha = o.sha
+      ? fullSha(o.sha)
+      : fullSha(gh(["api", `repos/${REPO}/commits/${ref}`, "--jq", ".sha"]));
+    if (o.sha) {
+      const resolved = fullSha(gh(["api", `repos/${REPO}/commits/${sha}`, "--jq", ".sha"]));
+      if (resolved !== sha) throw new Error(`--sha ${sha} did not resolve to itself (got ${resolved})`);
+    }
     return { env, sha, ref, pr: "0", base: ref };
   }
 
+  if (o.sha) throw new Error("--sha is only valid with --check; use --pr for a PR migration");
   if (!o.pr) throw new Error("--pr <number> or --check is required");
   if (!/^[0-9]+$/.test(o.pr)) throw new Error(`--pr must be numeric (got "${o.pr}")`);
 

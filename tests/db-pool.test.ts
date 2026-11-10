@@ -11,7 +11,8 @@ test("hosted database URLs use explicit TLS verification and bounded pool settin
   assert.equal(config.max, 4);
   assert.equal(config.idleTimeoutMillis, 30_000);
   assert.equal(config.connectionTimeoutMillis, 10_000);
-  assert.equal(config.options, "-c statement_timeout=15000");
+  assert.equal(config.query_timeout, 15_000);
+  assert.equal(config.options, undefined);
   assert.match(String(config.connectionString), /sslmode=verify-full/);
 });
 

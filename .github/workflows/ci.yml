@@ -57,8 +57,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run db:manifest:check
       # Apply the same versioned migrations to the disposable CI database.
-      - run: npx drizzle-kit migrate
+      - run: npm run db:migrate
+      - run: npm run db:check
       - run: npx next typegen
       - run: npm exec tsc -- --noEmit --pretty false
       - run: npx eslint src tests scripts --max-warnings=0
@@ -76,7 +78,8 @@ jobs:
             if curl -s http://localhost:3000/api/health | grep -q '"ok":true'; then break; fi
             sleep 2
           done
-          curl -s http://localhost:3000/api/health | grep -q '"ok":true' || { echo "Health check did not become ready"; kill $PID; exit 1; }
+          curl -s http://localhost:3000/api/health | grep -q '"ok":true' || { echo "Liveness check did not become ready"; kill $PID; exit 1; }
+          curl -s http://localhost:3000/api/ready | grep -q '"ok":true' || { echo "Readiness check did not become ready"; curl -s http://localhost:3000/api/ready; kill $PID; exit 1; }
           # Security headers and proxy origin guard (#56, #57)
           HEADERS="$(curl -sSI http://localhost:3000/)"
           echo "$HEADERS" | grep -qi '^x-content-type-options: nosniff'

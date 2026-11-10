@@ -1,7 +1,7 @@
 # Plan — Neon Auth migration (revised decision document)
 
-**Status:** **PENDING DECISION** — the current auth is under security review (§2). Do not start
-migration work until §2's verdict and the §3 gate are settled.
+**Status:** **DECIDED — keep local auth for launch** (ADR 006, 2026-11-10). Migration work remains
+gated by §2 and §3; do not start it without a superseding ADR and security review.
 **Supersedes:** the first-pass assessment (`docs/auth-neon-assessment.md`) — that file is now the
 research appendix; this file is the plan of record.
 **Prerequisite:** [#52](https://github.com/jtanori/solara/issues/52) must be closed. Auth tables in a
@@ -120,7 +120,7 @@ unavailable on projects with **IP Allow** or **Private Networking** enabled.
 |---|---|---|---|
 | **0. Prereqs** | #52 closed (schema actually applied, `/api/health` schema-aware); `select count(*) from users` recorded; Neon project satisfies AWS/no-IP-Allow; production branch snapshot | Evidence posted on #52 | 0.5 d |
 | **1. Staging spike** | enable auth on the staging branch; `lib/auth/server.ts`; catch-all route; `proxy.ts`; `currentUser()` reads Neon session and JIT-links `users`; keep `AUTH_PROVIDER=local` | full pass on staging: signup, signin, signout, reset, verify, role gating, Stripe checkout with a Neon-authenticated user | 2–3 d |
-| **2. Staging cutover** | flag → `neon`; forced reset if users exist; auth smoke in `deploy.sh`/CI (`signup → signin → /api/health → /dashboard`) | 1 week clean on staging; ADR 006 written | 1–2 d + burn-in |
+| **2. Staging cutover** | flag → `neon`; forced reset if users exist; auth smoke in `deploy.sh`/CI (`signup → signin → /api/ready → /dashboard`) | 1 week clean on staging; superseding ADR accepted | 1–2 d + burn-in |
 | **3. Production** | enable on prod branch, trusted domains, SMTP, secrets scoped to Production; expand/contract schema (add `auth_user_id`, null `password_hash`), then drop `sessions` | prod signup/signin/checkout/PDF verified; 24 h clean logs | 1–2 d |
 | **4. Cleanup** | delete `passwords.ts`/session helpers/`AUTH_PROVIDER`; drop `password_hash` | one milestone later, if clean | 0.5 d |
 
@@ -176,7 +176,7 @@ Ship in this order; each item is independently deployable.
 | `users` table as domain record + `auth_user_id` column | Optional but harmless; makes a later migration a flag flip rather than a schema rewrite |
 | Email transport seam | Needed by reset/verification (local) or by Neon Auth (SMTP) |
 | Role/authorization tests around `currentUser()` | Keep the 18 call sites behaviour-compatible in both worlds |
-| ADR 006 "identity & credential ownership" | Records *why*, whichever way we go |
+| ADR 006 "identity & credential ownership" | Records the decision to keep local auth through launch (accepted 2026-11-10) |
 
 ---
 

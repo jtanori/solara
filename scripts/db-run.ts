@@ -33,7 +33,12 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 import { Client } from "pg";
-import { findMissingColumns, REQUIRED_COLUMNS } from "../src/lib/schema-verification";
+import {
+  findMissingColumns,
+  REQUIRED_COLUMNS,
+  REQUIRED_INDEXES,
+  REQUIRED_TABLES,
+} from "../src/lib/schema-verification";
 
 type Target = "staging" | "production" | "local";
 type Command = "migrate" | "status" | "verify";
@@ -63,8 +68,8 @@ function usage() {
   console.log(`Usage: npx tsx scripts/db-run.ts --env <staging|production|local> <migrate|status|verify> [options]
 
   migrate   apply pending migrations to the selected environment (requires DATABASE_URL_DIRECT)
-  status    list pending / applied migrations without changing anything
-  verify    assert the expected relations and migration journal exist
+  status    list pending / unexpected applied migrations without changing anything
+  verify    assert the expected relations and migration journal are in sync
 
 Options: --dry-run  --json  --allow-incomplete  --yes`);
 }
@@ -229,6 +234,8 @@ async function cmdStatus(env: Target, json: boolean) {
   const { id, source, warnings, errors } = r;
   if (!json) printTarget(r, env);
   const { applied, entries, pending: pend } = await pending(r);
+  const journalHashes = new Set(entries.map(entry => journalHash(entry, readFileSync(path.resolve(process.cwd(), `drizzle/${entry.tag}.sql`), "utf8"))));
+  const unexpected = applied.hashes.filter(hash => !journalHashes.has(hash));
   const out = {
     env,
     source,
@@ -241,23 +248,18 @@ async function cmdStatus(env: Target, json: boolean) {
     journalPresent: applied.exists,
     appliedHashes: applied.hashes.length,
     pending: pend.map(e => e.tag),
+    unexpected,
   };
   if (json) { console.log(JSON.stringify(out, null, 2)); return errors.length ? 1 : 0; }
 
   console.log(`journal  ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`);
   console.log(`applied  ${applied.exists ? `${applied.hashes.length} row(s)` : "no drizzle.__drizzle_migrations table"}`);
   console.log(`pending  ${pend.length ? pend.map(e => e.tag).join(", ") : "none — database is up to date"}`);
+  console.log(`unexpected ${unexpected.length ? unexpected.join(", ") : "none"}`);
   return errors.length ? 1 : 0;
 }
 
 async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
-  const REQUIRED = [
-    "public.users", "public.sessions", "public.readings", "public.knowledge",
-    "public.subscriptions", "public.stripe_events", "public.audit_logs",
-    "public.rate_limits", "public.email_tokens",
-    "public.reading_documents", "public.generation_cache",
-  ];
-  const REQUIRED_INDEXES = ["rate_limits_expires_idx", "email_tokens_user_idx"];
   const r = resolveAndCheck(env);
   const { url, source, id, warnings, errors } = r;
   if (!json) printTarget(r, env);
@@ -265,8 +267,8 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
 
   return withClient(url, async client => {
     const reg = await client.query<Record<string, string | null>>(
-      `select ${REQUIRED.map((r, i) => `to_regclass($${i + 1}) as t${i}`).join(", ")}`, REQUIRED);
-    const missing = REQUIRED.filter((r, i) => !reg.rows[0]?.[`t${i}`]);
+      `select ${REQUIRED_TABLES.map((r, i) => `to_regclass($${i + 1}) as t${i}`).join(", ")}`, [...REQUIRED_TABLES]);
+    const missing = REQUIRED_TABLES.filter((r, i) => !reg.rows[0]?.[`t${i}`]);
 
     const columns = await client.query<{
       table_name: string;
@@ -284,32 +286,40 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
 
     const indexes = await client.query<{ indexname: string }>(
       "select indexname from pg_indexes where schemaname = 'public' and indexname = any($1)",
-      [REQUIRED_INDEXES],
+      [[...REQUIRED_INDEXES]],
     );
     const presentIndexes = new Set(indexes.rows.map(row => row.indexname));
     const missingIndexes = REQUIRED_INDEXES.filter(index => !presentIndexes.has(index));
 
     const applied = await readApplied(client);
-    const pendingTags = entries.filter(e => !applied.hashes.includes(journalHash(e, readFileSync(path.resolve(process.cwd(), `drizzle/${e.tag}.sql`), "utf8")))).map(e => e.tag);
+    const journalHashes = new Map(entries.map(entry => [
+      entry.tag,
+      journalHash(entry, readFileSync(path.resolve(process.cwd(), `drizzle/${entry.tag}.sql`), "utf8")),
+    ]));
+    const expectedHashes = new Set(journalHashes.values());
+    const pendingTags = entries.filter(e => !applied.hashes.includes(journalHashes.get(e.tag)!)).map(e => e.tag);
+    const unexpected = applied.hashes.filter(hash => !expectedHashes.has(hash));
 
     const ok = missing.length === 0
       && missingColumns.length === 0
       && missingIndexes.length === 0
       && pendingTags.length === 0
+      && unexpected.length === 0
       && errors.length === 0;
     const out = {
       env, source,
       target: `${id.user}@${id.host}/${id.database}`,
-      warnings, errors, required: REQUIRED, missing,
-      missingColumns, missingIndexes, pending: pendingTags, ok,
+      warnings, errors, required: REQUIRED_TABLES, missing,
+      missingColumns, missingIndexes, pending: pendingTags, unexpected, ok,
     };
 
     if (json) console.log(JSON.stringify(out, null, 2));
     else {
-      console.log(`tables   ${REQUIRED.length - missing.length}/${REQUIRED.length} present${missing.length ? ` — missing: ${missing.join(", ")}` : ""}`);
+      console.log(`tables   ${REQUIRED_TABLES.length - missing.length}/${REQUIRED_TABLES.length} present${missing.length ? ` — missing: ${missing.join(", ")}` : ""}`);
       console.log(`columns  ${REQUIRED_COLUMNS.length - missingColumns.length}/${REQUIRED_COLUMNS.length} present${missingColumns.length ? ` — missing: ${missingColumns.join(", ")}` : ""}`);
       console.log(`indexes  ${REQUIRED_INDEXES.length - missingIndexes.length}/${REQUIRED_INDEXES.length} present${missingIndexes.length ? ` — missing: ${missingIndexes.join(", ")}` : ""}`);
       console.log(`pending  ${pendingTags.length ? pendingTags.join(", ") : "none"}`);
+      console.log(`unexpected ${unexpected.length ? unexpected.join(", ") : "none"}`);
       console.log(ok ? "OK       schema and journal are up to date" : "FAIL     environment is not ready");
     }
     if (!ok && allowEmpty) { console.error("NOTE --allow-incomplete set: reporting but not failing"); return 0; }

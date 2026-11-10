@@ -50,6 +50,7 @@ Move an item to `pass` only when its evidence is committed or linked and a revie
 | 4.1 | Neon prod: automated backups + PITR enabled; branch restore drilled into isolated project | @infra | Neon dashboard screenshot + `docs/setup/01-foundation-and-deployment.md` drill log | todo |
 | 4.2 | Vercel logs, DB connection/pool, webhook retry, and PDF timing alerts with owner + runbook | @infra | Vercel + Neon alert config + `01-foundation` § Operational checklist | todo |
 | 4.3 | Incident response plan (who pages, rollback steps, comms) documented and tested | @infra | `docs/setup/01-foundation-and-deployment.md` rollback section | todo |
+| 4.4 | Liveness and readiness separated; `/api/ready` covers DB/schema/migrations/auth with a bounded probe; deploy fails closed | @infra | `src/app/api/health/route.ts`, `src/app/api/ready/route.ts`, `src/lib/readiness.ts`, `scripts/deploy.sh` | in-progress |
 
 ### 5. Security and privacy controls
 

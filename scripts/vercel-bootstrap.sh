@@ -8,7 +8,7 @@
 #      cp .env.production.example .env.production
 #   4. chmod +x scripts/vercel-bootstrap.sh && ./scripts/vercel-bootstrap.sh
 #   5. For direct DB migrations (never in Vercel):
-#      export DATABASE_URL="<NEON_DIRECT_URL>" && npx drizzle-kit migrate
+#      export DATABASE_URL="<NEON_DIRECT_URL>" && npx tsx scripts/db-run.ts --env staging migrate
 set -euo pipefail
 
 PROJECT="${PROJECT:-solara}"
@@ -93,5 +93,5 @@ echo "Or: vercel --prebuilt --target preview --git-branch staging"
 
 echo ""
 echo "For Neon direct migrations (never commit):"
-echo "  export DATABASE_URL='<NEON_DIRECT_URL>' && npx drizzle-kit migrate"
+echo "  export DATABASE_URL='<NEON_DIRECT_URL>' && npx tsx scripts/db-run.ts --env staging migrate"
 echo "  node scripts/check-setup.mjs staging --strict"

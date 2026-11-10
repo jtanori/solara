@@ -1,3 +1,23 @@
+export const REQUIRED_TABLES = [
+  "public.users",
+  "public.sessions",
+  "public.readings",
+  "public.knowledge",
+  "public.subscriptions",
+  "public.stripe_events",
+  "public.audit_logs",
+  "public.rate_limits",
+  "public.email_tokens",
+  "public.reading_documents",
+  "public.generation_cache",
+] as const;
+
+export const REQUIRED_INDEXES = [
+  "rate_limits_expires_idx",
+  "email_tokens_user_idx",
+  "reading_documents_reading_locale_version_key",
+] as const;
+
 export type RequiredColumn = {
   table: string;
   column: string;
