@@ -15,5 +15,9 @@ export const EXPECTED_MIGRATIONS: MigrationManifestEntry[] = [
   {
     "tag": "0002_email_verification",
     "hash": "f9bb593a6f31e69a728d902d4cb98a6c91adbee6ae6a36cc56b5f3a26d96ff8c"
+  },
+  {
+    "tag": "0003_readings_documents_generation_cache",
+    "hash": "b3af103ee2e83fc3bca510736383d96c7acc6b70b502f1272228ced203199120"
   }
 ];

@@ -7,6 +7,13 @@ import {
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["@react-pdf/renderer"],
+  // The reading pipeline reads prompt files from disk at runtime
+  // (src/readings/content-version.ts, generate.ts). Turbopack builds don't
+  // trace these reads, so include them explicitly or Vercel functions ship
+  // without prompts and generation fails closed.
+  outputFileTracingIncludes: {
+    "/api/readings": ["./src/readings/prompts/**/*"],
+  },
   async headers() {
     return [
       {

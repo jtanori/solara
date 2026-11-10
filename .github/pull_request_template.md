@@ -82,3 +82,38 @@ Requires repo `Allow merge commits:true` (Settings → General → Pull Requests
 
 ---
 Target branch for this PR is `staging`. Deploy via `scripts/deploy.sh` (see `docs/setup/00-manual-setup-ui.md`); `main` deploys production via Vercel — see ADR 001/ADR 004.
+
+## Pre-PR attestation
+
+The pre-PR quality gate ([`docs/PR_WORKFLOW.md`](../docs/PR_WORKFLOW.md) §1) was met:
+
+- [ ] Plan adherence: diff matches the issue/approved plan; deviations listed below
+- [ ] Coherence: one story, repo conventions, no orphan files
+- [ ] Code quality: error paths handled, no silent catches, no dead code
+- [ ] Security: authz/validation/injection/secrets/PII posture stated in Risk
+- [ ] Performance: no N+1/unbounded loops; metered resources fail closed
+- [ ] DRY: reused before created
+- [ ] Tests: new behavior covered; mutations run for defect guards and accounting logic
+- [ ] Migrations: additive; `db-run.ts` manifest updated; rehearsal planned
+- [ ] Config: new env vars in `.env*.example` and named in this body
+- [ ] Dependencies: justified, audit clean
+- [ ] Freshness: base fetched, merged if behind, gates re-run on the merged tree
+- [ ] Gates: typegen / tsc / eslint / tests / build output pasted above
+- [ ] Self-review: own diff read file-by-file
+
+## Deploy classification
+
+- [ ] `deploy:required` — touches runtime/build (`src/`, `drizzle/`, `next.config.ts`, `package*.json`, `.github/workflows/`)
+- [ ] `deploy:skip` — docs/chore only
+
+Reason: <!-- one line; the reviewer's verdict has the final call -->
+
+## Deviations from plan
+
+<!-- List each deviation and why, or "none". -->
+
+## Mutations (SEC-07)
+
+| Mutation | Test that fails | Result |
+| --- | --- | --- |
+<!-- One row per mutation run: what was broken, which test caught it, "caught" or the honest outcome. -->
