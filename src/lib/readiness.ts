@@ -21,8 +21,9 @@ export type ReadinessSnapshot = {
   authOk: boolean;
 };
 
-export const READINESS_DEADLINE_MS = 250;
-const READINESS_STATEMENT_TIMEOUT_MS = 200;
+export const READINESS_DEADLINE_MS = 3_000;
+export const READINESS_WARM_TARGET_MS = 300;
+const READINESS_STATEMENT_TIMEOUT_MS = 1_000;
 
 let readinessPool: Pool | undefined;
 
@@ -45,9 +46,9 @@ export function getReadinessPool(): Pool {
   readinessPool = new Pool({
     connectionString: normalizeDatabaseUrl(databaseUrl),
     max: 1,
-    idleTimeoutMillis: 1_000,
+    idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: READINESS_DEADLINE_MS,
-    options: `-c statement_timeout=${READINESS_STATEMENT_TIMEOUT_MS}`,
+    query_timeout: READINESS_STATEMENT_TIMEOUT_MS,
   });
   readinessPool.on("error", (error) => {
     const code = (error as { code?: string }).code ?? "unknown";

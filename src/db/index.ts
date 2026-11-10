@@ -18,7 +18,7 @@ export function databasePoolConfig(
     max: poolMax(env),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
-    options: "-c statement_timeout=15000",
+    query_timeout: 15_000,
   };
 }
 

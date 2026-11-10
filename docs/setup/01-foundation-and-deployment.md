@@ -62,7 +62,7 @@ For local development only, a guarded seed script creates nine accounts idempote
 | `auth: "degraded"` | Users table/permissions/RLS failure | Check the application role grants and RLS |
 | `401` / `403` | Vercel Authentication blocked the probe | Set `VERCEL_AUTOMATION_BYPASS_SECRET` and retry |
 
-Point uptime monitoring at `/api/ready` and keep `/api/health` for platform liveness.
+Point uptime monitoring at `/api/ready` and keep `/api/health` for platform liveness. A cold serverless connection to Neon may take a few seconds; the route allows up to 3s for that connection but targets <300ms once warm.
 
 Vercel notes that a new project may create an initial production deployment before its staging branch is configured. Set up environment isolation before using any real data. See [Vercel environments](https://vercel.com/docs/deployments/environments) and [Neon pooling](https://neon.com/docs/connect/connection-pooling).
 
