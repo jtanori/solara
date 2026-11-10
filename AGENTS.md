@@ -57,7 +57,7 @@ cp .env.example .env   # fill DATABASE_URL=postgresql://postgres:postgres@localh
 
 # 2. Install + migrate + dev
 npm ci
-npx drizzle-kit migrate          # uses DATABASE_URL from .env (or exported)
+npm run db:migrate               # guarded local migration via db-run
 npm run dev                      # http://localhost:3000 → /api/health = {"ok":true}; /api/ready = full readiness
 
 # 3. Secret-safe check (never prints values)
@@ -103,7 +103,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
   UPDATE users SET role='owner' WHERE email=lower(:'owner_email') RETURNING id,email,role;
   ```
   No bootstrap endpoint. All `hasPremiumAccess` checks are server-side via `src/lib/billing.ts` (active/trialing = true, past_due/expired/canceled = false).
-- **Health/readiness:** `/api/health` is liveness only and must not touch the database. `/api/ready` checks DB, required tables/indexes/columns, migration manifest, and auth-table access with a 250ms connect/statement bound; returns `503` and `Cache-Control: no-store`, never hostnames, URLs, or versions.
+- **Health/readiness:** `/api/health` is liveness only and must not touch the database. `/api/ready` checks DB, required tables/indexes/columns, migration manifest, and auth-table access with a 250ms total deadline and a 200ms statement timeout; returns `503` and `Cache-Control: no-store`, never hostnames, URLs, or versions.
 - **Account claim:** sign-up collects name/email only, creates no session, and returns a generic response for new and existing addresses. The mailbox owner claims the account by choosing a password via a fragment token; claim revokes all sessions and invalidates sibling tokens. Unverified accounts cannot sign in. Never backfill legacy accounts as verified.
 - **Auth throttling:** `/api/auth` serializes per-IP and per-account attempts in IP → account order; counters, password verification, and session creation share the transaction (`src/lib/rate-limit.ts`, `src/lib/account-lock.ts`). Ten account failures trigger progressive 30s-to-15m backoff; IP ceilings are 100 all-attempts and 50 failures per 15m. Scrypt uses a four-slot pool with a bounded queue; saturation returns a generic 503. Returns `429` + `Retry-After`; never reveal whether an email exists. Logs must never contain emails, IPs, hashes, or passwords.
 - **Email delivery:** tokens are SHA-256 hashed at rest, single-use, 24h TTL, with a 60s resend cooldown (`src/lib/email-verification.ts`). Tokens live in the URL fragment and are submitted only by the explicit claim POST. Delivery runs in `after()`; retain the prior token until a new message is delivered, keep both on ambiguous outcomes, discard the new token only on definitive rejection, and keep it if finalization fails after acceptance. Finalization is generation-aware and uses user → token lock order; claim uses the same order. Verified accounts cannot receive or redeem another claim token. Hosted environments require a canonical HTTPS `APP_URL`. Local mail uses `MAIL_TRANSPORT=outbox` and `.mail-outbox/`; staging/production require Resend or Postmark. Never log a token.
@@ -134,14 +134,14 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - Repo settings: **squash + merge commit** for promotions, **auto-delete head branches** (`gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` → `{true,true,false,true}` — squash for features, merge for promotions).
 
 **Environments (target, see `docs/setup/00-manual-setup-ui.md` for UI clicks):**
-- **Staging:** Neon project `solara-staging` (pooled `DATABASE_URL` for Vercel Preview → `staging` branch; direct for `npx drizzle-kit migrate`), Vercel Preview env (`APP_URL=https://staging...`, Stripe **test** keys), isolated previews.
+- **Staging:** Neon project `solara-staging` (pooled `DATABASE_URL` for Vercel Preview → `staging` branch; direct for `db-run` migrations), Vercel Preview env (`APP_URL=https://staging...`, Stripe **test** keys), isolated previews.
 - **Production:** Neon `solara-prod` (pooled + direct, backups/PITR), Vercel Production env (`APP_URL=https://...`, Stripe **live** keys).
 - Secrets scoped per env in Vercel; `NEXT_PUBLIC_*` baked at build → redeploy after change.
 - Migrations: generate with `npx drizzle-kit generate --name=...` (review SQL + meta), run `npm run db:manifest`, test on fresh DB + staging, and apply through `db-run`/`migrate.yml` before code deploy (`push` forbidden on prod). See ADR 008.
 
 **Verify:** `node scripts/check-setup.mjs staging|production --strict` + `GET /api/health` (liveness) + `GET /api/ready` (DB/schema/migrations/auth) + `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`.
 
-**Deploy gate:** `scripts/deploy.sh` runs a read-only hosted `db-remote --check --env <env> --branch <reviewed-ref>` before merge, then requires `/api/ready` after merge. Protected Vercel environments need `VERCEL_AUTOMATION_BYPASS_SECRET`; missing or 401/403 is a hard failure. `db:check` is local drift; `db:check:remote` is the hosted dispatch.
+**Deploy gate:** `scripts/deploy.sh` runs a read-only hosted `db-remote --check --env <env> --branch <reviewed-ref>` before merge, then waits for Vercel's status on the merge SHA, then requires `/api/ready` after merge. Protected Vercel environments need `VERCEL_AUTOMATION_BYPASS_SECRET`; missing or 401/403 is a hard failure. `db:check` is local drift; `db:check:remote` is the hosted dispatch.
 
 ---
 
@@ -191,7 +191,7 @@ Full text: [`docs/decisions.md`](docs/decisions.md). Review mechanics: [`docs/CO
 ## 8. Agent Checklist (copy for each PR)
 
 - [ ] Branch from `staging` as `<type>/<issue>-<slug>`.
-- [ ] `npm ci`, `npx drizzle-kit migrate` (if new migration), `npx next typegen`, `npm run typecheck`, `npm run lint`, `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`, `npm run build`, `npm run db:manifest:check`, `npm run db:check` — paste evidence.
+- [ ] `npm ci`, `npm run db:migrate` (if new migration), `npx next typegen`, `npm run typecheck`, `npm run lint`, `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`, `npm run build`, `npm run db:manifest:check`, `npm run db:check` — paste evidence.
 - [ ] No secrets in diff, `.env` not committed, `ALLOW_LOCAL_SEED*` not in Vercel.
 - [ ] `BACKLOG.md` updated if issues opened/closed.
 - [ ] PR body: `Closes #X` per line, Evidence, Risk, Rollout/Rollback.

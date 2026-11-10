@@ -57,6 +57,11 @@ test("db:check detects pending, unexpected and missing schema drift", {
     const missingIndex = check(database.url);
     assert.equal(missingIndex.status, 1);
     assert.deepEqual(JSON.parse(missingIndex.stdout).missingIndexes, ["rate_limits_expires_idx"]);
+
+    await database.client.query("alter table public.users drop column email_verified_at");
+    const missingColumn = check(database.url);
+    assert.equal(missingColumn.status, 1);
+    assert.deepEqual(JSON.parse(missingColumn.stdout).missingColumns, ["users.email_verified_at"]);
   } finally {
     await database.cleanup();
   }

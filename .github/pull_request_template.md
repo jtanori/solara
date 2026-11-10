@@ -13,7 +13,7 @@ Closes #<!-- issue number --> — <!-- title -->
 - [ ] Branch protection (applied `protect-staging`/`protect-main`) requires PR, `verify` status check, conversation resolution, and blocking force-push/deletion; `staging` requires linear history, `main` allows merge commits for promotions. See `docs/decisions.md` ADR 001 and ADR 004.
 
 ## Evidence
-- [ ] `npm ci` + `npx drizzle-kit migrate` (CI does this on a disposable DB)
+- [ ] `npm ci` + `npm run db:migrate` (CI does this on a disposable DB)
 - [ ] `npx next typegen`
 - [ ] `npm exec tsc -- --noEmit --pretty false`
 - [ ] `npx eslint src tests --max-warnings=0`

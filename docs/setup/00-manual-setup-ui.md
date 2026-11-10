@@ -87,7 +87,7 @@ After this, a test PR `feature → staging → main` is already proven by #23/`#
 2. Create **solara-prod** (same region, separate project).
 3. For **each** project → **Dashboard → Connection Strings**:
    - Copy **Pooled** URL (contains `-pooler.` + `?sslmode=require`) → this is `DATABASE_URL` for the app.
-   - Copy **Direct** URL (no pooler) → this is `DATABASE_URL` for `npx drizzle-kit migrate`.
+   - Copy **Direct** URL (no pooler) → this is `DATABASE_URL` for `db-run` migrations.
    - Confirm **Pooling mode = Transaction** — required for `pg_advisory_xact_lock` used by Drizzle. Docs: <https://neon.com/docs/connect/connection-pooling>
 
 > Never copy prod data to staging. Keep both `*_DIRECT` URLs out of Git — only paste into Vercel env vars or a secure shell for migrations.
@@ -128,7 +128,7 @@ If already imported:
 For **staging**:
 ```bash
 export DATABASE_URL="<STAGING_DIRECT_URL>"
-npx drizzle-kit migrate   # confirm target is staging-pooler host, not prod
+npx tsx scripts/db-run.ts --env staging migrate   # confirm target is staging, not prod
 node scripts/check-setup.mjs staging --strict
 ```
 

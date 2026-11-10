@@ -40,7 +40,7 @@ jobs:
       - run: npm ci
       - run: npm run db:manifest:check
       # Apply the same versioned migrations to the disposable CI database.
-      - run: npx drizzle-kit migrate
+      - run: npm run db:migrate
       - run: npm run db:check
       - run: npx next typegen
       - run: npm exec tsc -- --noEmit --pretty false

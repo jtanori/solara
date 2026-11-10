@@ -9,6 +9,12 @@ test("deploy gate verifies the reviewed ref, not the checked-out branch", () => 
   assert.match(script, /db-remote\.ts --check --env "\$WORKFLOW_ENV" --branch "\$HEAD_REF"/);
 });
 
+test("deploy waits for Vercel status on the exact merge SHA", () => {
+  assert.match(script, /wait_for_vercel_status/);
+  assert.match(script, /mergeCommit/);
+  assert.match(script, /VERCEL_STATUS_CONTEXT/);
+});
+
 test("deploy readiness sends the Vercel bypass and fails closed", () => {
   assert.match(script, /VERCEL_AUTOMATION_BYPASS_SECRET/);
   assert.match(script, /x-vercel-protection-bypass/);

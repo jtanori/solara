@@ -144,6 +144,7 @@ npx tsx scripts/db-remote.ts --pr "$PROMO_PR" --env production --rehearsal-pr "$
 npx tsx scripts/db-remote.ts --check --env production
 
 # 7. after the deploy, require readiness (DB/schema/migrations/auth)
+#    deploy.sh first waits for Vercel's status on the merge SHA; then it polls /api/ready.
 #    Protected Vercel domains need VERCEL_AUTOMATION_BYPASS_SECRET.
 curl -fsS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
   "https://solara-production.vercel.app/api/ready"
@@ -151,7 +152,9 @@ curl -fsS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
 
 Step 6 must report `OK production schema and drizzle journal are in sync`. Step 7 must report
 `/api/ready -> {"ok":true}`; a 401/403 means deployment protection blocked the check and the
-deploy fails closed.
+deploy fails closed. See the readiness failure-mode table in
+[`docs/setup/01-foundation-and-deployment.md`](../setup/01-foundation-and-deployment.md#readiness-failure-modes)
+for the first action for each response.
 
 ## What is still not covered
 

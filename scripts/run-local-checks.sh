@@ -31,7 +31,7 @@ echo "==> 1/6 npm ci"
 npm ci
 
 echo "==> 2/6 drizzle migrate (disposable DB) + drift check"
-npx drizzle-kit migrate
+npm run db:migrate
 npm run db:manifest:check
 npm run db:check
 

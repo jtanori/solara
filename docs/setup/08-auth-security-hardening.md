@@ -175,7 +175,7 @@ CSP rollout:
 ## Verification
 
 ```bash
-npx drizzle-kit migrate                 # loopback disposable DB only
+npm run db:migrate                      # loopback disposable DB only
 npx next typegen
 npm exec tsc -- --noEmit --pretty false
 npx eslint src tests scripts --max-warnings=0

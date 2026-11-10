@@ -9,5 +9,6 @@ node_modules/
 !.env.production.example
 *.tsbuildinfo
 coverage/
+migrate.log
 .mail-outbox/
 .DS_Store

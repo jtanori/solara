@@ -21,7 +21,22 @@ export type ReadinessSnapshot = {
   authOk: boolean;
 };
 
+export const READINESS_DEADLINE_MS = 250;
+const READINESS_STATEMENT_TIMEOUT_MS = 200;
+
 let readinessPool: Pool | undefined;
+
+export async function withDeadline<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("readiness_timeout")), deadlineMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export function getReadinessPool(): Pool {
   if (readinessPool) return readinessPool;
@@ -31,8 +46,8 @@ export function getReadinessPool(): Pool {
     connectionString: normalizeDatabaseUrl(databaseUrl),
     max: 1,
     idleTimeoutMillis: 1_000,
-    connectionTimeoutMillis: 250,
-    options: "-c statement_timeout=250",
+    connectionTimeoutMillis: READINESS_DEADLINE_MS,
+    options: `-c statement_timeout=${READINESS_STATEMENT_TIMEOUT_MS}`,
   });
   readinessPool.on("error", (error) => {
     const code = (error as { code?: string }).code ?? "unknown";
@@ -51,7 +66,7 @@ export async function probeReadiness(pool: Pool): Promise<ReadinessSnapshot> {
 
   try {
     await client.query("begin");
-    await client.query("set local statement_timeout = '250ms'");
+    await client.query(`set local statement_timeout = '${READINESS_STATEMENT_TIMEOUT_MS}ms'`);
     await client.query("select 1");
 
     const tableRows = await client.query<{ name: string; reg: string | null }>(
@@ -132,6 +147,14 @@ export function buildReadiness(
   };
 }
 
+export async function evaluateReadiness(
+  probe: () => Promise<ReadinessSnapshot>,
+  expected: MigrationManifestEntry[] = EXPECTED_MIGRATIONS,
+  deadlineMs: number = READINESS_DEADLINE_MS,
+): Promise<Readiness> {
+  return buildReadiness(await withDeadline(Promise.resolve().then(probe), deadlineMs), expected);
+}
+
 export async function getReadiness(): Promise<Readiness> {
-  return buildReadiness(await probeReadiness(getReadinessPool()));
+  return evaluateReadiness(() => probeReadiness(getReadinessPool()));
 }

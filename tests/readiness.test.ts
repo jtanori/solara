@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildReadiness, type ReadinessSnapshot } from "../src/lib/readiness";
+import { buildReadiness, evaluateReadiness, type ReadinessSnapshot } from "../src/lib/readiness";
 import { EXPECTED_MIGRATIONS } from "../src/lib/migration-manifest";
 
 const appliedHashes = EXPECTED_MIGRATIONS.map(entry => entry.hash);
@@ -59,6 +59,15 @@ test("not ready when the auth probe fails", () => {
   const result = buildReadiness(snapshot({ authOk: false }));
   assert.equal(result.ok, false);
   assert.equal(result.auth, "degraded");
+});
+
+test("readiness deadline rejects a hung probe without waiting for it", async () => {
+  const started = Date.now();
+  await assert.rejects(
+    evaluateReadiness(() => new Promise<ReadinessSnapshot>(() => {}), EXPECTED_MIGRATIONS, 50),
+    /readiness_timeout/,
+  );
+  assert.ok(Date.now() - started < 1_000, "deadline should reject without waiting for the probe");
 });
 
 test("not ready when the database is unreachable", () => {

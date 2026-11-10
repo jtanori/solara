@@ -14,6 +14,10 @@ set -euo pipefail
 # Merge policy (see ADR 004): feature → staging uses --squash (linear), promotion staging→main uses --merge (preserve ancestry).
 # Repo needs allow_squash_merge:true + allow_merge_commit:true (Settings → General → Pull Requests).
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/wait-for-vercel-status.sh
+source "$SCRIPT_DIR/lib/wait-for-vercel-status.sh"
+
 PR=""
 ENV=""
 SKIP_MIGRATE=false
@@ -208,6 +212,25 @@ echo "Policy: $MERGE_LABEL — see AGENTS.md & ADR 004."
 if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH ($MERGE_LABEL)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
 gh pr merge "$PR" $MERGE_ARGS --repo jtanori/solara
 echo "Merged PR #$PR → $BASE_BRANCH ($MERGE_LABEL)"
+
+# A readiness 200 alone does not prove the new deployment is live: the previous release
+# also serves /api/ready. Wait for Vercel's status on this exact merge SHA first.
+MERGE_SHA=""
+for i in {1..12}; do
+  MERGE_SHA=$(gh pr view "$PR" --repo jtanori/solara --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null || true)
+  if [[ -n "$MERGE_SHA" ]]; then break; fi
+  sleep 5
+done
+if [[ -z "$MERGE_SHA" ]]; then
+  echo "ERROR: could not resolve the merge commit for PR #$PR; refusing to report a successful deploy." >&2
+  exit 1
+fi
+echo "Merge commit: $MERGE_SHA"
+if ! wait_for_vercel_status "jtanori/solara" "$MERGE_SHA" "${VERCEL_STATUS_CONTEXT:-Vercel}" 60 5; then
+  echo "ERROR: the merged deployment is not confirmed live; refusing to report success." >&2
+  exit 1
+fi
+
 echo "Waiting for Vercel $APP_URL /api/ready ..."
 
 READY_TMP="$(mktemp)"
