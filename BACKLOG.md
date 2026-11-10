@@ -4,7 +4,7 @@
 
 *Milestone routing corrected 2026-11-08 (#62→M3, #63/#94/#69→M1; audit severity decides).*
 
-*Last updated: 2026-11-10 from `staging` — #55/#60/#84/#87 merged via #125; #70/#64/#72/#78 in progress.*
+*Last updated: 2026-11-10 from `staging` (and again same day: +#131 mail/secrets, the production deploy checklist, and #128/#129 readings fixes) — #55/#60/#84/#87 merged via #125; #70/#64/#72/#78 in progress.*
 
 ## Open
 
@@ -74,6 +74,7 @@
 | [#111](https://github.com/jtanori/solara/issues/111) | readings: astrologer review and override tooling | `type:feature` `area:content` `area:ui` `priority:p3` `status:ready` | ready — deliberately not a CMS |
 | [#124](https://github.com/jtanori/solara/pull/124) | chore(process): base-freshness gate + migration-diff hardening in deploy.sh | — | in review (round 2) — freshness gate before the CI gate: gap report, in-memory merge-tree triage with clean/conflict/fatal exit codes separated, unconditional refusal with recovery recipe (no override flag — the rulesets block BEHIND merges anyway); explicit-refspec fetches, shallow-clone rejection; migration diff made loud |
 | [#10](https://github.com/jtanori/solara/issues/10) | chore: validate Stripe test-mode subscription lifecycle | `type:chore` `area:billing,area:infra` `priority:p2` `status:ready` | ready — unblocked by #9; needs Stripe test keys + CLI login (Checkout → webhook → portal/renewal/cancel) |
+| [#131](https://github.com/jtanori/solara/issues/131) | infra: configure mail transport and related secrets for staging and production | — (labels blocked: token lacks issue-write) | ready — **p0**: no mail vars in Vercel production *or* preview, so `resolveMailTransportName()` throws in hosted builds; sign-up succeeds but verification is unreachable, so no account can sign in on staging today. Steps: `docs/operations/production-deploy-checklist.md` §1/1B/1C |
 | [#16](https://github.com/jtanori/solara/issues/16) | chore: define independent platform validation checklist | `type:chore` `area:infra,area:content,area:astro` `priority:p3` `status:needs-triage` | needs-triage — astro fixtures, hist TZ/leap/high-lat, editorial versioning, backup/restore, MFA/rate-limit/CSRF |
 
 ## Closed (recent)
