@@ -1,5 +1,8 @@
-import { boolean, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, doublePrecision, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { ChartInput, ChartResult, Role } from "@/lib/types";
+import type { ReadingDocument } from "@/readings/types";
+import type { ProviderUsage } from "@/readings/provider";
+import type { SectionOutput } from "@/readings/schemas";
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -28,6 +31,47 @@ export const readings = pgTable("readings", {
   result: jsonb("result").$type<ChartResult>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ------------------------------------------------------------------ readings engine (#103)
+
+/**
+ * Frozen, locale-versioned reading documents (epic §2, §4.5). Regeneration is
+ * explicit and produces a NEW row (unique on reading+locale+contentVersion);
+ * there is no update path — immutability is structural.
+ */
+export const readingDocuments = pgTable("reading_documents", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  readingId: uuid("reading_id").notNull().references(() => readings.id, { onDelete: "cascade" }),
+  locale: text("locale").$type<"en" | "es">().notNull(),
+  contentVersion: text("content_version").notNull(),
+  chartVersion: text("chart_version").notNull(),
+  tier: text("tier").$type<"free" | "paid">().notNull(),
+  document: jsonb("document").$type<ReadingDocument>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex("reading_documents_reading_locale_version_key").on(table.readingId, table.locale, table.contentVersion),
+  index("reading_documents_reading_idx").on(table.readingId),
+]);
+
+/**
+ * The generation cache (epic §4.2): one row per (digest, section, locale,
+ * contentVersion). Insert-only — first write wins, contentVersion bumps create
+ * new rows and preserve old ones. Also the per-section cost/latency ledger.
+ */
+export const generationCache = pgTable("generation_cache", {
+  digestHash: text("digest_hash").notNull(),
+  section: text("section").notNull(),
+  locale: text("locale").$type<"en" | "es">().notNull(),
+  contentVersion: text("content_version").notNull(),
+  model: text("model").notNull(),
+  usage: jsonb("usage").$type<ProviderUsage>().notNull(),
+  costMxn: doublePrecision("cost_mxn").notNull(),
+  latencyMs: integer("latency_ms").notNull(),
+  output: jsonb("output").$type<SectionOutput>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  primaryKey({ columns: [table.digestHash, table.section, table.locale, table.contentVersion] }),
+]);
 
 export const knowledge = pgTable("knowledge", {
   key: text("key").primaryKey(),
