@@ -23,9 +23,9 @@
 # Safety rules enforced here:
 #   * refuses to run on top of the base branch or any protected branch
 #   * refuses a dirty working tree
-#   * only ever stages the 12 known files
+#   * only ever stages the 11 known files
 #   * aborts if the staged diff touches anything outside that list
-#   * aborts if the staged diff deletes more than 1 line (only BACKLOG.md's stale header line)
+#   * aborts if the staged diff deletes any line (this operation only adds files)
 set -uo pipefail
 
 REPO="jtanori/solara"
@@ -39,7 +39,6 @@ DRY=0
 
 # ---- the only files this operation is allowed to touch -----------------------
 FILES=(
-  BACKLOG.md
   docs/audit-database-integration.md
   docs/audit/deep-audit-2026-11.md
   docs/audit/epic-79-addendum.md
@@ -52,11 +51,11 @@ FILES=(
   scripts/fix-milestone-routing.sh
   scripts/label-issues.sh
 )
-EXPECTED_FILES=12
-MAX_DELETED_LINES=1   # BACKLOG.md's "Last updated" header line is replaced
+EXPECTED_FILES=11
+MAX_DELETED_LINES=0   # #132/ADR 009: no backlog file is touched by this operation
 
 PR_TITLE="docs: database + deep audits, fix plans, Neon Auth decision, ops runbook, 42 issues indexed"
-PR_BODY="Docs and helper scripts only — 11 new files plus the BACKLOG index. No src/, drizzle/, .github/, package.json or existing-script changes, so no migration is required."
+PR_BODY="Docs and helper scripts only — 11 new files. (#132/ADR 009 removed the committed backlog index.) No src/, drizzle/, .github/, package.json or existing-script changes, so no migration is required."
 
 # ---- output helpers ----------------------------------------------------------
 if [[ -t 1 ]]; then C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
@@ -181,7 +180,7 @@ done
 
 step "plan"
 dim "  branch : $BRANCH   (from origin/$BASE)"
-dim "  files  : $EXPECTED_FILES (11 new + BACKLOG.md modified)"
+dim "  files  : $EXPECTED_FILES (all new)"
 if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
   die "branch '$BRANCH' already exists locally — delete it ('git branch -D $BRANCH') or use --branch <other>"
 fi

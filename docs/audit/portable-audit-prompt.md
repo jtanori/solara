@@ -140,7 +140,8 @@ Then:
   (issue edit often returns 403 even when issue create succeeds — tell the owner instead of silently
   failing),
 - extend the repository's label-application script with the new issues and any missing labels,
-- update the offline backlog index if the repo keeps one.
+- update the offline backlog index if the repo keeps one (this repo does not — ADR 009: the snapshot
+  is generated on demand and never committed).
 
 ## Deliverables
 

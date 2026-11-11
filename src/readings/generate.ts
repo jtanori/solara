@@ -64,6 +64,16 @@ export interface SectionCache {
   put(key: SectionCacheKey, value: CachedSection): Promise<void>;
 }
 
+/**
+ * Marks a failed section whose spend could not be measured from the provider's
+ * own report, because the report was untrustworthy (non-finite, negative, or
+ * an unpriced model). Such a section's cost is a *worst-case estimate*, not a
+ * receipt: `maxOutputTokens × price + prompt estimate`. It exists so that a
+ * provider which never reports usage honestly cannot dispatch the whole tier
+ * for free by keeping the ledger at 0/0 (#129).
+ */
+export type EstimatedCostResult = { failureReason: string; estimatedCostMxn: number };
+
 export class MemorySectionCache implements SectionCache {
   private readonly store = new Map<string, CachedSection>();
 
@@ -161,10 +171,25 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
       const enabled = generationEnabled();
       const provider = args.provider ?? resolveProvider();
       let spent = 0; // MXN spent by THIS run, every attempt counted as it reports
+      /**
+       * Set when an attempt reports usage that cannot be measured. The ledger is
+       * then no longer trustworthy for this run: no further section is
+       * dispatched, the remainder fails with a run-level reason, and the
+       * estimate already booked keeps the ceiling honest (#129).
+       */
+      let runHalted: string | null = null;
 
       for (const key of wanted) {
         if (!enabled) {
           results.push({ key, status: "failed", failureReason: "generation_disabled" });
+          continue;
+        }
+
+        // The run stopped being measurable: fail the rest without spending.
+        // Placed before the cache read so a halt cannot be masked by cache hits
+        // appearing to succeed while the ledger is untrustworthy.
+        if (runHalted) {
+          results.push({ key, status: "failed", failureReason: `generation_halted: ${runHalted}` });
           continue;
         }
 
@@ -229,14 +254,59 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
         const sectionUsage: ProviderUsage = { inputTokens: 0, outputTokens: 0 };
         let sectionLatency = 0;
         let sectionCost = 0;
-        const account = (completion: { model: string; usage: ProviderUsage; latencyMs: number }): string | null => {
+        /**
+         * Spend the provider's report could not establish. Kept separately from
+         * `sectionCost` so an *estimated* number is never presented as a receipt.
+         */
+        let sectionEstimatedCost = 0;
+        /**
+         * Why an unmeasurable report halts the run rather than being ignored:
+         * the provider's usage is the only pricing input, so a provider that
+         * always misreports would otherwise dispatch the whole tier for free.
+         *
+         * Two *post-dispatch* cases are unmeasurable and must both halt:
+         *   - invalid usage (non-finite/negative token counts)
+         *   - a provider-reported model that has no price entry
+         * The second is NOT the same as the pre-dispatch `pricing_unavailable`
+         * case above. That one prices the model we *configured*, is identical
+         * for every section, and is deterministically fixable by editing the
+         * price table — it keeps the whole-table fail-closed behaviour. This one
+         * is discovered only after a paid call, is the provider's own answer,
+         * and would otherwise let an unpriced response dispatch the remaining
+         * sections while the ledger recorded zero (#129).
+         */
+        /**
+         * Worst-case price of one attempt: the whole output budget plus the
+         * prompt we actually assembled. Conservative on purpose — an estimate
+         * that can under-report is the bug being fixed.
+         */
+        const worstCaseCost = (promptText: string): number => {
+          const estimate = costMxn(model, {
+            inputTokens: approxTokens(promptText),
+            outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION,
+          });
+          // priceFor(model) was checked above, so this is non-null; guard anyway.
+          if (estimate === null) throw new Error(`unpriceable model ${model}`);
+          return estimate;
+        };
+        const account = (completion: { model: string; usage: ProviderUsage; latencyMs: number }, promptText: string): string | null => {
           // Provider-reported usage is untrusted: NaN would poison every later
           // ceiling comparison into false, negatives would offset spend.
           if (!validUsage(completion.usage)) {
+            if (!runHalted) runHalted = `usage_invalid: provider reported non-finite or negative token counts (${JSON.stringify(completion.usage)})`;
+            sectionEstimatedCost += worstCaseCost(promptText);
             return `usage_invalid: provider reported non-finite or negative token counts (${JSON.stringify(completion.usage)})`;
           }
           const cost = costMxn(completion.model, completion.usage);
-          if (cost === null) return `pricing_unavailable: provider reported unpriced model "${completion.model}"`;
+          if (cost === null) {
+            // An unpriced model in the response is unmeasurable spend, not a free
+            // call: book a worst-case estimate and stop the run. Halting is what
+            // makes the missing price entry cost one call instead of the tier.
+            const reason = `pricing_unavailable: provider reported unpriced model "${completion.model}"`;
+            if (!runHalted) runHalted = reason;
+            sectionEstimatedCost += worstCaseCost(promptText);
+            return reason;
+          }
           spent += cost;
           sectionCost += cost;
           sectionUsage.inputTokens += completion.usage.inputTokens;
@@ -256,10 +326,19 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
           continue;
         }
 
-        const primaryPricingFailure = account(completion);
+        /** Failure-path total: measured spend plus any worst-case estimate. */
+        const failedSectionCost = (): number => {
+          const total = sectionCost + sectionEstimatedCost;
+          sectionEstimatedCost = 0;
+          return total;
+        };
+
+        const primaryPricingFailure = account(completion, prompt);
         if (primaryPricingFailure) {
           // The provider answered with a model we cannot price: discard, fail closed.
-          results.push({ key, status: "failed", failureReason: primaryPricingFailure, costMxn: sectionCost });
+          // An unmeasurable report is booked at worst case so the ledger and the
+          // ceiling both see it (#129).
+          results.push({ key, status: "failed", failureReason: primaryPricingFailure, costMxn: failedSectionCost() });
           continue;
         }
 
@@ -283,7 +362,7 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
               section: key, locale: args.locale, prompt: repairPrompt,
               digest: args.digest, jsonSchema: schema, model, maxOutputTokens: MAX_OUTPUT_TOKENS_PER_SECTION,
             });
-            const repairPricingFailure = account(repaired);
+            const repairPricingFailure = account(repaired, repairPrompt);
             if (repairPricingFailure) {
               // Cannot price or trust the repair's usage: do not use its output.
               log.warn("readings.repair_rejected", { section: key, model: repaired.model, reason: repairPricingFailure });
@@ -304,7 +383,7 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
           results.push({
             key, status: "failed",
             failureReason: `invalid_output: ${validation.error.split("\n")[0]}`,
-            costMxn: sectionCost,
+            costMxn: failedSectionCost(),
           });
           continue;
         }

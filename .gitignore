@@ -12,3 +12,6 @@ coverage/
 migrate.log
 .mail-outbox/
 .DS_Store
+
+# On-demand backlog snapshot (ADR 009 / #132) — must never be committed
+/docs/backlog-snapshot.md

@@ -62,7 +62,8 @@ imply an unperformed check passed.
       moved triggers.
 - [ ] **SEC-04 Evidence.** A test, CI run or screenshot proves the change ran.
 - [ ] **SEC-05 APIs and imports.** Every symbol exists in the version this repo actually runs.
-- [ ] **Migration.** Any `drizzle/` diff is reviewed at Blocker severity: additive or justified, the staging migration rehearsal is planned/green, `scripts/db-run.ts`'s required manifest covers new tables, and the promotion path is stated (db-remote rehearsal → `deploy.sh --skip-migrate`).
+- [ ] **Migration.** Any `drizzle/` diff is reviewed at Blocker severity: additive or justified, the staging migration rehearsal is planned/green, `scripts/db-run.ts`'s required manifest covers new tables, and the promotion path is stated (db-remote rehearsal → `deploy.sh --env production`, **without**
+`--skip-migrate`, which `decide_skip_migrate` refuses for production when the diff touches `drizzle/`).
 
 ### High
 

@@ -69,8 +69,8 @@ reviewer can re-derive it rather than trust it.
    body — mutation → test that fails → result.*
 8. **Migrations and data.** Additive by default; `scripts/db-run.ts` required
    manifest updated for new tables; the staging migration rehearsal plan is
-   stated; promotion implications noted (db-remote rehearsal →
-   `deploy.sh --skip-migrate`).
+   stated; promotion implications noted (db-remote rehearsal → `deploy.sh` with **no**
+   `--skip-migrate` — that flag is refused for production by `decide_skip_migrate`).
 9. **Config/env/docs.** Every new env var appears in `.env.example`,
    `.env.staging.example`, `.env.production.example` and is named in the PR
    body; `AGENTS.md` map updated if directories are added; user-facing docs
@@ -119,7 +119,7 @@ now" may skip items 7, 10 and 13 with a one-line note in the PR body; items 3,
 | Label | Means | Typical paths |
 |---|---|---|
 | `deploy:required` | Affects runtime or build: staging QA + migration rehearsal (if `drizzle/` touched) + build-pipeline attention after merge | `src/`, `drizzle/`, `next.config.ts`, `package*.json`, `.github/workflows/` |
-| `deploy:skip` | Documentation/chore only: no staging QA, no migration rehearsal | `docs/`, `BACKLOG.md`, comments, `.md` files |
+| `deploy:skip` | Documentation/chore only: no staging QA, no migration rehearsal | `docs/`, comments, `.md` files |
 
 The author proposes the label at filing; **the reviewer's verdict confirms or
 corrects it** — the final call is the review's. Vercel previews build on every
@@ -164,11 +164,14 @@ Run by the coding agent unless marked *(operator)*:
    `staging`, prune, note the new SHA.
 6. If `drizzle/` was touched: the staging migration rehearsal must be green,
    and production promotion runs the db-remote rehearsal first, then
-   `deploy.sh --skip-migrate`.
+   `deploy.sh --env production`. Do not add `--skip-migrate`: when the diff
+   changes `drizzle/` the policy returns `refuse-production` and the script
+   exits before merging. Re-running the idempotent migrate step is by design.
 7. If `deploy:required`: staging QA smoke on the touched surfaces (sign-in,
    map, PDF gate, Stripe test webhook, password reset, `/api/health`).
-8. Update `BACKLOG.md` if issues were opened or closed (rides the next PR —
-   the index is allowed to lag).
+8. Nothing to update for opened/closed issues: GitHub is the record (ADR 009). There is no
+   backlog file, so there is nothing that can lag. Run `npm run backlog:snapshot` only if you
+   need an offline copy; the result is gitignored.
 9. Promotion *(operator)*: when the operator calls for it, `deploy.sh` runs on
    explicit request only; post-promotion, verify `/api/health` and close the
    promotion-blocking issues.

@@ -37,7 +37,7 @@ We need environment isolation for a prototype that will handle personal data and
 ## ADR 002 — Offline `BACKLOG.md` is an index, not a source of truth
 
 **Date:** 2026-11-07  
-**Status:** Accepted  
+**Status:** ~~Accepted~~ **Superseded by ADR 009** (2026-11-10, #132) — the file was removed  
 **Issue:** #5  
 
 ### Context
@@ -201,3 +201,48 @@ The #52 incident came from ad-hoc migration work and database state that did not
 ---
 
 *This file is the canonical rationale; update it when a decision changes and link to the superseding PR.*
+
+---
+
+## ADR 009 — No committed backlog file; the snapshot is generated on demand
+
+**Date:** 2026-11-10
+**Status:** Accepted
+**Issue:** #132 (supersedes ADR 002)
+
+### Context
+ADR 002 declared `BACKLOG.md` "an index, not a source of truth" and asked that it be updated whenever
+issues were created, changed or closed. Nothing enforced that, so the file drifted. Measured against
+the GitHub API on 2026-11-10, after a single promotion cycle's worth of label changes:
+
+- 94 rows carried hand-written label text; **42 matched** GitHub and **11 had drifted**;
+- **two open issues were missing entirely** (#128, #129);
+- **at least six rows described already-closed issues** (#16, #52, #101, #102, #117, #73);
+- drift ran in both directions — #10 showed `status:ready` while GitHub said `status:blocked`.
+
+The cost is not the editing time. It is that agents and contributors *read* the file as current, so a
+stale row becomes a stale decision. A document that must be hand-synchronised with a system that
+changes several times a day will be wrong most of the time, and "not a source of truth" in a README
+does not stop a reader trusting it.
+
+### Decision
+- **No backlog file is tracked in the repository.** `BACKLOG.md` is deleted.
+- `npm run backlog:snapshot` (`scripts/backlog-snapshot.ts`) renders an offline snapshot from the
+  GitHub API to `docs/backlog-snapshot.md`, which is **`.gitignore`d**.
+- The snapshot header always records the **generation timestamp**, the **repository**, the **git SHA**
+  it was produced at, and the **exact query**, so a reader judges freshness instead of assuming it.
+- Offline access is served by generating the snapshot *before* going offline. A stale copy therefore
+  cannot exist in the repository — staleness is impossible, not merely discouraged.
+- The generator **fails loudly** (non-zero, no partial file) when `gh` is missing, unauthenticated, or
+  returns unexpected output. A snapshot that silently rendered an empty table would be worse than no
+  snapshot.
+- Generating in CI and committing the output was considered and rejected: it keeps the file but
+  re-creates a commit-per-issue-change treadmill and a merge-conflict magnet on nearly every
+  concurrent PR.
+
+### Consequences
+- GitHub Issues are the only place issue lifecycle lives. There is no second copy to contradict.
+- A contributor who never runs the generator is never blocked and never reads stale state as fact.
+- Offline planning requires one command beforehand, which is the intended trade.
+- CI does not check the snapshot, because it is not in the tree; nothing can go stale silently.
+- ADR 002's text is retained unchanged (append-only); its status now points here.
