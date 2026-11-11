@@ -20,10 +20,15 @@ decide_skip_migrate() {
   printf 'skip-forced'
 }
 
-# decide_rollback <token:present|absent> <target:nonempty|empty>
-# Prints: auto | manual-no-credentials | manual-no-target
+# decide_rollback <env:staging|production> <token:present|absent> <target:nonempty|empty>
+# Prints: auto | manual-no-credentials | manual-no-target | manual-not-production
+#
+# Vercel Instant Rollback moves the *production* alias. This repo has one project, so running it
+# after a failed staging deploy would repoint production at an older build — a worse outcome than
+# the failed staging deploy. Staging therefore always recovers manually.
 decide_rollback() {
-  local credentials="$1" target="$2"
+  local env="$1" credentials="$2" target="$3"
+  if [[ "$env" != production ]]; then printf 'manual-not-production'; return 0; fi
   if [[ "$credentials" != present ]]; then printf 'manual-no-credentials'; return 0; fi
   if [[ -z "$target" ]]; then printf 'manual-no-target'; return 0; fi
   printf 'auto'

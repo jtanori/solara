@@ -831,6 +831,49 @@ test("#129 the worst-case estimate makes later sections ceiling-gated, not free"
   });
 });
 
+test("#129 a model reported unpriced AFTER dispatch halts the run instead of dispatching the rest for free", async () => {
+  // The pre-dispatch check prices the model we configured ("fixture-1"), so this
+  // path is only reachable through the provider's own response. Before the fix it
+  // dispatched every section of the tier, failed each with pricing_unavailable,
+  // and booked wastedCostMxn: 0 — an unpriced call that reads as a free one.
+  await withEnv({
+    READINGS_GENERATION_ENABLED: "true",
+    READINGS_MODEL_PRICES: JSON.stringify({ "fixture-1": { inputMxnPerMillion: 10, outputMxnPerMillion: 60 } }),
+  }, async () => {
+    const unpricedModel: ReadingProvider = {
+      name: "unpriced-model",
+      async complete(request) {
+        const completion = await createFixtureProvider().complete(request);
+        return { ...completion, model: "unknown-model" };
+      },
+    };
+    const spy = spyAround(unpricedModel);
+    const document = await generate({ tier: "paid", cache: new MemorySectionCache(), provider: spy.provider });
+
+    // Paid tier is nine sections; the halt means exactly one paid call happens.
+    assert.equal(spy.calls.length, 1, "the first unpriceable response stops the run");
+    assert.equal(spy.calls[0].section, "overview");
+
+    const reasons = document.sections.map(section => section.failureReason ?? "");
+    assert.match(reasons[0], /^pricing_unavailable: provider reported unpriced model "unknown-model"/);
+    for (const reason of reasons.slice(1)) {
+      assert.match(reason, /^generation_halted: pricing_unavailable/, "the rest carry the run-level halt reason");
+    }
+    for (const section of document.sections) assert.equal(section.status, "failed");
+
+    // Unmeasurable spend is still spend: it is booked at worst case, not zero.
+    assert.equal(document.costMxn, 0);
+    assert.ok(
+      document.wastedCostMxn > 0,
+      `an unpriced call is booked conservatively, not as zero (${document.wastedCostMxn})`,
+    );
+    assert.ok(
+      document.wastedCostMxn >= 0.12,
+      "at least the max-output component of the fixture price (2000 tokens @ 60 MXN/M)",
+    );
+  });
+});
+
 test("#129 pricing_unavailable still fails every section (the halt does not replace table-level fail-closed)", async () => {
   await withEnv({
     READINGS_GENERATION_ENABLED: "true",

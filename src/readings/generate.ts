@@ -263,9 +263,17 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
          * Why an unmeasurable report halts the run rather than being ignored:
          * the provider's usage is the only pricing input, so a provider that
          * always misreports would otherwise dispatch the whole tier for free.
-         * `pricing_unavailable` is deliberately excluded — it is a deterministic
-         * configuration error, identical for every section, and halting on it
-         * would change the established fail-closed behaviour for the whole table.
+         *
+         * Two *post-dispatch* cases are unmeasurable and must both halt:
+         *   - invalid usage (non-finite/negative token counts)
+         *   - a provider-reported model that has no price entry
+         * The second is NOT the same as the pre-dispatch `pricing_unavailable`
+         * case above. That one prices the model we *configured*, is identical
+         * for every section, and is deterministically fixable by editing the
+         * price table — it keeps the whole-table fail-closed behaviour. This one
+         * is discovered only after a paid call, is the provider's own answer,
+         * and would otherwise let an unpriced response dispatch the remaining
+         * sections while the ledger recorded zero (#129).
          */
         /**
          * Worst-case price of one attempt: the whole output budget plus the
@@ -290,7 +298,15 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
             return `usage_invalid: provider reported non-finite or negative token counts (${JSON.stringify(completion.usage)})`;
           }
           const cost = costMxn(completion.model, completion.usage);
-          if (cost === null) return `pricing_unavailable: provider reported unpriced model "${completion.model}"`;
+          if (cost === null) {
+            // An unpriced model in the response is unmeasurable spend, not a free
+            // call: book a worst-case estimate and stop the run. Halting is what
+            // makes the missing price entry cost one call instead of the tier.
+            const reason = `pricing_unavailable: provider reported unpriced model "${completion.model}"`;
+            if (!runHalted) runHalted = reason;
+            sectionEstimatedCost += worstCaseCost(promptText);
+            return reason;
+          }
           spent += cost;
           sectionCost += cost;
           sectionUsage.inputTokens += completion.usage.inputTokens;

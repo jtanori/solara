@@ -7,7 +7,13 @@ set -euo pipefail
 # Usage:
 #   ./scripts/deploy.sh --pr 43 --env staging          # env optional — inferred from PR base
 #   ./scripts/deploy.sh --pr 44 --env production --yes
-#   ./scripts/deploy.sh --pr 43 --skip-migrate
+#   ./scripts/deploy.sh --pr 43 --skip-migrate --force   # staging only; refused for production
+#
+# Gates, in order: base freshness (the PR head must contain the base tip) → preview readiness (the
+# PR's own Vercel preview must answer /api/ready with ok:true, BEFORE merging) → CI checks →
+# hosted schema → merge → Vercel status on the merge SHA → /api/ready on the environment URL.
+# A failure after the merge rolls production back automatically; staging recovers manually because
+# Vercel Instant Rollback only moves the production alias.
 #
 # Prereqs: gh auth login, GitHub Environments 'staging'/'production' with secret DATABASE_URL (Neon DIRECT, no -pooler, with ?sslmode=verify-full&channel_binding=require),
 # and VERCEL_AUTOMATION_BYPASS_SECRET when the Vercel domain is protected (hard-fails on 401/403).
@@ -21,6 +27,8 @@ source "$SCRIPT_DIR/lib/wait-for-vercel-status.sh"
 source "$SCRIPT_DIR/lib/vercel-rollback.sh"
 # shellcheck source=lib/deploy-policy.sh
 source "$SCRIPT_DIR/lib/deploy-policy.sh"
+# shellcheck source=lib/vercel-preview.sh
+source "$SCRIPT_DIR/lib/vercel-preview.sh"
 
 PR=""
 ENV=""
@@ -122,12 +130,66 @@ elif [[ "$ANC_RC" -eq 1 ]]; then
   fi
   echo "Recovery: git fetch origin && git switch $HEAD_REF && git merge origin/$BASE_BRANCH && git push"
   echo "          then wait for the verify job on the new head and re-run this script."
+  if [[ "$BASE_BRANCH" == "main" ]]; then
+    # For a promotion this gate IS the ancestry check: the head must contain main's commits, and
+    # `--is-ancestor` is the only test that proves it. A back-merge does that; a squash does not,
+    # which is the trap in the runbooks (bootstrap §4.1a). Say so here, where it actually fails.
+    echo "" >&2
+    echo "       This is a staging→main promotion, so this gate is the ancestry check." >&2
+    echo "       A squash back-merge does NOT satisfy it: the content lands, main's SHAs do not." >&2
+    MAIN_GAP=$(git log --format=%H --cherry-pick --left-only origin/main..."$HEAD_SHA" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "${MAIN_GAP:-1}" == "0" ]]; then
+      echo "       main's content is already on $HEAD_REF under different SHAs." >&2
+      echo "       Litmus: git merge-base --is-ancestor origin/main origin/$HEAD_REF" >&2
+      echo "       Only a merge into $HEAD_REF makes that succeed; see bootstrap §4.1a." >&2
+    else
+      echo "       main carries ${MAIN_GAP:-some} change(s) $HEAD_REF does not have — back-merge them." >&2
+      git log --oneline --cherry-pick --left-only origin/main..."$HEAD_SHA" 2>/dev/null | sed -n '1,10s/^/         /p' >&2
+    fi
+    echo "" >&2
+  fi
   echo "ERROR: refusing to deploy a $VERDICT stale PR — update the branch first." >&2
   exit 1
 else
   echo "ERROR: git merge-base --is-ancestor failed (exit $ANC_RC) — are both refs valid commits? fetch full history and retry" >&2
   exit 1
 fi
+
+echo "== Gate: preview readiness ($HEAD_REF) =="
+# #76 acceptance criterion 1: a deliberately broken preview must block the merge. This has to run
+# BEFORE `gh pr merge`; the post-merge probe cannot satisfy it, because by then the code is on the
+# target branch. Fail closed: "I could not find the preview" is not "the preview is fine".
+PREVIEW_STATUS_JSON=$(gh api "repos/jtanori/solara/commits/$HEAD_SHA/status" 2>/dev/null || true)
+PREVIEW_STATUS_ROW=$(printf '%s' "$PREVIEW_STATUS_JSON" | node scripts/lib/vercel-status.mjs "${VERCEL_STATUS_CONTEXT:-Vercel}" 2>/dev/null || true)
+PREVIEW_STATE="${PREVIEW_STATUS_ROW%%$'\t'*}"
+PREVIEW_STATUS_URL="${PREVIEW_STATUS_ROW#*$'\t'}"
+if [[ -z "$PREVIEW_STATUS_ROW" || "$PREVIEW_STATE" != "success" ]]; then
+  echo "ERROR: no successful Vercel preview status on $HEAD_SHA (state: ${PREVIEW_STATE:-none})." >&2
+  echo "       Wait for the preview build, or check the Vercel dashboard, then re-run." >&2
+  exit 1
+fi
+PREVIEW_BASE=""
+if ! PREVIEW_BASE=$(vercel_preview_url "$PREVIEW_STATUS_URL" "$HEAD_REF" "${VERCEL_TEAM_ID:-}"); then
+  echo "ERROR: $PREVIEW_BASE" >&2
+  echo "       Cannot verify the preview, so refusing to merge (fail closed)." >&2
+  exit 1
+fi
+echo "Preview: $PREVIEW_BASE (from $PREVIEW_STATUS_URL)"
+PREVIEW_TMP="$(mktemp)"
+CLEANUP_FILES=("$PREVIEW_TMP")
+cleanup() { local f; for f in "${CLEANUP_FILES[@]:-}"; do [[ -n "$f" ]] && rm -f "$f"; done; }
+trap cleanup EXIT
+if ! PREVIEW_CODE=$(vercel_preview_ready "$PREVIEW_BASE" "${PREVIEW_ATTEMPTS:-12}" "${PREVIEW_INTERVAL:-5}" "$PREVIEW_TMP"); then
+  echo "ERROR: $PREVIEW_BASE/api/ready did not report ok:true (last HTTP ${PREVIEW_CODE:-none})." >&2
+  if [[ "$PREVIEW_CODE" == "401" || "$PREVIEW_CODE" == "403" ]]; then
+    echo "       The preview is behind Vercel Authentication: set VERCEL_AUTOMATION_BYPASS_SECRET." >&2
+  else
+    sed -n '1,20p' "$PREVIEW_TMP" >&2 || true
+  fi
+  echo "       A broken preview blocks the merge (#76). Fix it and push again." >&2
+  exit 1
+fi
+echo "Preview ready: $PREVIEW_BASE/api/ready -> ok"
 
 echo "== Gate: CI checks =="
 gh pr checks "$PR" --repo jtanori/solara --watch 2>&1 | tail -20 || true
@@ -144,26 +206,89 @@ DEPLOY_LOG="${DEPLOY_LOG:-docs/deploys.md}"
 DEPLOY_LOG_HEADER='| when | env | sha | pr | migrations | result | rollback |
 | --- | --- | --- | --- | --- | --- | --- |'
 
+# Where the record is *published*. A row appended to the operator's local checkout answers "what is
+# deployed?" for exactly one person and exactly one machine, which is not what #76 asked for. The
+# durable copy is a PR comment (readable by anyone with the repo, survives a fresh clone) plus a
+# GitHub Release for production merges (the release marker #76 requires).
+DEPLOY_RECORD_COMMENT_MARKER="<!-- deploy-record -->"
+
+# The id of this PR's existing deploy-record comment, if any (a retry rewrites, never stacks).
+deploy_record_comment_id() {
+  local pr="$1"
+  gh api "repos/jtanori/solara/issues/$pr/comments" --paginate \
+    --jq ".[] | select(.body | contains(\"$DEPLOY_RECORD_COMMENT_MARKER\")) | .id" 2>/dev/null \
+    | head -1 || true
+}
+
 # Args: env sha pr migrations result rollback. Escapes are done by the node renderer, so the row
 # stays one table line even when a value contains a pipe.
+#
+# Returns non-zero when the shared record could not be published. The caller decides how loud to be;
+# a deploy that succeeded must not be reported as failed because GitHub was unavailable.
 record_deploy() {
   local env="$1" sha="$2" pr="$3" migrations="$4" result="$5" rollback="$6"
-  local json record
+  local json record timestamp published=0
+  timestamp="$(date -u +%Y-%m-%dT%H:%MZ)"
   json=$(node -e '
     const [env, sha, pr, migrations, result, rollback, timestamp] = process.argv.slice(1);
     process.stdout.write(JSON.stringify({ env, sha, pr, migrations, result, rollback, timestamp }));
-  ' "$env" "$sha" "$pr" "$migrations" "$result" "$rollback" "$(date -u +%Y-%m-%dT%H:%MZ)" )
+  ' "$env" "$sha" "$pr" "$migrations" "$result" "$rollback" "$timestamp" )
 
   if ! record=$(node "$SCRIPT_DIR/lib/deploy-log.mjs" "$json"); then
     echo "WARN: could not render the deploy record; the deploy itself is unaffected" >&2
     return 0
   fi
 
-  if [[ ! -f "$DEPLOY_LOG" ]]; then
-    printf '# Deploys\n\nAppend-only record written by `scripts/deploy.sh` (#76).\n\n%s\n' "$DEPLOY_LOG_HEADER" > "$DEPLOY_LOG"
+  # 1. Local append-only copy (kept: cheap, greppable, works offline).
+  if [[ "$DEPLOY_LOG" != "-" ]]; then
+    if [[ ! -f "$DEPLOY_LOG" ]]; then
+      printf '# Deploys\n\nAppend-only record written by `scripts/deploy.sh` (#76).\n\n%s\n' "$DEPLOY_LOG_HEADER" > "$DEPLOY_LOG"
+    fi
+    printf '%s\n' "$record" >> "$DEPLOY_LOG"
+    echo "Deploy record appended to $DEPLOY_LOG"
   fi
-  printf '%s\n' "$record" >> "$DEPLOY_LOG"
-  echo "Deploy record appended to $DEPLOY_LOG: $record"
+
+  # 2. Shared record: one comment on the PR, rewritten in place so a retry does not stack rows.
+  local body existing
+  body=$(printf '%s\n### Deploy record\n\n%s\n\n%s\n\nWritten by `scripts/deploy.sh`. This comment is the shared record of what %s is running (#76).\n' \
+    "$DEPLOY_RECORD_COMMENT_MARKER" "$DEPLOY_LOG_HEADER" "$record" "$env")
+  existing=$(deploy_record_comment_id "$pr")
+  if [[ -n "$existing" ]]; then
+    if gh api -X PATCH "repos/jtanori/solara/issues/comments/$existing" -f body="$body" >/dev/null 2>&1; then
+      echo "Deploy record updated on PR #$pr (comment $existing)"
+      published=1
+    fi
+  elif gh api -X POST "repos/jtanori/solara/issues/$pr/comments" -f body="$body" >/dev/null 2>&1; then
+    echo "Deploy record posted to PR #$pr"
+    published=1
+  fi
+  if [[ "$published" -eq 0 ]]; then
+    echo "WARN: could not publish the deploy record to PR #$pr — the row exists only in $DEPLOY_LOG." >&2
+    echo "      Record it on the PR by hand: $record" >&2
+    return 1
+  fi
+
+  # 3. Release marker. #76 requires a tag/release per production merge; staging gets a record but
+  # no release, so the release list stays a list of what reached production.
+  if [[ "$env" == "production" ]]; then
+    local tag
+    tag="deploy/production/$(date -u +%Y%m%d-%H%M)-${sha:0:7}"
+    if gh api -X POST "repos/jtanori/solara/releases" \
+        -f tag_name="$tag" -f target_commitish="$sha" -f name="$tag" \
+        -f body="Production deploy of \`${sha:0:7}\` (PR #$pr, $timestamp). Migrations: $migrations. Verification: $result." \
+        >/dev/null 2>&1; then
+      echo "Release marker created: $tag"
+      # The comment is already posted; append the tag so the two records agree.
+      local posted_id
+      posted_id=$(deploy_record_comment_id "$pr")
+      [[ -n "$posted_id" ]] && gh api -X PATCH "repos/jtanori/solara/issues/comments/$posted_id" \
+        -f body="$(printf '%s\n\nRelease: `%s`\n' "$body" "$tag")" >/dev/null 2>&1 || true
+    else
+      echo "WARN: could not create the release marker $tag — record it by hand." >&2
+      return 1
+    fi
+  fi
+  return 0
 }
 
 echo "== Detect migrations =="
@@ -270,9 +395,13 @@ if [[ "$YES" != true ]]; then read -rp "Merge PR #$PR to $BASE_BRANCH ($MERGE_LA
 # the credentials to act on it exist; otherwise the failure path prints manual steps.
 ROLLBACK_TARGET=""
 ROLLBACK_TARGET_URL=""
-if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then
+# Captured for production only: the target is the current *production* deployment, so capturing it
+# for a staging deploy would only ever be used to repoint production by mistake.
+if [[ "$ENV" == "production" && -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then
   IFS=$'\t' read -r ROLLBACK_TARGET ROLLBACK_TARGET_URL _ <<< "$(vercel_current_production_deployment "$VERCEL_PROJECT_ID" "${VERCEL_TEAM_ID:-}")"
   [[ -n "$ROLLBACK_TARGET" ]] && echo "Rollback target captured: $ROLLBACK_TARGET${ROLLBACK_TARGET_URL:+ ($ROLLBACK_TARGET_URL)}"
+elif [[ "$ENV" != "production" ]]; then
+  echo "NOTE: $ENV deploy — no automatic rollback (Instant Rollback only moves production)."
 else
   echo "NOTE: VERCEL_TOKEN/VERCEL_PROJECT_ID unset — automatic rollback disabled, manual steps will be printed on failure."
 fi
@@ -306,7 +435,7 @@ fi
 echo "Waiting for Vercel $APP_URL /api/ready ..."
 
 READY_TMP="$(mktemp)"
-trap 'rm -f "$READY_TMP"' EXIT
+CLEANUP_FILES+=("$READY_TMP")
 ready_curl() { deploy_ready_curl "$APP_URL/api/ready" "$READY_TMP"; }
 
 # Vercel Authentication returns 401/403 before the app sees the request. Fail early with
@@ -334,7 +463,8 @@ else
   echo "== Rollback (#76) ==" >&2
   ROLLBACK_CREDS="absent"
   if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then ROLLBACK_CREDS="present"; fi
-  if [[ "$(decide_rollback "$ROLLBACK_CREDS" "$ROLLBACK_TARGET")" == "auto" ]]; then
+  ROLLBACK_DECISION=$(decide_rollback "$ENV" "$ROLLBACK_CREDS" "$ROLLBACK_TARGET")
+  if [[ "$ROLLBACK_DECISION" == "auto" ]]; then
     if vercel_promote_deployment "$VERCEL_PROJECT_ID" "$ROLLBACK_TARGET" "${VERCEL_TEAM_ID:-}"; then
       echo "Rolled back to $ROLLBACK_TARGET${ROLLBACK_TARGET_URL:+ ($ROLLBACK_TARGET_URL)}; re-checking readiness..." >&2
       ROLLBACK_RECORD="to $ROLLBACK_TARGET"
@@ -353,12 +483,19 @@ else
     else
       echo "ERROR: automated rollback failed." >&2
       ROLLBACK_RECORD="attempted, FAILED"
-      print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL"
+      print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL" "$ENV"
     fi
   else
-    echo "No automatic rollback available (VERCEL_TOKEN/VERCEL_PROJECT_ID unset or no target captured)." >&2
-    ROLLBACK_RECORD="manual, not executed"
-    print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL"
+    case "$ROLLBACK_DECISION" in
+      manual-not-production)
+        echo "No automatic rollback for $ENV: Vercel Instant Rollback moves the production alias," >&2
+        echo "and this project's staging and production share one project. Refusing to touch production." >&2
+        ROLLBACK_RECORD="manual (staging is not auto-rollbackable), not executed" ;;
+      *)
+        echo "No automatic rollback available (VERCEL_TOKEN/VERCEL_PROJECT_ID unset or no target captured)." >&2
+        ROLLBACK_RECORD="manual, not executed" ;;
+    esac
+    print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL" "$ENV"
   fi
   record_deploy "$ENV" "$MERGE_SHA" "$PR" "${MIGRATIONS_RECORD:-unknown}" "FAILED readiness" "$ROLLBACK_RECORD"
   exit 1

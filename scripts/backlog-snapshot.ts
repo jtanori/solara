@@ -138,6 +138,51 @@ export function buildSnapshot(options: SnapshotOptions): string {
   return lines.join("\n");
 }
 
+/**
+ * Reject anything that is not a usable issue row.
+ *
+ * A malformed row used to render as a normal-looking table line with blank columns — an incomplete
+ * snapshot that reads as complete, which is worse than an error because nobody knows to distrust it.
+ * An *empty* list stays valid: an empty tracker is a real state, and the snapshot says so explicitly.
+ * A missing title or number is not a state; it is a broken payload.
+ */
+export function validateIssues(parsed: unknown): GhIssue[] {
+  if (!Array.isArray(parsed)) {
+    throw new Error("gh issue list returned unexpected output (not an array)");
+  }
+  return parsed.map((row, index) => {
+    const at = `issue #${index + 1} of ${parsed.length}`;
+    if (typeof row !== "object" || row === null) throw new Error(`${at} is not an object: ${JSON.stringify(row)}`);
+    const issue = row as Record<string, unknown>;
+    if (!Number.isInteger(issue.number) || (issue.number as number) <= 0) {
+      throw new Error(`${at} has no valid "number": ${JSON.stringify(issue.number)}`);
+    }
+    if (typeof issue.title !== "string" || !issue.title.trim()) {
+      throw new Error(`issue #${issue.number} has no usable "title": ${JSON.stringify(issue.title)}`);
+    }
+    if (!Array.isArray(issue.labels)) {
+      throw new Error(`issue #${issue.number} has no "labels" array: ${JSON.stringify(issue.labels)}`);
+    }
+    for (const label of issue.labels) {
+      if (typeof label !== "object" || label === null || typeof (label as { name?: unknown }).name !== "string") {
+        throw new Error(`issue #${issue.number} has a label without a name: ${JSON.stringify(label)}`);
+      }
+    }
+    const milestone = issue.milestone;
+    if (milestone !== null && milestone !== undefined) {
+      if (typeof milestone !== "object" || typeof (milestone as { title?: unknown }).title !== "string") {
+        throw new Error(`issue #${issue.number} has an unusable "milestone": ${JSON.stringify(milestone)}`);
+      }
+    }
+    return {
+      number: issue.number as number,
+      title: issue.title,
+      labels: (issue.labels as GhLabel[]).map(label => ({ name: label.name })),
+      milestone: (milestone as GhMilestone) ?? null,
+    };
+  });
+}
+
 function readGhIssues(): { issues: GhIssue[]; repo: string } {
   let repo: string;
   try {
@@ -162,9 +207,7 @@ function readGhIssues(): { issues: GhIssue[]; repo: string } {
     throw new Error(`gh issue list failed: ${detail}`);
   }
 
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error("gh issue list returned unexpected output (not an array)");
-  return { issues: parsed as GhIssue[], repo };
+  return { issues: validateIssues(JSON.parse(raw)), repo };
 }
 
 function main() {
@@ -180,7 +223,8 @@ function main() {
     const payload = JSON.parse(readFileSync(path.resolve(argv[inputIndex + 1]), "utf8")) as
       | { issues: GhIssue[]; repo?: string }
       | GhIssue[];
-    issues = Array.isArray(payload) ? payload : payload.issues;
+    // Same validation as the live path: a captured payload is exactly as untrusted as `gh`.
+    issues = validateIssues(Array.isArray(payload) ? payload : payload.issues);
     repo = Array.isArray(payload) ? "jtanori/solara" : payload.repo ?? "jtanori/solara";
   } else {
     ({ issues, repo } = readGhIssues());

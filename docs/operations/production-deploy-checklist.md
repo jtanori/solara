@@ -105,7 +105,15 @@ Expected: `verify` green, then merge it:
 gh pr merge <that-pr-number> --merge
 ```
 
-If the ruleset blocks a merge commit on `staging`, use `--squash` instead. Either way the file tree does not change.
+If the ruleset blocks a merge commit on `staging`, **do not simply squash and assume it worked**: a
+squash keeps the content and drops the SHAs, so `main` is still not an ancestor. `deploy.sh` allows
+that case (the content check comes back empty) but warns; see `production-bootstrap-2026-11-10.md`
+§4.1a for the two supported paths. Confirm the content gap is genuinely empty before promoting:
+
+```bash
+git fetch origin main staging
+git log --oneline --cherry-pick --left-only origin/main...origin/staging   # must print nothing
+```
 
 ---
 
@@ -182,10 +190,13 @@ If not, stop. Do not deploy.
 
 ```bash
 export VERCEL_AUTOMATION_BYPASS_SECRET=BYPASS_SECRET
-./scripts/deploy.sh --pr "$PROMO_PR" --env production --skip-migrate
+./scripts/deploy.sh --pr "$PROMO_PR" --env production
 ```
 
-`--skip-migrate` is correct: Step 5 already ran the DDL.
+**Do not add `--skip-migrate`.** Step 5 already ran the DDL and the migrate workflow is idempotent, so
+running it again is a no-op; `--skip-migrate` on a promotion whose diff changes `drizzle/` is refused
+by `decide_skip_migrate` (`refuse-production`) and the script exits before merging. The command above
+is the supported path.
 
 Expected: merge completes, Vercel builds, `/api/ready -> {"ok":true}`, script exits 0.
 

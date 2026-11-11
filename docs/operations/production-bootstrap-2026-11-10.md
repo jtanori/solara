@@ -132,9 +132,44 @@ gh pr create --base staging --head chore/promote-sync-main \
   --body "main is not an ancestor of staging, so deploy.sh's base-freshness gate refuses the promotion. Zero file changes: \`git diff origin/staging...origin/main\` is empty and the trial-merge tree is identical to origin/staging^{tree}. Prerequisite for the staging → main promotion."
 ```
 
-Merge it with `--merge` once `verify` is green. **Note:** `protect-staging` requires linear history;
-if the ruleset rejects a merge commit, squash it into one "sync" commit instead — ancestry is
-satisfied either way, and either is zero-file-change.
+Merge it with `--merge` once `verify` is green.
+
+> **A squash here does NOT restore ancestry.** `protect-staging` requires linear history, so the
+> ruleset may reject the merge commit — and if you fall back to squash, the original `main` SHAs
+> never become ancestors of `staging`, which is exactly what `deploy.sh`'s ancestry gate checks.
+> The content matches; the SHAs do not. See §4.1a.
+
+#### 4.1a If the merge commit is refused
+
+`protect-staging` requires **linear history**, so a merge commit into `staging` may be rejected. The
+obvious fallback — squash — does **not** restore ancestry: the content lands, the `main` SHAs do not,
+and `git merge-base --is-ancestor main staging` still fails. Nothing short of a merge commit into
+`staging` can make `main`'s commits ancestors of `staging`, and the ruleset forbids exactly that.
+
+So do not pretend the squash satisfies the gate. Two supported paths:
+
+**Path A — lift linear history for this one back-merge (records true ancestry).**
+Temporarily disable `required_linear_history` on the `protect-staging` ruleset, merge the back-merge
+PR with `--merge`, then restore the rule. This is the only path that makes the ancestry check pass on
+its own terms. Record in the promotion PR that the rule was lifted, and why.
+
+**Path B — promote with a content-equivalent history (no ruleset change).**
+Squash-merge the back-merge, then promote. `deploy.sh` does not refuse this: it distinguishes "main's
+content is missing from staging" (refused) from "main's content is present under different SHAs"
+(allowed, with a warning). That distinction is `decide_promotion_readiness`, and it is what keeps a
+genuinely stale branch from slipping through.
+
+Verify either way before promoting:
+
+```bash
+git fetch origin main staging
+# 0 = literal ancestry (Path A). Non-zero is fine for Path B as long as the content check is empty:
+git merge-base --is-ancestor origin/main origin/staging && echo "ancestry: literal"
+git log --oneline --cherry-pick --left-only origin/main...origin/staging   # must print nothing
+```
+
+An empty last command means every `main` commit's change is already on `staging`. Anything printed is
+real work `staging` does not have — back-merge that content before promoting, not just its ancestry.
 
 ### 4.2 Open the promotion PR
 
@@ -171,10 +206,13 @@ npx tsx scripts/db-remote.ts --check --env production --branch "$PROMO_REF" --sh
 # merge + Vercel rollout + /api/ready gate (needs VERCEL_AUTOMATION_BYPASS_SECRET: the project has
 # ssoProtection=all_except_custom_domains, so a bare curl gets a 401 and deploy.sh fails closed)
 export VERCEL_AUTOMATION_BYPASS_SECRET=…
-./scripts/deploy.sh --pr "$PROMO_PR" --env production --skip-migrate
+./scripts/deploy.sh --pr "$PROMO_PR" --env production
 ```
 
-`--skip-migrate` is correct only because 4.4 already ran the DDL.
+**Do not pass `--skip-migrate`.** 4.4 already applied the DDL, so the migration workflow has nothing
+left to do and re-running it is idempotent — `decide_skip_migrate` returns `refuse-production` whenever
+`--skip-migrate` is combined with a changed `drizzle/` diff, and the script exits before merging.
+Passing the flag here is the one thing guaranteed to stop this deploy.
 
 ### 4.6 Prove it works, in this order
 

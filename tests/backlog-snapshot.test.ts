@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildSnapshot, GH_COMMAND, OUTPUT_PATH, type GhIssue } from "../scripts/backlog-snapshot";
+import { buildSnapshot, GH_COMMAND, OUTPUT_PATH, validateIssues, type GhIssue } from "../scripts/backlog-snapshot";
 
 function issue(partial: Partial<GhIssue> & { number: number; title: string }): GhIssue {
   return {
@@ -83,16 +83,78 @@ test("an empty issue list is stated, not rendered as a silently blank table", ()
   assert.match(out, /token scope is wrong/);
 });
 
-test("the generator fails loudly on unreadable input instead of writing a partial file", () => {
+test("the generator fails loudly on unreadable input and leaves the previous snapshot untouched", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "backlog-"));
   try {
     const bad = path.join(dir, "bad.json");
     writeFileSync(bad, "{not json");
-    const result = spawnSync("npx", ["tsx", "scripts/backlog-snapshot.ts", "--input", bad], {
-      encoding: "utf8",
-    });
-    assert.notEqual(result.status, 0, "a bad payload is a non-zero exit");
-    assert.match(result.stderr, /backlog:snapshot failed/);
+
+    // A sentinel stands in for a previously generated snapshot. Asserting only the exit code would
+    // pass a mutation that truncates or rewrites the output before failing, which is precisely the
+    // "partial file" the test title claims to rule out.
+    const sentinel = "SENTINEL: a previous successful snapshot\n";
+    writeFileSync(OUTPUT_PATH, sentinel);
+    try {
+      const result = spawnSync("npx", ["tsx", "scripts/backlog-snapshot.ts", "--input", bad], {
+        encoding: "utf8",
+      });
+      assert.notEqual(result.status, 0, "a bad payload is a non-zero exit");
+      assert.match(result.stderr, /backlog:snapshot failed/);
+      assert.equal(
+        readFileSync(OUTPUT_PATH, "utf8"),
+        sentinel,
+        "a failed run must not write, truncate or partially update the output file",
+      );
+    } finally {
+      rmSync(OUTPUT_PATH, { force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a malformed issue row fails instead of rendering as a blank but normal-looking row", () => {
+  // Reproduced from the review: this payload used to exit 0 and emit a row with every label blank,
+  // i.e. an incomplete snapshot that reads as complete.
+  const broken = [
+    { number: 42, title: "Incomplete tracker result" },            // no labels, no milestone
+    { title: "no number at all", labels: [] },                      // unusable key
+    { number: 7, title: "", labels: [] },                           // empty title
+    { number: 8, title: "bad label", labels: [{ notAName: true }] }, // label without a name
+    { number: 9, title: "bad milestone", labels: [], milestone: { id: 1 } },
+  ];
+  for (const row of broken) {
+    assert.throws(
+      () => validateIssues([row]),
+      /issue #/,
+      `a malformed row must throw, not be rendered: ${JSON.stringify(row)}`,
+    );
+  }
+  // A *valid* empty list is a real state, not an error, and the snapshot says so.
+  assert.deepEqual(validateIssues([]), []);
+  // A well-formed row passes through with only the fields the renderer uses.
+  assert.deepEqual(validateIssues([{ number: 1, title: "ok", labels: [{ name: "type:bug" }], milestone: null }]), [
+    { number: 1, title: "ok", labels: [{ name: "type:bug" }], milestone: null },
+  ]);
+});
+
+test("malformed rows are rejected on the CLI path too, before anything is written", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "backlog-"));
+  const sentinel = "SENTINEL: unchanged\n";
+  try {
+    const broken = path.join(dir, "broken.json");
+    writeFileSync(broken, JSON.stringify([{ number: 42, title: "Incomplete tracker result" }]));
+    writeFileSync(OUTPUT_PATH, sentinel);
+    try {
+      const result = spawnSync("npx", ["tsx", "scripts/backlog-snapshot.ts", "--input", broken], {
+        encoding: "utf8",
+      });
+      assert.notEqual(result.status, 0, "an incomplete row is not a successful snapshot");
+      assert.match(result.stderr, /no "labels" array/);
+      assert.equal(readFileSync(OUTPUT_PATH, "utf8"), sentinel, "nothing was written");
+    } finally {
+      rmSync(OUTPUT_PATH, { force: true });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

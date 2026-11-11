@@ -162,10 +162,13 @@ EOF
 )
 ```
 
-Wait for `verify` green and `mergeStateStatus: CLEAN`, then **`--merge`** (squash would flatten
-staging's history and break the next ancestry check, and `protect-staging` requires linear history —
-confirm the merge-commit PR is accepted; if the ruleset rejects it, use a single squashed
-"sync" commit instead and note the deviation in the promotion PR — ancestry is satisfied either way).
+Wait for `verify` green and `mergeStateStatus: CLEAN`, then **`--merge`**.
+
+If the ruleset rejects the merge commit (`protect-staging` requires linear history), a squash does
+**not** restore ancestry: the content lands, the `main` SHAs do not. `deploy.sh` still allows the
+promotion when main's *content* is fully present (it warns), and refuses it when any main-only change
+is missing. See `production-bootstrap-2026-11-10.md` §4.1a for the two paths (lift linear history for
+one back-merge, or squash and accept that ancestry is recorded by the promotion merge into `main`).
 
 > Alternatively use the repo's own script: `./scripts/deploy.sh --pr <n> --env staging`, which
 > enforces every gate for you. It requires a full clone (not shallow).
@@ -213,11 +216,12 @@ Take a Neon snapshot/branch of `solara-prod` first if it holds anything you woul
 npx tsx scripts/db-remote.ts --check --env production --branch "$PROMO_REF" --sha "$PROMO_SHA"
 
 # merge + rollout + /api/ready gate (needs Vercel reachability + bypass secret)
-./scripts/deploy.sh --pr "$PROMO_PR" --env production --skip-migrate
+./scripts/deploy.sh --pr "$PROMO_PR" --env production
 ```
 
-`--skip-migrate` is correct **only** because step 4 already did the DDL. Re-running `migrate` is
-idempotent but it re-runs gate clauses for no benefit; if you prefer belt-and-braces, drop the flag.
+Do **not** add `--skip-migrate`: step 4 already did the DDL, so re-running `migrate` is a no-op, and
+the flag is refused for production whenever the diff changes `drizzle/` (`refuse-production`) — the
+script exits before merging. The command above is the supported path.
 
 `deploy.sh` will merge with `--merge` (preserves ancestry), wait on Vercel status for the merge SHA,
 then require `/api/ready -> {"ok":true}`.

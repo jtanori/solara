@@ -69,8 +69,8 @@ reviewer can re-derive it rather than trust it.
    body — mutation → test that fails → result.*
 8. **Migrations and data.** Additive by default; `scripts/db-run.ts` required
    manifest updated for new tables; the staging migration rehearsal plan is
-   stated; promotion implications noted (db-remote rehearsal →
-   `deploy.sh --skip-migrate`).
+   stated; promotion implications noted (db-remote rehearsal → `deploy.sh` with **no**
+   `--skip-migrate` — that flag is refused for production by `decide_skip_migrate`).
 9. **Config/env/docs.** Every new env var appears in `.env.example`,
    `.env.staging.example`, `.env.production.example` and is named in the PR
    body; `AGENTS.md` map updated if directories are added; user-facing docs
@@ -164,7 +164,9 @@ Run by the coding agent unless marked *(operator)*:
    `staging`, prune, note the new SHA.
 6. If `drizzle/` was touched: the staging migration rehearsal must be green,
    and production promotion runs the db-remote rehearsal first, then
-   `deploy.sh --skip-migrate`.
+   `deploy.sh --env production`. Do not add `--skip-migrate`: when the diff
+   changes `drizzle/` the policy returns `refuse-production` and the script
+   exits before merging. Re-running the idempotent migrate step is by design.
 7. If `deploy:required`: staging QA smoke on the touched surfaces (sign-in,
    map, PDF gate, Stripe test webhook, password reset, `/api/health`).
 8. Nothing to update for opened/closed issues: GitHub is the record (ADR 009). There is no

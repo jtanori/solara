@@ -24,6 +24,12 @@ vercel_deployment_id_from_url() {
 
 # The deployment currently serving production. Needed because a rollback target is not derivable
 # from the failing deployment alone.
+#
+# Production only, on purpose. This repository has ONE Vercel project ("solara"): `staging` is a
+# preview alias and `main` is the production branch. Vercel's rollback endpoint only moves a
+# production alias, so there is nothing for it to restore after a failed staging deploy — and
+# calling it for staging would repoint production at an older build (#76 review finding). Staging
+# recovery is a different action: re-run the deploy of the last good commit.
 vercel_current_production_deployment() {
   local project="$1"
   local team="$2"
@@ -67,8 +73,11 @@ deploy_ready_ok() {
 
 # Instant Rollback. The endpoint path below is the only part of this file that has NOT been
 # exercised against the live Vercel API (it needs a real VERCEL_TOKEN); #76's acceptance requires
-# exercising it once in staging, which is what confirms it. Every failure path prints manual
-# recovery steps rather than pretending the rollback happened.
+# exercising it once live, which is what confirms it. Every failure path prints manual recovery
+# steps rather than pretending the rollback happened.
+#
+# Production only: it moves the production alias to `deployment`. See the note on
+# vercel_current_production_deployment for why a staging failure must not call it.
 vercel_promote_deployment() {
   local project="$1"
   local deployment="$2"
@@ -81,11 +90,19 @@ vercel_promote_deployment() {
     "$VERCEL_API_BASE/v1/projects/$project/rollback/$deployment$query" >/dev/null
 }
 
-# Human-readable recovery that is always printed when rollback cannot be automated.
+# Human-readable recovery that is always printed when rollback cannot be automated. The two
+# environments recover by different actions, so the steps differ rather than being generic.
 print_manual_rollback() {
   local project="$1"
   local previous="$2"
   local previous_url="$3"
+  local env="${4:-production}"
+  if [[ "$env" == "staging" ]]; then
+    echo "  Restore staging manually (there is no staging alias to roll back automatically):" >&2
+    echo "    ./scripts/deploy.sh --pr <last-known-good PR> --env staging" >&2
+    echo "    or: Vercel → Project '$project' → Deployments → filter branch 'staging'${previous:+ → promote $previous}" >&2
+    return 0
+  fi
   echo "  Roll back manually:" >&2
   if [[ -n "$previous" ]]; then
     echo "    Vercel → Project '$project' → Deployments → find $previous${previous_url:+ ($previous_url)} → Promote to Production" >&2
