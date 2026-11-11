@@ -13,3 +13,4 @@ only exists on the operator's laptop is the failure #76 was filed about.
 
 | when | env | sha | pr | migrations | result | rollback |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-11T07:28Z | staging | `d7d7634` | 133 | none — `No drizzle/ changes` | merged; Vercel success on merge SHA; verify green | n/a — staging has no automatic rollback |
