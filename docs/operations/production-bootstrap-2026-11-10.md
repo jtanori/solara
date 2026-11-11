@@ -179,22 +179,27 @@ changed:
 
 ```bash
 gh api repos/jtanori/solara/rulesets/26759336 --jq '[.rules[].type]'
-# → ["deletion","non_fast_forward","required_linear_history","required_status_checks","pull_request"]
 ```
 
-Confirm it took, on both sides of the check:
+The output is one JSON array. `gh` pretty-prints it when writing to a terminal (one rule per line)
+and compacts it when piped; both forms mean the same thing:
+
+```json
+["deletion", "non_fast_forward", "required_linear_history", "required_status_checks", "pull_request"]
+```
+
+Do not paste that array back into a shell: an unquoted `[...]` is a glob pattern, and zsh aborts with
+`no matches found` instead of running anything.
+
+If the `gh api` call fails, read the id from the repo-level list instead (needs only repository read),
+then confirm the rule list by eye in **Settings → Rules → `protect-staging`**:
 
 ```bash
-git fetch origin main staging
-git merge-base --is-ancestor origin/main origin/staging && echo "ancestry: literal"
-git log --oneline --cherry-pick --left-only origin/main...origin/staging   # must print nothing
+gh api repos/jtanori/solara/rulesets --jq '.[] | select(.name=="protect-staging") | .id'
 ```
 
-The first line is the condition `deploy.sh` tests. The second proves the back-merge carried no
-content, so staging's tree is unchanged. If it prints anything, `main` has real work `staging` does
-not — back-merge that content first; ancestry alone will not carry it.
-
-Record in the promotion PR that linear history was lifted for the back-merge, and why.
+Do **not** proceed on the assumption that the toggle worked. The next promotion depends on this rule,
+and the UI is the authoritative check.
 
 ### 4.2 Open the promotion PR
 

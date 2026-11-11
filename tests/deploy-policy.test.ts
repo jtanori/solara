@@ -150,6 +150,39 @@ test("no runbook ships a fenced command with an unfilled placeholder", () => {
   assert.deepEqual(offenders, [], "a fenced command must be runnable, not a sketch");
 });
 
+test("a runbook that shows expected output does not promise the wrong shape", () => {
+  // `gh` pretty-prints JSON to a TTY and compacts it when piped (verified with `script -qec`). A doc
+  // that shows the compact form as *the* output is wrong for anyone reading it in a terminal, which
+  // is how runbooks are read. Either present the value abstractly, or say outright that both forms
+  // mean the same thing.
+  const bootstrap = readFileSync("docs/operations/production-bootstrap-2026-11-10.md", "utf8");
+  // Scan EVERY fence, not just bash: the output of a --jq command is usually shown in a separate
+  // json block, and a check that only reads the command's own fence misses it entirely.
+  const commands = [...bootstrap.matchAll(/```bash\n([\s\S]*?)```/g)].map(m => m[1]);
+  const hasJqApi = commands.some(
+    body => body.split("\n").some(line => !line.trim().startsWith("#") && line.includes("gh api")) && body.includes("--jq"),
+  );
+  const fences = [...bootstrap.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].map(m => m[1]);
+  const showsCompactArray = fences.some(body => /^\s*\[".*"\]\s*$/m.test(body.split("\n").find(l => l.trim().startsWith('["')) ?? ""));
+  if (hasJqApi && showsCompactArray) {
+    assert.match(
+      bootstrap,
+      /pretty-print|one rule per line|both forms|when piped/i,
+      "a --jq command with an exact JSON array as expected output must say that gh pretty-prints to a TTY and compacts when piped",
+    );
+  }
+
+  // And no runbook may tell the operator to paste a JSON array back into a shell.
+  const jsonBlocks = [...bootstrap.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]);
+  for (const json of jsonBlocks) {
+    if (!json.trim().startsWith("[")) continue;
+    assert.ok(
+      /do not paste|glob pattern|no matches found/i.test(bootstrap),
+      "an expected JSON array must warn that an unquoted [...] is a shell glob",
+    );
+  }
+});
+
 test("the rollback target is captured before the merge, and the record after readiness", () => {
   const script = readFileSync("scripts/deploy.sh", "utf8");
   const capture = script.indexOf('$(vercel_current_production_deployment');
