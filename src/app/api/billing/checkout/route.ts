@@ -6,6 +6,7 @@ import { currentUser } from "@/lib/auth";
 import { appOrigin, billingIsConfigured, getStripe, priceIdFor, type BillingCurrency } from "@/lib/billing";
 import { getLocale } from "@/lib/i18n-server";
 import { log, requestMeta } from "@/lib/log";
+import { AUTH_RATE_LIMITS, consumeBudgets, keyFor, rateLimitedResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export async function POST(request: Request) {
@@ -22,6 +23,22 @@ export async function POST(request: Request) {
   }
   const stripe = getStripe();
   if (!stripe || !billingIsConfigured()) return NextResponse.json({ error: locale === "es" ? "Los pagos aún no están configurados." : "Payments are not configured yet." }, { status: 503 });
+
+  /*
+   * Every request below hits the Stripe API at least twice (price lookup,
+   * subscription list). Limited per account (auth amendment §S7) so a loop
+   * cannot burn the API budget; the 409 guard already prevents duplicate
+   * subscriptions, so this is about cost and noise, not correctness.
+   */
+  const budget = await consumeBudgets([
+    { key: keyFor("billing:checkout:user", user.id), policy: AUTH_RATE_LIMITS.billingCheckoutUser, kind: "billing_checkout_user" },
+  ], requestMeta(request));
+  if (!budget.allowed) {
+    return rateLimitedResponse(locale, budget.retryAfterSeconds, {
+      en: "Too many checkout attempts. Please wait a moment.",
+      es: "Demasiados intentos de pago. Espera un momento.",
+    });
+  }
   const data = await request.json().catch(() => ({})) as { currency?: string };
   const currency: BillingCurrency = data.currency === "usd" ? "usd" : "mxn";
   const priceId = priceIdFor(currency);

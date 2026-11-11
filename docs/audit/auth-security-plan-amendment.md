@@ -305,8 +305,8 @@ write down the two trust assumptions; do not rebuild anything that already works
 ## 7. Fixed in this branch
 
 `docs/audit/open-issues-by-milestone-2026-11-11.md` contained two table rows that named the
-retired `BACKLOG.md` file, which made `tests/backlog-snapshot.test.ts` fail ("no active
-document may instruct anyone to update BACKLOG.md"). The rows now say "retire the committed
+retired legacy backlog file, which made `tests/backlog-snapshot.test.ts` fail (it forbids
+any active document from naming that retired file). The rows now say "retire the committed
 legacy backlog file" — the issue title is preserved in meaning without re-introducing the
 filename. This was a pre-existing failure at `dd8d707`, not something introduced by this
 work.
