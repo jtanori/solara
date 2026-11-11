@@ -513,3 +513,197 @@ test("scrypt saturation returns 503 without rolling back the all-attempt count",
     await db.delete(users).where(inArray(users.id, [user.id]));
   }
 });
+
+// --- Auth D / S8: opportunistic rehash on successful login -------------------
+
+async function legacyHashFor(password: string): Promise<string> {
+  // Node-default scrypt (N=16384, r=8, p=1) written in the pre-S8 `salt:hash`
+  // shape. Built here rather than by hashPassword so the test fails if the
+  // legacy format ever stops verifying.
+  const { scrypt } = await import("node:crypto");
+  const { promisify } = await import("node:util");
+  const salt = randomBytes(16).toString("hex");
+  const hash = await (promisify(scrypt) as (
+    p: string, s: string, k: number,
+  ) => Promise<Buffer>)(password, salt, 64);
+  return `${salt}:${hash.toString("hex")}`;
+}
+
+test("a successful login upgrades a legacy hash to scrypt$N$r$p$salt$hash", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  const password = "legacy-login-password";
+  const suffix = randomBytes(6).toString("hex");
+  const email = `auth-rehash-${suffix}@example.test`;
+  const [user] = await db.insert(users).values({
+    name: "Legacy user",
+    email,
+    passwordHash: await legacyHashFor(password),
+    emailVerifiedAt: new Date(),
+  }).returning({ id: users.id });
+  const ip = "192.0.2.101";
+  const keys = [keyFor("login:account", email), keyFor("login:ip", ip), keyFor("login:ip-failures", ip)];
+
+  try {
+    const before = await db.select({ h: users.passwordHash }).from(users).where(inArray(users.id, [user.id]));
+    assert.match(before[0].h, /^[0-9a-f]{32}:[0-9a-f]{128}$/, "starts legacy");
+
+    const outcome = await handleAuth(
+      request({ mode: "login", email, password }, ip),
+      { locale: "en", mail: () => fakeMail().transport },
+    );
+    assert.equal(outcome.response.status, 200);
+    assert.equal(outcome.tasks.length, 1, "an upgrade is queued");
+
+    // The task runs after the response in production; here we await it directly.
+    await outcome.tasks[0]();
+
+    const after = await db.select({ h: users.passwordHash }).from(users).where(inArray(users.id, [user.id]));
+    assert.match(after[0].h, /^scrypt\$16384\$8\$1\$[0-9a-f]{32}\$[0-9a-f]{128}$/);
+    assert.equal(await verifyPassword(password, after[0].h), true, "the password still works after the upgrade");
+  } finally {
+    await cleanupRateLimits(keys);
+    await db.delete(users).where(inArray(users.id, [user.id]));
+  }
+});
+
+test("a current-format login queues no rehash", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  const user = await makeUser();
+  const ip = "192.0.2.102";
+  const keys = [keyFor("login:account", user.email), keyFor("login:ip", ip), keyFor("login:ip-failures", ip)];
+  try {
+    const outcome = await handleAuth(
+      request({ mode: "login", email: user.email, password: user.password }, ip),
+      { locale: "en", mail: () => fakeMail().transport },
+    );
+    assert.equal(outcome.response.status, 200);
+    assert.equal(outcome.tasks.length, 0, "nothing to upgrade");
+  } finally {
+    await cleanupRateLimits(keys);
+    await db.delete(users).where(inArray(users.id, [user.id]));
+  }
+});
+
+test("a failed login never queues a rehash", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  const password = "legacy-wrong-password";
+  const suffix = randomBytes(6).toString("hex");
+  const email = `auth-rehash-fail-${suffix}@example.test`;
+  const legacy = await legacyHashFor(password);
+  const [user] = await db.insert(users).values({
+    name: "Legacy fail",
+    email,
+    passwordHash: legacy,
+    emailVerifiedAt: new Date(),
+  }).returning({ id: users.id });
+  const ip = "192.0.2.103";
+  const keys = [keyFor("login:account", email), keyFor("login:ip", ip), keyFor("login:ip-failures", ip)];
+  try {
+    const outcome = await handleAuth(
+      request({ mode: "login", email, password: "wrong-password" }, ip),
+      { locale: "en", mail: () => fakeMail().transport },
+    );
+    assert.equal(outcome.response.status, 401);
+    assert.equal(outcome.tasks.length, 0, "a wrong password must not rewrite the hash");
+
+    const [row] = await db.select({ h: users.passwordHash }).from(users).where(inArray(users.id, [user.id]));
+    assert.equal(row.h, legacy, "stored hash untouched");
+  } finally {
+    await cleanupRateLimits(keys);
+    await db.delete(users).where(inArray(users.id, [user.id]));
+  }
+});
+
+test("the rehash compare-and-set refuses to overwrite a newer password", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  // Simulates the race: the login succeeds against the legacy hash, then the
+  // user changes their password before the deferred rehash task runs. The
+  // upgrade must lose, or it would revert the change and resurrect the old
+  // password.
+  const password = "raced-legacy-password";
+  const suffix = randomBytes(6).toString("hex");
+  const email = `auth-rehash-race-${suffix}@example.test`;
+  const [user] = await db.insert(users).values({
+    name: "Race user",
+    email,
+    passwordHash: await legacyHashFor(password),
+    emailVerifiedAt: new Date(),
+  }).returning({ id: users.id });
+  const ip = "192.0.2.104";
+  const keys = [keyFor("login:account", email), keyFor("login:ip", ip), keyFor("login:ip-failures", ip)];
+
+  try {
+    const outcome = await handleAuth(
+      request({ mode: "login", email, password }, ip),
+      { locale: "en", mail: () => fakeMail().transport },
+    );
+    assert.equal(outcome.response.status, 200);
+    assert.equal(outcome.tasks.length, 1);
+
+    // The password changes in the window before the task runs.
+    const changed = await hashPassword("brand-new-password-value");
+    await db.update(users).set({ passwordHash: changed }).where(inArray(users.id, [user.id]));
+
+    await outcome.tasks[0]();
+
+    const [row] = await db.select({ h: users.passwordHash }).from(users).where(inArray(users.id, [user.id]));
+    assert.equal(row.h, changed, "the newer password wins");
+    assert.equal(await verifyPassword("brand-new-password-value", row.h), true);
+    assert.equal(await verifyPassword(password, row.h), false, "the old password is not resurrected");
+  } finally {
+    await cleanupRateLimits(keys);
+    await db.delete(users).where(inArray(users.id, [user.id]));
+  }
+});
+
+test("a failing rehash task never fails the login", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Auth endpoint tests require a loopback database");
+
+  const password = "failing-rehash-password";
+  const suffix = randomBytes(6).toString("hex");
+  const email = `auth-rehash-boom-${suffix}@example.test`;
+  const [user] = await db.insert(users).values({
+    name: "Boom",
+    email,
+    passwordHash: await legacyHashFor(password),
+    emailVerifiedAt: new Date(),
+  }).returning({ id: users.id });
+  const ip = "192.0.2.105";
+  const keys = [keyFor("login:account", email), keyFor("login:ip", ip), keyFor("login:ip-failures", ip)];
+  try {
+    const outcome = await handleAuth(
+      request({ mode: "login", email, password }, ip),
+      {
+        locale: "en",
+        mail: () => fakeMail().transport,
+        hashPassword: async () => { throw new ScryptBusyError(); },
+      },
+    );
+    assert.equal(outcome.response.status, 200, "the session was already issued");
+    assert.equal(outcome.tasks.length, 1);
+    // Swallowed, not thrown: an upgrade that cannot run leaves a hash that still verifies.
+    await outcome.tasks[0]();
+  } finally {
+    await cleanupRateLimits(keys);
+    await db.delete(users).where(inArray(users.id, [user.id]));
+  }
+});
