@@ -180,22 +180,48 @@ test("a runbook asserting JSON formatting is not reversed", () => {
   }
 });
 
-test("the runbook attributes each blocking rule to the ruleset that actually has it", () => {
-  // The previous revision credited protect-staging with blocking the promotion. It targets
-  // refs/heads/staging; a promotion PR targets main, so protect-main's strict checks are what
-  // refuse it. Get this backwards and an operator toggles the wrong ruleset and concludes the
-  // scripts are broken.
+test("the runbook attributes each blocking rule to the ruleset that actually has it — once", () => {
+  // Two failures this catches, both seen in review:
+  //   1. crediting protect-staging with blocking a promotion (it targets refs/heads/staging);
+  //   2. leaving the wrong table in place while adding a corrected one — a presence-only check
+  //      passes with both present, and the operator reads whichever they hit first.
   const bootstrap = readFileSync("docs/operations/production-bootstrap-2026-11-10.md", "utf8");
   const section = bootstrap.slice(bootstrap.indexOf("#### 4.1a"), bootstrap.indexOf("### 4.2"));
 
-  assert.match(section, /`protect-main`[^\n]*\|/, "protect-main appears in the ruleset table");
-  assert.match(section, /protect-main.{0,200}strict/i, "protect-main is credited with the strict check");
-  assert.match(section, /targeting main|PR targeting main|targets `main`/i, "and with blocking a promotion");
-  assert.match(section, /protect-staging.{0,200}linear_history/i, "protect-staging is credited with linear history");
+  // Exactly one TABLE in the section, whatever its header says. Counting only `| ruleset |` headers
+  // is not enough: the contradictory version had a different header ("| rule | effect here |"), so a
+  // second table slipped past a header-specific check.
+  const tableSeparators = [...section.matchAll(/^\|[-: |]+\|\s*$/gm)];
+  assert.equal(
+    tableSeparators.length,
+    1,
+    `§4.1a must contain exactly one table, found ${tableSeparators.length}`,
+  );
+  const tableRows = section.split("\n").filter(line => line.startsWith("| "));
+  assert.equal(
+    tableRows[0],
+    "| ruleset | targets | what it does here |",
+    "the single table must be the per-ruleset one",
+  );
+
+  // Every row must name a ruleset the repo actually has, and the two live ones must both appear.
+  const rows = section.split("\n").filter(line => line.startsWith("| `protect-"));
+  assert.equal(rows.length, 2, `expected one row per ruleset, found ${rows.length}`);
+  for (const id of ["26759336", "26759381"]) {
+    assert.ok(rows.some(row => row.includes(id)), `ruleset ${id} documented`);
+  }
+
+  // The claim must not survive anywhere in the section: a strict check attributed to
+  // protect-staging as the thing that blocks a promotion PR.
   assert.ok(
-    !/protect-staging[^\n]{0,120}(strict-?required-status-checks|strict checks).{0,60}(promotion|targeting main)/i.test(section),
+    !/protect-staging`?\s*\(?26759336\)?.{0,200}strict[^\n]{0,200}(promotion|targeting main)/i.test(section),
     "protect-staging must not be credited with blocking the promotion",
   );
+  // ...and protect-main must carry it.
+  const mainRow = rows.find(row => row.includes("26759381"));
+  assert.ok(mainRow, "protect-main row exists");
+  assert.match(mainRow!, /promotion|ancestor/i, "protect-main row explains what it blocks");
+  assert.match(mainRow!, /strict/i, "protect-main row names the rule responsible");
 });
 
 test("the rollback target is captured before the merge, and the record after readiness", () => {

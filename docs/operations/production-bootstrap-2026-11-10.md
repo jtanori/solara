@@ -141,13 +141,17 @@ Merge it with `--merge` once `verify` is green.
 
 #### 4.1a If the merge commit is refused
 
-`protect-staging` has **two** rules that both forbid the obvious workarounds (verified via
+Two rules in two *different* rulesets both forbid the obvious workarounds (verified via
 `gh api repos/jtanori/solara/rulesets`):
 
-| rule | effect here |
-| --- | --- |
-| `required_linear_history` | a merge commit into `staging` is rejected |
-| `strict_required_status_checks_policy: true` | a promotion PR whose head does not contain `main`'s tip is `BEHIND` and cannot merge |
+| ruleset | targets | what it does here |
+| --- | --- | --- |
+| `protect-staging` (26759336) | `refs/heads/staging` | `required_linear_history` + strict checks: a **merge commit into staging** is rejected, and any PR into staging must contain staging's tip |
+| `protect-main` (26759381) | `~DEFAULT_BRANCH` (main) | strict checks: a **promotion PR targeting main** must contain main's tip, i.e. `main` must already be an ancestor of the head |
+
+The second row is the one that blocks a promotion whose back-merge was squashed. The first row is
+why you cannot fix it with a merge commit. Both refuse; only lifting the rule on `staging` lets the
+back-merge commit exist in the first place.
 
 So there is exactly **one** supported route, and a squash is not it:
 
@@ -173,18 +177,6 @@ partial body silently drops the other four rules (`deletion`, `non_fast_forward`
    ```
 
 3. **Settings → Rules → `protect-staging`** → check **Require linear history** → **Save**
-
-Which ruleset blocks what — **both** rulesets matter, and the previous revision attributed these
-backwards:
-
-| ruleset | targets | what it does here |
-| --- | --- | --- |
-| `protect-staging` (26759336) | `refs/heads/staging` | `required_linear_history` + strict checks: a **merge commit into staging** is rejected, and any PR into staging must contain staging's tip |
-| `protect-main` (26759381) | `~DEFAULT_BRANCH` (main) | strict checks: a **promotion PR targeting main** must contain main's tip, i.e. `main` must already be an ancestor of the head |
-
-That second row is the one that blocks a promotion whose back-merge was squashed. The first row is
-why you cannot fix it with a merge commit. Both refuse; only lifting the rule on `staging` lets the
-back-merge commit exist in the first place.
 
 Read the staged ruleset back afterwards and confirm all five rules are present and only the one you
 meant changed:
