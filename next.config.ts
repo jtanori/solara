@@ -64,6 +64,12 @@ const nextConfig: NextConfig = {
         source: "/api/billing/portal",
         headers: authenticatedCacheHeaders,
       },
+      {
+        // Readiness reflects live state; the handler also sets no-store, and this
+        // keeps the rule visible alongside every other dynamic API route.
+        source: "/api/ready",
+        headers: authenticatedCacheHeaders,
+      },
     ];
   },
 };

@@ -46,5 +46,9 @@ export async function currentUser() {
   if (!user) return null;
   return { ...user, plan: await hasPremiumAccess(user.id) ? "paid" as const : "free" as const };
 }
-export function canManageUsers(role: Role) { return role === "owner" || role === "admin"; }
-export function canEditKnowledge(role: Role) { return role === "owner" || role === "editor"; }
+/**
+ * The role matrix lives in `lib/roles.ts` (pure, no database import) so an
+ * authorization rule can be tested without Postgres. Re-exported here because
+ * this module is where callers expect to find it.
+ */
+export { canEditKnowledge, canManageUsers, isRole, ROLES } from "@/lib/roles";
