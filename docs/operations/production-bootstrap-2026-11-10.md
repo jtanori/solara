@@ -174,15 +174,27 @@ partial body silently drops the other four rules (`deletion`, `non_fast_forward`
 
 3. **Settings → Rules → `protect-staging`** → check **Require linear history** → **Save**
 
-Read the ruleset back afterwards and confirm all five rules are present and only the one you meant
-changed:
+Which ruleset blocks what — **both** rulesets matter, and the previous revision attributed these
+backwards:
+
+| ruleset | targets | what it does here |
+| --- | --- | --- |
+| `protect-staging` (26759336) | `refs/heads/staging` | `required_linear_history` + strict checks: a **merge commit into staging** is rejected, and any PR into staging must contain staging's tip |
+| `protect-main` (26759381) | `~DEFAULT_BRANCH` (main) | strict checks: a **promotion PR targeting main** must contain main's tip, i.e. `main` must already be an ancestor of the head |
+
+That second row is the one that blocks a promotion whose back-merge was squashed. The first row is
+why you cannot fix it with a merge commit. Both refuse; only lifting the rule on `staging` lets the
+back-merge commit exist in the first place.
+
+Read the staged ruleset back afterwards and confirm all five rules are present and only the one you
+meant changed:
 
 ```bash
 gh api repos/jtanori/solara/rulesets/26759336 --jq '[.rules[].type]'
 ```
 
-The output is one JSON array. `gh` pretty-prints it when writing to a terminal (one rule per line)
-and compacts it when piped; both forms mean the same thing:
+The output is one JSON array on a single line — `--jq` prints compact JSON regardless of whether it
+is writing to a terminal or a pipe, so do not expect it to expand:
 
 ```json
 ["deletion", "non_fast_forward", "required_linear_history", "required_status_checks", "pull_request"]
@@ -191,8 +203,14 @@ and compacts it when piped; both forms mean the same thing:
 Do not paste that array back into a shell: an unquoted `[...]` is a glob pattern, and zsh aborts with
 `no matches found` instead of running anything.
 
-If the `gh api` call fails, read the id from the repo-level list instead (needs only repository read),
-then confirm the rule list by eye in **Settings → Rules → `protect-staging`**:
+If you want the rules one per line, ask for that explicitly:
+
+```bash
+gh api repos/jtanori/solara/rulesets/26759336 --template '{{range .rules}}{{.type}}{{"\n"}}{{end}}'
+```
+
+If the per-id call fails, read the id from the repo-level list instead (needs only repository read),
+then confirm both rulesets by eye in **Settings → Rules**:
 
 ```bash
 gh api repos/jtanori/solara/rulesets --jq '.[] | select(.name=="protect-staging") | .id'

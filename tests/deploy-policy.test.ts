@@ -150,37 +150,52 @@ test("no runbook ships a fenced command with an unfilled placeholder", () => {
   assert.deepEqual(offenders, [], "a fenced command must be runnable, not a sketch");
 });
 
-test("a runbook that shows expected output does not promise the wrong shape", () => {
-  // `gh` pretty-prints JSON to a TTY and compacts it when piped (verified with `script -qec`). A doc
-  // that shows the compact form as *the* output is wrong for anyone reading it in a terminal, which
-  // is how runbooks are read. Either present the value abstractly, or say outright that both forms
-  // mean the same thing.
+test("a runbook asserting JSON formatting is not reversed", () => {
+  // Verified against gh 2.23.0: `--jq` writes compact JSON whether stdout is a TTY or a pipe
+  // (`script -qec ... | cat -A` shows one line). A test that only rejects *missing* formatting text
+  // passes a mutation that reverses the claim — "compacts when piped" is a substring of "pretty
+  // prints when piped", so an assertion on keywords is not enough. Assert the stated direction.
   const bootstrap = readFileSync("docs/operations/production-bootstrap-2026-11-10.md", "utf8");
-  // Scan EVERY fence, not just bash: the output of a --jq command is usually shown in a separate
-  // json block, and a check that only reads the command's own fence misses it entirely.
-  const commands = [...bootstrap.matchAll(/```bash\n([\s\S]*?)```/g)].map(m => m[1]);
-  const hasJqApi = commands.some(
-    body => body.split("\n").some(line => !line.trim().startsWith("#") && line.includes("gh api")) && body.includes("--jq"),
-  );
   const fences = [...bootstrap.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].map(m => m[1]);
-  const showsCompactArray = fences.some(body => /^\s*\[".*"\]\s*$/m.test(body.split("\n").find(l => l.trim().startsWith('["')) ?? ""));
-  if (hasJqApi && showsCompactArray) {
-    assert.match(
-      bootstrap,
-      /pretty-print|one rule per line|both forms|when piped/i,
-      "a --jq command with an exact JSON array as expected output must say that gh pretty-prints to a TTY and compacts when piped",
-    );
-  }
+  const showsArray = fences.some(body => /^\s*\[".*"\]\s*$/m.test(body));
+  const mentionsJq = fences.some(body => body.includes("gh api") && body.includes("--jq"));
+  if (!showsArray || !mentionsJq) return;
 
-  // And no runbook may tell the operator to paste a JSON array back into a shell.
-  const jsonBlocks = [...bootstrap.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]);
-  for (const json of jsonBlocks) {
-    if (!json.trim().startsWith("[")) continue;
-    assert.ok(
-      /do not paste|glob pattern|no matches found/i.test(bootstrap),
-      "an expected JSON array must warn that an unquoted [...] is a shell glob",
-    );
+  // Positive claim: --jq output stays compact, in both contexts.
+  assert.match(
+    bootstrap,
+    /`--jq` prints compact JSON|compact JSON regardless of whether it\s+is writing to a terminal/i,
+    "the doc must state that --jq output is compact in both contexts",
+  );
+  // Negative claim: never promise expansion to a TTY.
+  assert.ok(
+    !/pretty-print(s|ed)?\s+(?:it\s+)?(?:when|on)\s+(?:writing to\s+)?a\s+terminal/i.test(bootstrap) &&
+      !/pretty-prints it when writing to a terminal/i.test(bootstrap),
+    "the doc must not claim --jq pretty-prints to a TTY",
+  );
+  // The escape hatch must be real: if the doc offers one-per-line output, it must not attribute that
+  // to --jq.
+  if (/one per line/i.test(bootstrap)) {
+    assert.match(bootstrap, /--template/, "one-per-line output requires --template, not --jq");
   }
+});
+
+test("the runbook attributes each blocking rule to the ruleset that actually has it", () => {
+  // The previous revision credited protect-staging with blocking the promotion. It targets
+  // refs/heads/staging; a promotion PR targets main, so protect-main's strict checks are what
+  // refuse it. Get this backwards and an operator toggles the wrong ruleset and concludes the
+  // scripts are broken.
+  const bootstrap = readFileSync("docs/operations/production-bootstrap-2026-11-10.md", "utf8");
+  const section = bootstrap.slice(bootstrap.indexOf("#### 4.1a"), bootstrap.indexOf("### 4.2"));
+
+  assert.match(section, /`protect-main`[^\n]*\|/, "protect-main appears in the ruleset table");
+  assert.match(section, /protect-main.{0,200}strict/i, "protect-main is credited with the strict check");
+  assert.match(section, /targeting main|PR targeting main|targets `main`/i, "and with blocking a promotion");
+  assert.match(section, /protect-staging.{0,200}linear_history/i, "protect-staging is credited with linear history");
+  assert.ok(
+    !/protect-staging[^\n]{0,120}(strict-?required-status-checks|strict checks).{0,60}(promotion|targeting main)/i.test(section),
+    "protect-staging must not be credited with blocking the promotion",
+  );
 });
 
 test("the rollback target is captured before the merge, and the record after readiness", () => {
