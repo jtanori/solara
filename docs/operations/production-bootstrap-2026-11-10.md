@@ -134,42 +134,57 @@ gh pr create --base staging --head chore/promote-sync-main \
 
 Merge it with `--merge` once `verify` is green.
 
-> **A squash here does NOT restore ancestry.** `protect-staging` requires linear history, so the
-> ruleset may reject the merge commit — and if you fall back to squash, the original `main` SHAs
-> never become ancestors of `staging`, which is exactly what `deploy.sh`'s ancestry gate checks.
-> The content matches; the SHAs do not. See §4.1a.
+> **This merge commit will be rejected while `required_linear_history` is on** — that is expected.
+> Do not fall back to squash: a squash keeps the content and drops the SHAs, so `main` still is not
+> an ancestor, the promotion stays `BEHIND`, and both GitHub and `deploy.sh` refuse it. §4.1a has the
+> one supported route (lift the rule, merge, restore it).
 
 #### 4.1a If the merge commit is refused
 
-`protect-staging` requires **linear history**, so a merge commit into `staging` may be rejected. The
-obvious fallback — squash — does **not** restore ancestry: the content lands, the `main` SHAs do not,
-and `git merge-base --is-ancestor main staging` still fails. Nothing short of a merge commit into
-`staging` can make `main`'s commits ancestors of `staging`, and the ruleset forbids exactly that.
+`protect-staging` has **two** rules that both forbid the obvious workarounds (verified via
+`gh api repos/jtanori/solara/rulesets`):
 
-So do not pretend the squash satisfies the gate. Two supported paths:
+| rule | effect here |
+| --- | --- |
+| `required_linear_history` | a merge commit into `staging` is rejected |
+| `strict_required_status_checks_policy: true` | a promotion PR whose head does not contain `main`'s tip is `BEHIND` and cannot merge |
 
-**Path A — lift linear history for this one back-merge (records true ancestry).**
-Temporarily disable `required_linear_history` on the `protect-staging` ruleset, merge the back-merge
-PR with `--merge`, then restore the rule. This is the only path that makes the ancestry check pass on
-its own terms. Record in the promotion PR that the rule was lifted, and why.
+So there is exactly **one** supported route, and a squash is not it:
 
-**Path B — promote with a content-equivalent history (no ruleset change).**
-Squash-merge the back-merge, then promote. `deploy.sh` does not refuse this: it distinguishes "main's
-content is missing from staging" (refused) from "main's content is present under different SHAs"
-(allowed, with a warning). That distinction is `decide_promotion_readiness`, and it is what keeps a
-genuinely stale branch from slipping through.
+- A squash back-merge keeps the content and drops the SHAs. `main` still is not an ancestor of
+  `staging`, the promotion PR stays `BEHIND`, and both GitHub *and* `scripts/deploy.sh`'s
+  base-freshness gate refuse it. There is no override flag, by design.
+- Nothing committed *into* staging can fix this either. An empty commit adds no ancestry: a commit
+  has one parent, so `merge-base --is-ancestor main staging` still fails. (I claimed otherwise in an
+  earlier revision of this section; it is wrong and has been retracted.)
 
-Verify either way before promoting:
+**Supported route — lift linear history for this one back-merge, then restore it.**
+
+```bash
+# 1. temporarily allow merge commits into staging
+gh api -X PATCH repos/jtanori/solara/rulesets/26759336   -f 'rules[][type]=deletion' ...            # or edit the ruleset in Settings → Rules
+#    simplest: Settings → Rules → protect-staging → uncheck "Require linear history" → Save
+
+# 2. merge the back-merge PR with a real merge commit
+gh pr merge <back-merge-pr> --merge
+
+# 3. restore the rule
+#    Settings → Rules → protect-staging → check "Require linear history" → Save
+```
+
+Confirm it took, on both sides of the check:
 
 ```bash
 git fetch origin main staging
-# 0 = literal ancestry (Path A). Non-zero is fine for Path B as long as the content check is empty:
 git merge-base --is-ancestor origin/main origin/staging && echo "ancestry: literal"
 git log --oneline --cherry-pick --left-only origin/main...origin/staging   # must print nothing
 ```
 
-An empty last command means every `main` commit's change is already on `staging`. Anything printed is
-real work `staging` does not have — back-merge that content before promoting, not just its ancestry.
+The first line is the condition `deploy.sh` tests. The second proves the back-merge carried no
+content, so staging's tree is unchanged. If it prints anything, `main` has real work `staging` does
+not — back-merge that content first; ancestry alone will not carry it.
+
+Record in the promotion PR that linear history was lifted for the back-merge, and why.
 
 ### 4.2 Open the promotion PR
 

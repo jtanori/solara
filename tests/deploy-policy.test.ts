@@ -85,6 +85,39 @@ test("#76: the preview readiness gate runs before the merge and fails closed", (
   assert.match(script, /Cannot verify the preview, so refusing to merge/, "an unresolvable preview fails closed");
 });
 
+test("the runbooks do not describe behaviour deploy.sh does not have", () => {
+  // A runbook that promises an allowance the script refuses is worse than a missing runbook: the
+  // operator follows it, the deploy aborts, and the docs are then the thing they stop trusting.
+  const script = readFileSync("scripts/deploy.sh", "utf8");
+  const bootstrap = readFileSync("docs/operations/production-bootstrap-2026-11-10.md", "utf8");
+  const checklist = readFileSync("docs/operations/production-deploy-checklist.md", "utf8");
+  const promotion = readFileSync("docs/operations/promotion-2026-11-10.md", "utf8");
+
+  // 1. Never cite a helper that does not exist.
+  for (const doc of [bootstrap, checklist, promotion]) {
+    for (const [, fn] of doc.matchAll(/\b(decide_[a-z_]+)\b/g)) {
+      assert.ok(
+        new RegExp(`^${fn}\\(\\)`, "m").test(readFileSync("scripts/lib/deploy-policy.sh", "utf8")),
+        `${fn} is referenced by a runbook but is not implemented in deploy-policy.sh`,
+      );
+    }
+  }
+
+  // 2. No documented "squash is allowed" route: the base-freshness gate exits unconditionally, and
+  //    the staging ruleset's strict required checks keep the PR BEHIND regardless.
+  for (const doc of [bootstrap, checklist, promotion]) {
+    assert.ok(
+      !/squash/i.test(doc) || !/(ancestry is satisfied|allows? (the|this) promotion|allowed, with a warning)/i.test(doc),
+      "a runbook must not claim a squash satisfies the ancestry gate",
+    );
+  }
+
+  // 3. The gate itself still has no override path on the promotion branch.
+  const gate = script.slice(script.indexOf("== Gate: base freshness =="), script.indexOf("== Gate: preview readiness"));
+  assert.match(gate, /ERROR: refusing to deploy a \$VERDICT stale PR/);
+  assert.ok(!/--force|ALLOW_STALE|SKIP_FRESH/i.test(gate), "there is no override flag for base freshness");
+});
+
 test("the rollback target is captured before the merge, and the record after readiness", () => {
   const script = readFileSync("scripts/deploy.sh", "utf8");
   const capture = script.indexOf('$(vercel_current_production_deployment');

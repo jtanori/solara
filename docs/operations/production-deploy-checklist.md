@@ -96,7 +96,7 @@ git merge --no-ff origin/main -m "chore: back-merge main into staging (promotion
 git push origin chore/promote-sync-main
 gh pr create --base staging --head chore/promote-sync-main \
   --title "chore: back-merge main into staging (promotion prerequisite)" \
-  --body "Restores main as an ancestor of staging so deploy.sh's freshness gate allows the promotion. Zero file changes."
+  --body "Brings main's commits into staging so deploy.sh's base-freshness gate can pass the promotion. Zero file changes; requires a merge commit (see Step 2 note)."
 ```
 
 Expected: `verify` green, then merge it:
@@ -105,13 +105,17 @@ Expected: `verify` green, then merge it:
 gh pr merge <that-pr-number> --merge
 ```
 
-If the ruleset blocks a merge commit on `staging`, **do not simply squash and assume it worked**: a
-squash keeps the content and drops the SHAs, so `main` is still not an ancestor. `deploy.sh` allows
-that case (the content check comes back empty) but warns; see `production-bootstrap-2026-11-10.md`
-§4.1a for the two supported paths. Confirm the content gap is genuinely empty before promoting:
+If the ruleset blocks a merge commit on `staging`, **do not fall back to squash**: a squash keeps the
+content and drops the SHAs, so `main` is still not an ancestor, the promotion PR stays `BEHIND`, and
+`deploy.sh`'s base-freshness gate refuses it. There is no override. The one supported route is to
+lift `required_linear_history`, merge the back-merge with `--merge`, and restore the rule — see
+`production-bootstrap-2026-11-10.md` §4.1a.
+
+Confirm afterwards, before opening the promotion PR:
 
 ```bash
 git fetch origin main staging
+git merge-base --is-ancestor origin/main origin/staging && echo "ancestry: literal"
 git log --oneline --cherry-pick --left-only origin/main...origin/staging   # must print nothing
 ```
 

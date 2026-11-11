@@ -165,10 +165,11 @@ EOF
 Wait for `verify` green and `mergeStateStatus: CLEAN`, then **`--merge`**.
 
 If the ruleset rejects the merge commit (`protect-staging` requires linear history), a squash does
-**not** restore ancestry: the content lands, the `main` SHAs do not. `deploy.sh` still allows the
-promotion when main's *content* is fully present (it warns), and refuses it when any main-only change
-is missing. See `production-bootstrap-2026-11-10.md` §4.1a for the two paths (lift linear history for
-one back-merge, or squash and accept that ancestry is recorded by the promotion merge into `main`).
+**not** restore ancestry: the content lands, the `main` SHAs do not, and the promotion is refused —
+by GitHub (`strict_required_status_checks_policy` keeps the PR `BEHIND`) and by `deploy.sh`'s
+base-freshness gate, which has no override. The one supported route is in
+`production-bootstrap-2026-11-10.md` §4.1a: lift `required_linear_history`, merge with `--merge`,
+restore the rule.
 
 > Alternatively use the repo's own script: `./scripts/deploy.sh --pr <n> --env staging`, which
 > enforces every gate for you. It requires a full clone (not shallow).
