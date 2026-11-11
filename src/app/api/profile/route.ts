@@ -46,7 +46,16 @@ export async function PATCH(request: Request) {
  * record is the gap this closes, and a record without the deletion would be a
  * lie.
  */
-export async function DELETE(request: Request, deps: ProfileDeps = {}) {
+export async function DELETE(request: Request) {
+  return deleteAccount(request);
+}
+
+/**
+ * The handler body, with injectable seams. `DELETE` must keep Next's exact
+ * `(request) => Response` signature — a second parameter fails route typegen —
+ * so the testable form is a sibling function.
+ */
+export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
   const user = await currentUser();
   if (!user) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
   const locale = await getLocale();
