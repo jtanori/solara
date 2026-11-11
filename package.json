@@ -60,7 +60,7 @@
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "postcss": "^8.5.32",
-    "tailwindcss": "4.1.17",
+    "tailwindcss": "4.3.5",
     "tsx": "^4.23.15",
     "typescript": "5.9.3"
   }
