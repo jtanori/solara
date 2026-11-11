@@ -35,7 +35,7 @@ A `status:` label on these issues describes *intent*, not *reality*. Checked aga
 | #87 PII redaction + structured logs | — | #125 | `status:ready` |
 | #103 readings generation pipeline | — | #127 | `status:ready` |
 | #119 exact-SHA migrate for promotion | — | #120 | `status:ready` |
-| #132 replace `BACKLOG.md` | — | **#133** (merged `d7d7634`) | `status:in-progress` |
+| #132 retire the committed legacy backlog file | — | **#133** (merged `d7d7634`) | `status:in-progress` |
 
 That is **14 issues whose work is on `staging` and which are still open**, several labelled `status:ready` as if unstarted. It almost certainly explains #93 and #71 being filed *after* the work landed. Closing them is pending a promotion to `main`, or a manual close now.
 
@@ -140,7 +140,7 @@ That is **14 issues whose work is on `staging` and which are still open**, sever
 | --- | --- | --- | --- | --- |
 | #106 | readings: renderer for page and PDF | p2 | ui, backend | `ready` |
 | #110 | engine: profections and transits | p2 | astro | `ready` |
-| #132 | chore: replace the committed `BACKLOG.md` with an on-demand, generated snapshot | p2 | docs, infra | **`in-progress`** ⚠ merged via #133 |
+| #132 | chore: retire the committed legacy backlog file in favor of an on-demand, generated snapshot | p2 | docs, infra | **`in-progress`** ⚠ merged via #133 |
 | #111 | readings: astrologer review and override tooling | p3 | ui, content | `ready` |
 
 ---

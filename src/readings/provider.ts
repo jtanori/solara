@@ -2,6 +2,7 @@ import type { ChartDigest } from "@/lib/chart";
 import { signName, type Locale } from "@/lib/i18n";
 import type { SectionKey } from "@/readings/types";
 import type { SectionOutput } from "@/readings/schemas";
+import { chatAdapterFromEnv } from "@/readings/adapters/chat-completions";
 
 /**
  * The provider adapter (`docs/plan-readings-engine-epic.md` §4.4, §9b) — the
@@ -263,6 +264,25 @@ export function createFixtureProvider(): ReadingProvider {
   };
 }
 
+/**
+ * Provider registry, selected by `READINGS_PROVIDER` (config.ts:providerName).
+ * `resolveProvider()` returns null for any name not listed here, so an unknown
+ * value means every section fails with `provider_unavailable` and the reading
+ * renders its chart-grounded fallback — never a crash.
+ *
+ * Every entry is a zero-argument factory. The adapter's configuration is read
+ * lazily here, *inside* the factory, so importing this module never touches the
+ * environment and tests can register their own providers via `args.provider`.
+ */
 export const PROVIDERS: Record<string, () => ReadingProvider> = {
   fixture: createFixtureProvider,
+  "chat-completions": () => {
+    const provider = chatAdapterFromEnv();
+    if (!provider) {
+      throw new Error(
+        "READINGS_PROVIDER=chat-completions requires READINGS_API_BASE_URL and READINGS_API_KEY",
+      );
+    }
+    return provider;
+  },
 };

@@ -132,10 +132,24 @@ function assemblePrompt(section: SectionKey, locale: Locale, digestJson: string,
 
 // ------------------------------------------------------------------ provider
 
+/**
+ * Resolve the configured provider. Total by contract: a misconfigured adapter
+ * (a real vendor selected without its key) must degrade to the documented
+ * `provider_unavailable` fallback, not throw out of `generateReadingDocument`.
+ * Before this guard existed, an unconfigured real adapter threw here, the
+ * per-section try/catch turned it into `internal_error` for every section, and
+ * the only signal was one log line.
+ */
 function resolveProvider(): ReadingProvider | null {
   const name = providerName();
   const factory = name ? PROVIDERS[name] : undefined;
-  return factory ? factory() : null;
+  if (!factory) return null;
+  try {
+    return factory();
+  } catch (error) {
+    log.error("readings.provider_unconfigured", { provider: name, error });
+    return null;
+  }
 }
 
 // ------------------------------------------------------------------ pipeline
