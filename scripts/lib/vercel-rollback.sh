@@ -16,10 +16,20 @@ vercel_deployment_id_from_url() {
   segment=$(printf '%s' "$url" | sed -n 's#/*$##; s#^.*/\([A-Za-z0-9_]*\)$#\1#p')
   [[ -z "$segment" ]] && return 0
   case "$segment" in
-    dpl_*) printf '%s' "$segment" ;;
-    # Inspector URLs also end in the project slug/team segment; only accept id-looking segments.
-    [A-Za-z0-9]*[0-9]*[A-Za-z]*|*[0-9][A-Za-z0-9]*) printf 'dpl_%s' "$segment" ;;
+    dpl_*) printf '%s' "$segment"; return 0 ;;
   esac
+  # The third path segment is the deployment id. Do NOT require a digit or a particular length:
+  # real ids are base62 and contain no digits at all (e.g. aVrhDtYTxMXZpWmWQxZGSVdAhMXT).
+  # Reject only the segments that are actually slugs repeated from the same URL.
+  local team project
+  case "$url" in
+    https://vercel.com/*)
+      local path="${url#https://vercel.com/}"; path="${path%%\?*}"; path="${path%/}"
+      team="${path%%/*}"; path="${path#*/}"; project="${path%%/*}"
+      [[ "$segment" == "$team" || "$segment" == "$project" ]] && return 0
+      ;;
+  esac
+  printf 'dpl_%s' "$segment"
 }
 
 # The deployment currently serving production. Needed because a rollback target is not derivable

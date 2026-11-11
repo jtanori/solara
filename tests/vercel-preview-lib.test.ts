@@ -16,6 +16,37 @@ function bash(script: string, env: Record<string, string> = {}): { status: numbe
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
+test("a real Vercel deployment id with no digits still resolves", () => {
+  // Regression from a live run: Vercel's actual id was aVrhDtYTxMXZpWmWQxZGSVdAhMXT — base62, no
+  // digits at all. The previous "id-looking segment" heuristic required a digit, so deploy.sh
+  // reported "could not resolve a preview URL" against a perfectly valid status and refused to
+  // merge. Stubs used dpl_abc123 and never exposed it.
+  const live = "https://vercel.com/jaime-tanoris-projects/solara/aVrhDtYTxMXZpWmWQxZGSVdAhMXT";
+  const out = bash(`${SOURCE}
+vercel_preview_from_status_url "${live}"
+vercel_deployment_id_from_url "${live}"
+echo
+vercel_preview_alias "$(vercel_preview_from_status_url "${live}" | cut -f2)" "$(vercel_preview_from_status_url "${live}" | cut -f1)" staging`).stdout;
+  const [parsed, id, alias] = out.trim().split("\n");
+  assert.equal(parsed, "jaime-tanoris-projects\tsolara\taVrhDtYTxMXZpWmWQxZGSVdAhMXT");
+  assert.equal(id, "dpl_aVrhDtYTxMXZpWmWQxZGSVdAhMXT", "a digit-free id is still a deployment id");
+  assert.equal(alias, "https://solara-git-staging-jaime-tanoris-projects.vercel.app");
+});
+
+test("a URL whose trailing segment is the project or team slug is not treated as a deployment", () => {
+  // Do NOT trim(): the first two results are expected to be empty, and trim() would eat the leading
+  // blank lines and silently shift the assertions onto the wrong rows.
+  const out = bash(`${SOURCE}
+vercel_preview_from_status_url "https://vercel.com/jaime-tanoris-projects/solara/solara"; echo
+vercel_preview_from_status_url "https://vercel.com/jaime-tanoris-projects/solara"; echo
+vercel_preview_from_status_url "https://vercel.com/a/b/c?x=1"; echo
+echo done`).stdout.split("\n");
+  assert.equal(out[0], "", "a repeated project slug is not an id");
+  assert.equal(out[1], "", "two segments is not a deployment URL");
+  // A query string is tolerated and stripped.
+  assert.equal(out[2], "a\tb\tc");
+});
+
 test("a Vercel inspector URL parses into team, project and deployment", () => {
   const out = bash(`${SOURCE}
 vercel_preview_from_status_url "https://vercel.com/jaime-tanoris-projects/solara/dpl_6c8mp8c2ucTKe6Eqm5oKHpniznbR"

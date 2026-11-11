@@ -18,10 +18,23 @@ VERCEL_PREVIEW_API_BASE="${VERCEL_API_BASE:-https://api.vercel.com}"
 # Vercel emits inspector URLs: https://vercel.com/<team>/<project>/<dpl_id>
 # Anything else (a dashboard link, a missing segment) yields nothing rather than a guess.
 vercel_preview_from_status_url() {
-  local url="$1" parsed
-  parsed=$(printf '%s' "$url" | sed -n 's#^https\?://vercel\.com/\([^/]*\)/\([^/]*\)/\(dpl_[A-Za-z0-9]*\)/*$#\1\t\2\t\3#p')
-  [[ -z "$parsed" ]] && return 0
-  printf '%s\n' "$parsed"
+  local url="$1" path team project id
+  case "$url" in
+    https://vercel.com/*) path="${url#https://vercel.com/}" ;;
+    *) return 0 ;;
+  esac
+  path="${path%%\?*}"      # drop any query string
+  path="${path%/}"          # drop a trailing slash
+  # Exactly three segments: <team>/<project>/<deployment id>.
+  [[ "$path" == */*/* ]] || return 0
+  team="${path%%/*}"
+  path="${path#*/}"
+  project="${path%%/*}"
+  id="${path#*/}"
+  # The id itself must be a single segment, and must not merely repeat a slug.
+  [[ -n "$team" && -n "$project" && -n "$id" && "$id" != */* ]] || return 0
+  [[ "$id" == "$team" || "$id" == "$project" ]] && return 0
+  printf '%s\t%s\t%s\n' "$team" "$project" "$id"
 }
 
 # The git branch alias Vercel serves for a branch: <project>-git-<slug>-<team>.vercel.app
