@@ -162,8 +162,15 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
  * inside it lives in `writeAccountDeletion`: audit row first, delete second.
  * Written the other way round (delete, then insert) the audit row's foreign key
  * has nothing to reference and Postgres aborts with `23503`.
+ *
+ * Exported so the DB-gated test in `tests/profile-deletion.test.ts` can drive
+ * this exact function. The ordering tests in `tests/account-deletion.test.ts`
+ * prove `writeAccountDeletion` is called in the right order, but they substitute
+ * their own writer — so they cannot see this file invert its own two statements
+ * around it, which is precisely where the bug lived. Only a real database can
+ * prove the pair this file actually issues is accepted.
  */
-async function defaultDeleteUser(userId: string): Promise<void> {
+export async function defaultDeleteUser(userId: string): Promise<void> {
   await db.transaction(tx => writeAccountDeletion({
     insertAudit: async (row) => {
       await tx.insert(auditLogs).values(row);
