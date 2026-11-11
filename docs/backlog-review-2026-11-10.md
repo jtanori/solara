@@ -1,5 +1,9 @@
 # Backlog review — what's ahead (2026-11-10)
 
+> **Note (2026-11-10):** `BACKLOG.md` was removed from the repository in favour of an on-demand,
+> gitignored snapshot — see **ADR 009** and #132. References to it below describe the state at the
+> time of writing.
+
 Snapshot taken against `staging@750a272` (= this session branch), `main@4490ced`, and the live
 GitHub issue tracker. Numbers below were queried, not remembered.
 

@@ -1,8 +1,8 @@
 # AGENTS.md — Solara Operator & Agent Guide
 
-> **Read this first** if you are a contributor or an autonomous agent working in this repository. This file is the daily operating manual; durable rationale lives in [`docs/decisions.md`](docs/decisions.md) and the offline backlog index in [`BACKLOG.md`](BACKLOG.md).
+> **Read this first** if you are a contributor or an autonomous agent working in this repository. This file is the daily operating manual; durable rationale lives in [`docs/decisions.md`](docs/decisions.md). For offline work, generate a snapshot with `npm run backlog:snapshot` (ADR 009).
 
-**Source of truth:** [GitHub Issues](https://github.com/jtanori/solara/issues) are authoritative for work. `BACKLOG.md` is a convenience snapshot (see ADR 002). Decisions are ADRs in `docs/decisions.md`. The launch gate is `README.md` + `docs/setup/README.md`.
+**Source of truth:** [GitHub Issues](https://github.com/jtanori/solara/issues) are authoritative for work. There is no committed backlog file: `npm run backlog:snapshot` writes a gitignored, timestamped copy for offline use (ADR 009). Decisions are ADRs in `docs/decisions.md`. The launch gate is `README.md` + `docs/setup/README.md`.
 
 ---
 
@@ -27,9 +27,8 @@ solara/
 │   ├── local/seed-users.ts     # local-only guarded seed: 9 accounts + subscriptions (ALLOW_LOCAL_SEED)
 │   └── verify-gating-production.ts # prod-mode gating verifier: 404 + role scoping + payload leak checks
 ├── docs/
-│   ├── decisions.md            # ADRs 001-008 (006 identity, 007 auth hardening, 008 migrations/deploy)
+│   ├── decisions.md            # ADRs 001-009 (006 identity, 007 auth hardening, 008 migrations/deploy, 009 backlog)
 │   └── setup/                  # 01-foundation, 02-stripe, 03-maps, 04-pdf, 05-i18n, 06-astro, 07-validation, 08-auth-security
-├── BACKLOG.md                  # offline index — last updated staging@9a57fab / main@03467bd (PR #47 sync)
 ├── .github/
 │   ├── workflows/ci.yml        # verify job: migrate → typegen → tsc → eslint → tests → audit → build → smoke
 │   ├── dependabot.yml          # npm + github-actions, target-branch: staging
@@ -164,20 +163,20 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 
 ---
 
-## 6. Backlog Conventions (ADR 002)
+## 6. Backlog Conventions (ADR 009, supersedes ADR 002)
 
-- **GitHub Issues are authoritative.** `BACKLOG.md` is an offline index — `Last updated: staging@9a57fab / main@03467bd (PR #47 sync)`. Update it only when issues are created/changed/closed.
-- **Labels:** `type:*`, `area:*`, `priority:p1/p2/p3`, `status:ready/blocked/needs-triage`.
-- **Open (2026-11-07):** `#6` Dependabot (ready), `#10` Stripe lifecycle (ready — unblocked), `#16` validation (needs-triage). Closed recent: `#1 branching`, `#2 deployment`, `#3 AGENTS.md`, `#4,#5,#7,#8,#9,#11,#12,#13,#14,#15,#17-#23`.
-- **How to add work:** create GitHub Issue first, then add row to `BACKLOG.md` with link `#<n>`.
-- **How to close:** close GitHub Issue, move row to “Closed” table with closing PR/commit (e.g. `| [#5] | ... | #23 (2176a15) |`).
+- **GitHub Issues are authoritative.** There is no committed backlog index (ADR 009): `npm run backlog:snapshot` renders a timestamped, `.gitignore`d copy for offline reading. Never commit or hand-edit it.
+- **Labels:** `type:{bug,docs,feature,security,refactor,test,chore,ci,deps,release}`, `area:{ui,backend,db,auth,billing,docs,infra,content,astro,a11y}`, `priority:p0..p3`, `status:{needs-triage,ready,blocked,needs-info,in-progress,in-review,awaiting-promotion}`, `deploy:skip|deploy:required`.
+- **Where is the current work?** Only on GitHub — never paste an issue list into a repo file. `npm run backlog:snapshot`, or `gh issue list --state open`.
+- **How to add work:** create a GitHub Issue. Nothing to update in the repo — the snapshot regenerates on demand.
+- **How to close:** close the GitHub Issue with a comment naming the closing PR/commit (e.g. `#23 (2176a15)`); the snapshot then omits it.
 
 ---
 
 ## 7. Decisions to Know
 
 - **ADR 001** Branching `feature → staging → main` (Settings → General + Rulesets).
-- **ADR 002** `BACKLOG.md` is index, not source of truth.
+- **ADR 002** `BACKLOG.md` was an offline index (superseded by **ADR 009**: no committed backlog file).
 - **ADR 003** Platform-validation checklist is pre-launch gate (astro, hist TZ, editorial versioning, backup/restore, MFA/CSRF/rate-limit).
 - **ADR 004** COMMENT-only reviews + squash (promotions excepted).
 - **ADR 005** Prototype gate — not production-ready; no live billing/real data until checklists green.
@@ -194,7 +193,7 @@ Full text: [`docs/decisions.md`](docs/decisions.md). Review mechanics: [`docs/CO
 - [ ] Branch from `staging` as `<type>/<issue>-<slug>`.
 - [ ] `npm ci`, `npm run db:migrate` (if new migration), `npx next typegen`, `npm run typecheck`, `npm run lint`, `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`, `npm run build`, `npm run db:manifest:check`, `npm run db:check` — paste evidence.
 - [ ] No secrets in diff, `.env` not committed, `ALLOW_LOCAL_SEED*` not in Vercel.
-- [ ] `BACKLOG.md` updated if issues opened/closed.
+- [ ] No backlog file to update (ADR 009); regenerate the snapshot only if you need it offline.
 - [ ] PR body: `Closes #X` per line, Evidence, Risk, Rollout/Rollback.
 - [ ] CI green (`verify` + GitGuardian) and `mergeStateStatus: CLEAN`.
 - [ ] Any review is **posted to the PR** (`COMMENT` event, inline findings, reviewed SHA named) — not pasted into chat.

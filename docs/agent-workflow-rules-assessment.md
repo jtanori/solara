@@ -1,5 +1,9 @@
 # Assessment — external "Agent Workflow Rules" against this repository
 
+> **Note (2026-11-10):** `BACKLOG.md` was removed from the repository in favour of an on-demand,
+> gitignored snapshot — see **ADR 009** and #132. References to it below describe the state at the
+> time of writing.
+
 Source: an external rules document supplied by the operator on 2026-11-08. This compares each
 section against what this repository actually has, and records adoption.
 

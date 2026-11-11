@@ -1,5 +1,9 @@
 # Promotion runbook — `staging → main` (2026-11-10)
 
+> **Note (2026-11-10):** `BACKLOG.md` was removed from the repository in favour of an on-demand,
+> gitignored snapshot — see **ADR 009** and #132. References to it below describe the state at the
+> time of writing.
+
 > **Superseded in part (2026-11-10, later):** the operator confirmed production has **no accounts**
 > ("everything is new"), the mail provider is **Resend**, and `deploy.sh` can be run with Vercel
 > access. HAZARD A in §1 is therefore a **no-op on an empty database**, and the mitigation below is

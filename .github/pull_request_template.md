@@ -42,7 +42,7 @@ Closes #<!-- issue number --> — <!-- title -->
 
 ## Checklist
 - [ ] No secrets committed (`.env` never committed; `.env.example` contains placeholders only)
-- [ ] Docs updated (`README.md`, `docs/setup/*`, `docs/decisions.md`, `BACKLOG.md` when issues change) and `BACKLOG.md` links resolve
+- [ ] Docs updated (`README.md`, `docs/setup/*`, `docs/decisions.md`) — there is no backlog file to edit (ADR 009)
 - [ ] No mocked/seed code in `src/` (keep in `scripts/`)
 - [ ] **Accepted for promotion** — maintainer posted deploy command as a comment:
   - feature PR → `staging`: `./scripts/deploy.sh --pr <number> --env staging`

@@ -12,7 +12,7 @@ Source: `docs/decisions.md` ADR 003 + ADR 005, `README.md` § Launch limitations
 | **Evidence** | File, fixture, dashboard link, or test that proves the item |
 | **Status** | `todo` / `in-progress` / `pass` / `waived` |
 
-Move an item to `pass` only when its evidence is committed or linked and a reviewer has commented `verified` on the PR. Keep `BACKLOG.md` and the relevant `docs/setup/*` guide in sync.
+Move an item to `pass` only when its evidence is committed or linked and a reviewer has commented `verified` on the PR. Keep the relevant GitHub issue and `docs/setup/*` guide in sync.
 
 ---
 
@@ -76,4 +76,4 @@ Move an item to `pass` only when its evidence is committed or linked and a revie
 
 Before any `main` deploy with live Stripe or real birth data: all rows must be `pass` and reviewed on a PR that targets `staging` → `main` via `scripts/deploy.sh`.
 
-References: `BACKLOG.md` #16, `docs/decisions.md` ADR 003/005, `AGENTS.md` §3 Security Invariants.
+References: GitHub issue #16, `docs/decisions.md` ADR 003/005, `AGENTS.md` §3 Security Invariants.

@@ -158,7 +158,6 @@ if (!envFilter) {
   report(fileExists(".gitignore") && fileContains(".gitignore", ".env.*") ? "OK" : "WARN", "local", ".gitignore env", "ignores .env, .env.* (templates allowed)", null);
   report(fileExists("AGENTS.md") ? "OK" : "WARN", "local", "AGENTS.md", fileExists("AGENTS.md") ? "present (#3)" : "missing — blocked until #1/#2", "gh issue 3: docs: add AGENTS.md");
   report(fileExists("docs/decisions.md") ? "OK" : "ERROR", "local", "docs/decisions.md", fileExists("docs/decisions.md") ? "present (ADRs 001-005)" : "missing", null);
-  report(fileExists("BACKLOG.md") ? "OK" : "WARN", "local", "BACKLOG.md", fileExists("BACKLOG.md") ? "present" : "missing", null);
   report(fileExists("docs/setup/00-manual-setup-ui.md") ? "OK" : "WARN", "local", "00-manual-setup-ui.md", fileExists("docs/setup/00-manual-setup-ui.md") ? "present" : "missing manual UI guide", null);
 }
 

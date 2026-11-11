@@ -22,7 +22,8 @@
     "db:seed:local": "tsx scripts/local/seed-users.ts",
     "db:check:remote": "tsx scripts/db-remote.ts --check",
     "db:manifest": "tsx scripts/generate-migration-manifest.ts",
-    "db:manifest:check": "tsx scripts/generate-migration-manifest.ts --check"
+    "db:manifest:check": "tsx scripts/generate-migration-manifest.ts --check",
+    "backlog:snapshot": "tsx scripts/backlog-snapshot.ts"
   },
   "engines": {
     "node": ">=22"

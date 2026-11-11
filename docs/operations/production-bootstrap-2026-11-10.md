@@ -1,5 +1,9 @@
 # Production bootstrap — decisions locked and the path to deploy
 
+> **Note (2026-11-10):** `BACKLOG.md` was removed from the repository in favour of an on-demand,
+> gitignored snapshot — see **ADR 009** and #132. References to it below describe the state at the
+> time of writing.
+
 Follows `production-readiness-audit-2026-11-10.md`. Records the operator's answers of 2026-11-10 and
 turns them into an executable sequence. Supersedes the "HAZARD A" risk framing for *this* deploy.
 

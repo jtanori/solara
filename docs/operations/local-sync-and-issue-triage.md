@@ -1,5 +1,9 @@
 # Local sync + issue/milestone triage procedure
 
+> **Note (2026-11-10):** `BACKLOG.md` was removed from the repository in favour of an on-demand,
+> gitignored snapshot — see **ADR 009** and #132. References to it below describe the state at the
+> time of writing.
+
 **Purpose:** keep two things aligned — (1) your local clone / `staging` / `main` / `arena/*` branches, and
 (2) the GitHub issue board. Written 2026-11-08 after the #52 incident and the 27-issue planning pass.
 

@@ -119,7 +119,7 @@ now" may skip items 7, 10 and 13 with a one-line note in the PR body; items 3,
 | Label | Means | Typical paths |
 |---|---|---|
 | `deploy:required` | Affects runtime or build: staging QA + migration rehearsal (if `drizzle/` touched) + build-pipeline attention after merge | `src/`, `drizzle/`, `next.config.ts`, `package*.json`, `.github/workflows/` |
-| `deploy:skip` | Documentation/chore only: no staging QA, no migration rehearsal | `docs/`, `BACKLOG.md`, comments, `.md` files |
+| `deploy:skip` | Documentation/chore only: no staging QA, no migration rehearsal | `docs/`, comments, `.md` files |
 
 The author proposes the label at filing; **the reviewer's verdict confirms or
 corrects it** — the final call is the review's. Vercel previews build on every
@@ -167,7 +167,8 @@ Run by the coding agent unless marked *(operator)*:
    `deploy.sh --skip-migrate`.
 7. If `deploy:required`: staging QA smoke on the touched surfaces (sign-in,
    map, PDF gate, Stripe test webhook, password reset, `/api/health`).
-8. Update `BACKLOG.md` if issues were opened or closed (rides the next PR —
+8. Nothing to update for opened/closed issues: GitHub is the record (ADR 009). Regenerate the
+   offline snapshot only when you need it (rides the next PR —
    the index is allowed to lag).
 9. Promotion *(operator)*: when the operator calls for it, `deploy.sh` runs on
    explicit request only; post-promotion, verify `/api/health` and close the

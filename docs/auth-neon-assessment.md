@@ -1,5 +1,9 @@
 # Assessment: moving Solara auth to Neon Managed Better Auth
 
+> **Note (2026-11-10):** `BACKLOG.md` was removed from the repository in favour of an on-demand,
+> gitignored snapshot — see **ADR 009** and #132. References to it below describe the state at the
+> time of writing.
+
 > **Superseded for planning purposes by `docs/plan-neon-auth-migration.md`** (2026-11-08).
 > This file is kept as the research appendix: product capabilities, limits, SDK shape and pricing.
 

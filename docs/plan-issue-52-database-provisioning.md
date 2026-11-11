@@ -1,5 +1,9 @@
 # Plan — fix #52: schema provisioning + deploy gating
 
+> **Note (2026-11-10):** `BACKLOG.md` was removed from the repository in favour of an on-demand,
+> gitignored snapshot — see **ADR 009** and #132. References to it below describe the state at the
+> time of writing.
+
 **Issue:** [#52](https://github.com/jtanori/solara/issues/52) · **Milestone:** M3 - Launch readiness (pending manual apply)
 **Status:** ready to execute · **Owner:** repo owner (all steps are owner-only operations)
 **Created:** 2026-11-08 · **Follow-up issues filed:** #59–#72 · **Epic / launch gate:** [#73](https://github.com/jtanori/solara/issues/73) · **Companion:** `docs/audit-database-integration.md` (why this happened), `docs/plan-neon-auth-migration.md` (separate decision)
