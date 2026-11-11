@@ -8,10 +8,10 @@ import { getLocale } from "@/lib/i18n-server";
 import { log, requestMeta } from "@/lib/log";
 import { verifyPassword } from "@/lib/passwords";
 import {
-  accountDeletionAudit,
   assessBillingGate,
   assessDeletionGate,
   blockedResponseBody,
+  writeAccountDeletion,
   type PasswordFacts,
 } from "@/lib/account-deletion";
 
@@ -142,14 +142,7 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
   }
 
   try {
-    const remove = deps.deleteUser ?? (async (userId: string) => {
-      await db.transaction(async tx => {
-        await tx.delete(users).where(eq(users.id, userId));
-        // Same transaction: the audit row survives the cascade because
-        // audit_logs.actor_id is `on delete set null`, while `target` keeps the id.
-        await tx.insert(auditLogs).values(accountDeletionAudit(userId));
-      });
-    });
+    const remove = deps.deleteUser ?? defaultDeleteUser;
     await remove(user.id);
   } catch (error) {
     log.error("profile.delete_failed", { ...requestMeta(request), userId: user.id, error });
@@ -162,6 +155,23 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
   const response = NextResponse.json({ ok: true });
   response.cookies.set(SESSION_COOKIE, "", { path: "/", maxAge: 0, httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" });
   return response;
+}
+
+/**
+ * One transaction, so a deletion without a record stays impossible. The order
+ * inside it lives in `writeAccountDeletion`: audit row first, delete second.
+ * Written the other way round (delete, then insert) the audit row's foreign key
+ * has nothing to reference and Postgres aborts with `23503`.
+ */
+async function defaultDeleteUser(userId: string): Promise<void> {
+  await db.transaction(tx => writeAccountDeletion({
+    insertAudit: async (row) => {
+      await tx.insert(auditLogs).values(row);
+    },
+    deleteUser: async (id) => {
+      await tx.delete(users).where(eq(users.id, id));
+    },
+  }, userId));
 }
 
 /**
