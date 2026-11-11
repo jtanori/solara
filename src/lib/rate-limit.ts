@@ -4,60 +4,27 @@ import { db } from "@/db";
 import { rateLimits } from "@/db/schema";
 import type { DbTransaction } from "@/lib/account-lock";
 import { log } from "@/lib/log";
+import {
+  AUTH_FAILURE_BACKOFF,
+  AUTH_RATE_LIMITS,
+  ACCOUNT_FAILURE_BACKOFF,
+  type FailureBackoff,
+  type RateLimitContext,
+  type RateLimitPolicy,
+  type RateLimitResult,
+} from "@/lib/rate-limit-policies";
 
-export type RateLimitPolicy = {
-  limit: number;
-  windowSeconds: number;
+/**
+ * Re-exported so every existing import from "@/lib/rate-limit" keeps working;
+ * the tables themselves live in `rate-limit-policies.ts` (no db import).
+ */
+export {
+  AUTH_FAILURE_BACKOFF,
+  AUTH_RATE_LIMITS,
+  ACCOUNT_FAILURE_BACKOFF,
 };
-
-export type RateLimitResult = {
-  allowed: boolean;
-  remaining: number;
-  retryAfterSeconds: number;
-  resetAt: Date;
-  blockedUntil: Date | null;
-};
-
-export type RateLimitContext = {
-  requestId?: string;
-  route?: string;
-};
-
-export type FailureBackoff = {
-  threshold: number;
-  baseDelaySeconds: number;
-  maxDelaySeconds: number;
-  windowSeconds: number;
-};
-
-export const AUTH_RATE_LIMITS = {
-  signupIp: { limit: 5, windowSeconds: 60 * 60 },
-  signupEmail: { limit: 3, windowSeconds: 60 * 60 },
-  loginIp: { limit: 100, windowSeconds: 15 * 60 },
-  loginIpFailures: { limit: 50, windowSeconds: 15 * 60 },
-  claimIp: { limit: 10, windowSeconds: 60 * 60 },
-  verifyRequestEmail: { limit: 3, windowSeconds: 15 * 60 },
-  verifyRequestIp: { limit: 10, windowSeconds: 60 * 60 },
-  resetRequestEmail: { limit: 3, windowSeconds: 60 * 60 },
-  resetRequestIp: { limit: 5, windowSeconds: 60 * 60 },
-  resetConfirmIp: { limit: 10, windowSeconds: 60 * 60 },
-  placesIp: { limit: 30, windowSeconds: 60 },
-  cspReportIp: { limit: 60, windowSeconds: 60 },
-} as const satisfies Record<string, RateLimitPolicy>;
-
-export const AUTH_FAILURE_BACKOFF: FailureBackoff = {
-  threshold: 5,
-  baseDelaySeconds: 30,
-  maxDelaySeconds: 15 * 60,
-  windowSeconds: 15 * 60,
-};
-
-export const ACCOUNT_FAILURE_BACKOFF: FailureBackoff = {
-  threshold: 10,
-  baseDelaySeconds: 30,
-  maxDelaySeconds: 15 * 60,
-  windowSeconds: 15 * 60,
-};
+export type { FailureBackoff, RateLimitContext, RateLimitPolicy, RateLimitResult };
+export { rateLimitedResponse } from "@/lib/rate-limit-response";
 
 export function hashRateLimitKey(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -320,3 +287,49 @@ export async function clearAuthFailuresTx(tx: DbTransaction, key: string): Promi
     .set({ failureCount: 0, blockedUntil: null })
     .where(eq(rateLimits.key, key));
 }
+
+// ------------------------------------------------------------------ budgets
+
+/**
+ * Consume a list of budgets, cheapest first, short-circuiting on the first
+ * refusal (auth amendment §S2, §S7).
+ *
+ * Two details matter and are easy to get wrong:
+ *
+ *  - **Every budget is consumed before any work starts.** Checking a limit and
+ *    then doing the work means the request that trips the limit still pays for
+ *    itself; a caller who loops past the cap is refused *before* dispatching.
+ *  - **Keying.** Callers pass the per-user key first because a leaked session
+ *    is the more likely abuse (one account, many requests) and because no
+ *    identity is needed to derive it. The IP budget is a second, coarser net
+ *    for the case where many accounts share one origin.
+ *
+ * A budget whose key is the empty string is skipped: an unauthenticated request
+ * has no user key, and hashing "" would make every anonymous caller share one
+ * bucket, which is worse than not counting them at all.
+ */
+export type Budget = {
+  key: string;
+  policy: RateLimitPolicy;
+  /** Log label, e.g. "readings_create_user". */
+  kind: string;
+};
+
+export type BudgetDecision =
+  | { allowed: true; retryAfterSeconds: 0 }
+  | { allowed: false; retryAfterSeconds: number; kind: string };
+
+export async function consumeBudgets(
+  budgets: Budget[],
+  context: RateLimitContext = {},
+): Promise<BudgetDecision> {
+  for (const budget of budgets) {
+    if (!budget.key) continue;
+    const result = await consumeRateLimit(budget.key, budget.policy, budget.kind, context);
+    if (!result.allowed) {
+      return { allowed: false, retryAfterSeconds: result.retryAfterSeconds, kind: budget.kind };
+    }
+  }
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+

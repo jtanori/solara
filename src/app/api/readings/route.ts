@@ -7,6 +7,7 @@ import { calculateSolarReturn, calculateSolarReturnChart } from "@/lib/solar";
 import { chartDigest } from "@/lib/chart";
 import { log, requestMeta } from "@/lib/log";
 import { getLocale } from "@/lib/i18n-server";
+import { AUTH_RATE_LIMITS, clientIp, consumeBudgets, keyFor, rateLimitedResponse } from "@/lib/rate-limit";
 import { generationEnabled } from "@/readings/config";
 import { generateReadingDocument } from "@/readings/generate";
 import { persistableDocument } from "@/readings/document";
@@ -16,6 +17,25 @@ import type { ChartInput, ChartResult } from "@/lib/types";
 export async function POST(request: Request) {
   const user = await currentUser();
   if (!user) return NextResponse.json({ error: "Please sign in to save your chart." }, { status: 401 });
+  const locale = await getLocale();
+
+  /*
+   * Metered endpoint (auth amendment §S2): this route writes a chart and, when
+   * generation is enabled, dispatches LLM calls whose cost is real money. The
+   * pipeline's ceiling bounds one document; this bounds the account. Checked
+   * before the body is parsed so a refused caller costs nothing.
+   */
+  const budget = await consumeBudgets([
+    { key: keyFor("readings:create:user", user.id), policy: AUTH_RATE_LIMITS.readingsCreateUser, kind: "readings_create_user" },
+    { key: keyFor("readings:create:ip", clientIp(request)), policy: AUTH_RATE_LIMITS.readingsCreateIp, kind: "readings_create_ip" },
+  ], requestMeta(request));
+  if (!budget.allowed) {
+    return rateLimitedResponse(locale, budget.retryAfterSeconds, {
+      en: "You have created several charts recently. Please try again in a little while.",
+      es: "Has creado varias cartas recientemente. Inténtalo de nuevo en un rato.",
+    });
+  }
+
   let raw: ChartInput;
   let result: ChartResult;
   try {
@@ -35,7 +55,6 @@ export async function POST(request: Request) {
     // consent gate (#105) slots in here before any flag flip.
     if (generationEnabled()) {
       try {
-        const locale = await getLocale();
         const { facts } = calculateSolarReturnChart(input);
         const document = await generateReadingDocument({
           readingId: saved.id,
