@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { users } from "@/db/schema";
@@ -25,7 +25,7 @@ import {
   passwordResetMessage,
 } from "@/lib/email-messages";
 import { reportServerError } from "@/lib/error-report";
-import { requestMeta, type LogFields } from "@/lib/log";
+import { log, requestMeta, type LogFields } from "@/lib/log";
 import {
   MailAmbiguousError,
   MailConfigurationError,
@@ -34,7 +34,7 @@ import {
 } from "@/lib/mail";
 import { ScryptBusyError } from "@/lib/scrypt-pool";
 import { Semaphore, SemaphoreQueueFullError } from "@/lib/semaphore";
-import { hashPassword, verifyPassword } from "@/lib/passwords";
+import { hashPassword, needsRehash, verifyPassword } from "@/lib/passwords";
 import {
   ACCOUNT_FAILURE_BACKOFF,
   AUTH_RATE_LIMITS,
@@ -69,6 +69,12 @@ export type AuthDeps = {
     emailVerifiedAt: Date | null;
   } | null>;
   verify?: typeof verifyPassword;
+  hashPassword?: typeof hashPassword;
+  updatePasswordHash?: (
+    userId: string,
+    passwordHash: string,
+    expectedPreviousHash: string,
+  ) => Promise<void>;
 };
 
 export type AuthOutcome = {
@@ -420,7 +426,20 @@ async function handleLogin(
 
       await clearAuthFailuresTx(tx, accountKey);
       const session = await createSessionInTransaction(tx, user.id);
-      return { kind: "ok" as const, user, session };
+      // S8: a hash in the legacy format (or at a lower cost) is upgraded after a
+      // successful login. Returned as a task rather than done inline: this runs
+      // while the advisory locks and the login-admission semaphore are held, so
+      // hashing here would add ~50ms of scrypt to the critical section for every
+      // legacy user's first login. The task runs after the response via `after()`.
+      //
+      // `previousHash` is the row's real value, never `passwordHashForLogin`'s
+      // dummy substitute — that dummy is a fabricated string, and the task's
+      // compare-and-set would be guarding on a value that is not in the table.
+      const previousHash = user.passwordHash;
+      const rehash = needsRehash(previousHash)
+        ? { userId: user.id, password, previousHash }
+        : null;
+      return { kind: "ok" as const, user, session, rehash };
     });
 
     if (outcome.kind === "busy") {
@@ -446,13 +465,53 @@ async function handleLogin(
       };
     }
 
+    const tasks: Task[] = [];
+    if (outcome.rehash) {
+      // Best-effort and never awaited by the response: a failed upgrade leaves a
+      // legacy hash that still verifies, so the next login retries it. It must
+      // not fail the login, and it must not be the reason a user cannot sign in.
+      const { userId, password: verifiedPassword, previousHash } = outcome.rehash;
+      tasks.push(async () => {
+        try {
+          const upgraded = await (deps.hashPassword ?? hashPassword)(verifiedPassword);
+          await (deps.updatePasswordHash ?? updatePasswordHash)(userId, upgraded, previousHash);
+        } catch (error) {
+          // ScryptBusyError and transient write failures are both fine to swallow:
+          // the old hash is still valid, so nothing is lost but this attempt.
+          log.warn("auth.rehash_failed", { ...requestMeta(request), userId, error });
+        }
+      });
+    }
+
     return {
       response: sessionResponse(outcome.user.name, outcome.session.token, outcome.session.expiresAt),
-      tasks: [],
+      tasks,
     };
   } finally {
     loginAdmission.release();
   }
+}
+
+/**
+ * Write a re-hashed password, but only if the stored hash is still the one this
+ * login verified against.
+ *
+ * The compare-and-set matters: this task runs *after* the response, so a user
+ * could change their password in the window between the login and the write.
+ * An unconditional update would then overwrite the new hash with one derived
+ * from the old password — silently reverting the change and making the previous
+ * password valid again. Guarding on the old hash means a racing password change
+ * wins; losing the upgrade costs one more login, which is the right trade.
+ */
+async function updatePasswordHash(
+  userId: string,
+  passwordHash: string,
+  expectedPreviousHash: string,
+): Promise<void> {
+  await db
+    .update(users)
+    .set({ passwordHash })
+    .where(and(eq(users.id, userId), eq(users.passwordHash, expectedPreviousHash)));
 }
 
 export async function handleAuth(request: Request, deps: AuthDeps): Promise<AuthOutcome> {
