@@ -167,9 +167,9 @@ Run by the coding agent unless marked *(operator)*:
    `deploy.sh --skip-migrate`.
 7. If `deploy:required`: staging QA smoke on the touched surfaces (sign-in,
    map, PDF gate, Stripe test webhook, password reset, `/api/health`).
-8. Nothing to update for opened/closed issues: GitHub is the record (ADR 009). Regenerate the
-   offline snapshot only when you need it (rides the next PR —
-   the index is allowed to lag).
+8. Nothing to update for opened/closed issues: GitHub is the record (ADR 009). There is no
+   backlog file, so there is nothing that can lag. Run `npm run backlog:snapshot` only if you
+   need an offline copy; the result is gitignored.
 9. Promotion *(operator)*: when the operator calls for it, `deploy.sh` runs on
    explicit request only; post-promotion, verify `/api/health` and close the
    promotion-blocking issues.
