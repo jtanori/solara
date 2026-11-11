@@ -160,16 +160,26 @@ So there is exactly **one** supported route, and a squash is not it:
 
 **Supported route — lift linear history for this one back-merge, then restore it.**
 
+There is no supported one-liner for this. A ruleset PATCH replaces the whole rules array, so a
+partial body silently drops the other four rules (`deletion`, `non_fast_forward`,
+`required_status_checks`, `pull_request`) — the safe way to toggle one rule is the UI:
+
+1. **Settings → Rules → `protect-staging`** → uncheck **Require linear history** → **Save**
+2. Merge the back-merge PR — this one command is real and needs no substitution beyond the PR
+   number:
+
+   ```bash
+   gh pr merge <back-merge-pr> --merge
+   ```
+
+3. **Settings → Rules → `protect-staging`** → check **Require linear history** → **Save**
+
+Read the ruleset back afterwards and confirm all five rules are present and only the one you meant
+changed:
+
 ```bash
-# 1. temporarily allow merge commits into staging
-gh api -X PATCH repos/jtanori/solara/rulesets/26759336   -f 'rules[][type]=deletion' ...            # or edit the ruleset in Settings → Rules
-#    simplest: Settings → Rules → protect-staging → uncheck "Require linear history" → Save
-
-# 2. merge the back-merge PR with a real merge commit
-gh pr merge <back-merge-pr> --merge
-
-# 3. restore the rule
-#    Settings → Rules → protect-staging → check "Require linear history" → Save
+gh api repos/jtanori/solara/rulesets/26759336 --jq '[.rules[].type]'
+# → ["deletion","non_fast_forward","required_linear_history","required_status_checks","pull_request"]
 ```
 
 Confirm it took, on both sides of the check:

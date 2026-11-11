@@ -118,6 +118,38 @@ test("the runbooks do not describe behaviour deploy.sh does not have", () => {
   assert.ok(!/--force|ALLOW_STALE|SKIP_FRESH/i.test(gate), "there is no override flag for base freshness");
 });
 
+test("no runbook ships a fenced command with an unfilled placeholder", () => {
+  // A fenced "command" containing `...` or a bare `<...>` is not runnable. In a runbook that changes
+  // a branch ruleset, the operator's fallback is to fill it in by guesswork — against the rule that
+  // enforces ancestry. Prose may use placeholders; fenced commands must be exact or absent.
+  const docs = [
+    "docs/operations/production-bootstrap-2026-11-10.md",
+    "docs/operations/production-deploy-checklist.md",
+    "docs/operations/promotion-2026-11-10.md",
+  ];
+  // `<that-pr-number>` / `<back-merge-pr>` style args are fine: they name ONE value the operator
+  // supplies, and the surrounding text says which. A bare ellipsis is a hole in the command itself.
+  const offenders: string[] = [];
+  for (const doc of docs) {
+    const text = readFileSync(doc, "utf8");
+    for (const [index, block] of [...text.matchAll(/```bash\n([\s\S]*?)```/g)].entries()) {
+      const body = block[1];
+      // Ignore comments: they legitimately carry abbreviated forms like origin/main...origin/staging
+      // (a git range), which is not a placeholder.
+      const commands = body
+        .split("\n")
+        .filter(line => line.trim() && !line.trim().startsWith("#"))
+        .join("\n")
+        .replace(/origin\/main\.\.\.origin\/staging/g, "")
+        .replace(/\$BASE_SHA\.\.\.\$HEAD_SHA/g, "");
+      if (/(^|\s)\.\.\.(\s|$)/.test(commands)) {
+        offenders.push(`${doc} block ${index + 1}: ${commands.split("\n")[0].trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], "a fenced command must be runnable, not a sketch");
+});
+
 test("the rollback target is captured before the merge, and the record after readiness", () => {
   const script = readFileSync("scripts/deploy.sh", "utf8");
   const capture = script.indexOf('$(vercel_current_production_deployment');
