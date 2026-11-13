@@ -261,11 +261,18 @@ test("escape path: a customer linked after the snapshot is still cleaned up (#14
   await db.update(users).set({ stripeCustomerId: linkedCustomer }).where(eq(users.id, user.id));
 
   await withCleanup(user.id, async () => {
-    const returned = await defaultDeleteUser(user.id);
+    // No live subscription exists for this customer, so the provider check
+    // answers "clear" and the deletion proceeds.
+    const returned = await defaultDeleteUser(user.id, async () => "clear");
 
     // The whole point: the deletion reports the customer that its snapshot never
     // saw, so the caller cannot skip cleanup.
-    assert.equal(returned, linkedCustomer, "deletion returns the customer found under the lock, not the snapshot");
+    assert.equal(returned.kind, "deleted", "the deletion went through");
+    assert.equal(
+      returned.kind === "deleted" && returned.customerId,
+      linkedCustomer,
+      "deletion returns the customer found under the lock, not the snapshot",
+    );
     const gone = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
     assert.deepEqual(gone, [], "the account is gone");
   }, [linkedCustomer]);
@@ -293,7 +300,7 @@ test("escape path: the customer-side audit row makes deletion provable without m
 
   await withCleanup(user.id, async () => {
     const { defaultDeleteUser } = await import("../src/app/api/profile/route");
-    await defaultDeleteUser(user.id);
+    await defaultDeleteUser(user.id, async () => "clear");
 
     // Scoped to this run's ids: a suite-wide query would also see rows from
     // other tests and fail for reasons that have nothing to do with this one.
@@ -344,10 +351,83 @@ test("lock: a deletion waits for a concurrent checkout and sees what it linked (
 
     // Give checkout the lock first, then start the deletion.
     await new Promise(resolve => setTimeout(resolve, 40));
-    const deletion = defaultDeleteUser(user.id);
+    const deletion = defaultDeleteUser(user.id, async () => "clear");
     const [, returned] = await Promise.all([checkout, deletion]);
 
     assert.deepEqual(events, ["checkout:locked", "checkout:linked"], "deletion did not interleave");
-    assert.equal(returned, customerId, "deletion saw the customer linked under the lock");
+    assert.equal(returned.kind, "deleted", "the deletion went through");
+    assert.equal(
+      returned.kind === "deleted" && returned.customerId,
+      customerId,
+      "deletion saw the customer linked under the lock",
+    );
   }, [customerId]);
+});
+
+test("lock: a deletion whose lock is held expresses fail-closed instead of hanging (#144)", gated, async () => {
+  /*
+   * The per-user lock is held across Stripe calls, so a peer that never answers
+   * would otherwise pin this user's deletion (and their checkout) indefinitely —
+   * an availability bug the coordination itself introduced.
+   *
+   * `set_config('lock_timeout', '5s')` bounds it. What matters for correctness is
+   * the *direction* of the resulting failure: the deletion must abandon the
+   * attempt, delete nothing, and surface an error the user can retry — never
+   * proceed as if the gate had passed.
+   *
+   * The competing session gets its own pool. Using the module pool would consume
+   * one of its five connections for the length of the test and make any later
+   * test in this file depend on the order it ran in.
+   */
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { eq } = await import("drizzle-orm");
+  const { db, createDatabasePool } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Lock probe", email: `lock-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
+    .returning({ id: users.id });
+
+  // A single dedicated connection holds the same lock the deletion wants.
+  const holder = createDatabasePool(process.env.DATABASE_URL!, { ...process.env, DB_POOL_MAX: "1" });
+  const client = await holder.connect();
+
+  try {
+    await client.query("begin");
+    await client.query("select pg_advisory_xact_lock(hashtext($1))", [`account-deletion:${user.id}`]);
+
+    await withCleanup(user.id, async () => {
+      const started = Date.now();
+      const response = await deleteAccount(new Request("http://localhost/api/profile", {
+        method: "DELETE",
+        headers: { "content-type": "application/json", origin: "http://localhost" },
+        body: JSON.stringify({ password: "correct horse" }),
+      }), {
+        currentUser: (async () => ({
+          id: user.id, email: `lock-${token}@example.test`, role: "user", emailVerifiedAt: new Date(), stripeCustomerId: null,
+        })) as never,
+        locale: "en",
+        verify: (async () => true) as never,
+        passwordHashFor: async () => "stored-hash",
+      });
+      const elapsed = Date.now() - started;
+
+      assert.equal(response.status, 500, "a held lock is an error the user can retry, not a silent success");
+      assert.ok(elapsed < 15_000, `gave up on the lock in ${elapsed}ms instead of hanging`);
+
+      const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+      assert.equal(survivors.length, 1, "failing to acquire the lock deleted nothing");
+    });
+  } finally {
+    await client.query("rollback").catch(() => undefined);
+    client.release();
+    await holder.end();
+  }
 });

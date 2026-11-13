@@ -1,12 +1,13 @@
 # Plan — ship #142 (account deletion + billing coordination) and close what it leaves open
 
-As of: `8634bf3` (code). This plan file itself is one additional docs commit on the same branch.
+As of: `2821d1f`. This plan is written **before** the fixes it describes; §2.7 onwards records
+execution, so a reader can see the intent and the result side by side rather than a reconstruction.
 
 > **Why a plan file and not just a PR body.** The PR body records what was *done* and grew by
 > appending a section per review round. That reads as progress and hides drift: the body still
-> claims "three files" and "risk: low" while the diff is twelve files, and its last formal verdict
+> claimed "three files" and "risk: low" while the diff was twelve files, and its last formal verdict
 > was three commits behind. A plan file is the opposite artefact — it states what is *not* done yet
-> and who must act. It belongs in the tree because the merge checklist outlives this PR.
+> and who must act, and it is falsifiable against a SHA.
 
 **PR:** [#142](https://github.com/jtanori/solara/pull/142) · **Branch:** `arena/7bfcb981-solara`
 · **Base:** `staging` (from `c87c3dd`) · **Issues:** closes #141, #144 · **Related:** #143 (separate, not fixed here)
@@ -14,182 +15,183 @@ As of: `8634bf3` (code). This plan file itself is one additional docs commit on 
 
 ---
 
-## 1. What this PR actually changes
-
-One production bug, three follow-ons it made reachable, all on the same surface:
+## 1. What this PR changes before this plan's round
 
 | # | Change | Commit |
 |---|---|---|
-| 1 | Deletion write order inverted: audit row first, then delete, so the FK never dangles. This is the shipped bug (#141) — deletion returned 500 for every user. | `95afd30` |
-| 2 | Route-level test that drives the real `defaultDeleteUser`, because the helper-only test passed against the reverted bug. | `8687e82` |
-| 3 | Stripe lists walked to the end, failing closed past `MAX_BILLING_PAGES`; first-page-only read would delete an account with a live subscription on page 2. Latent until #1 landed. | `8d5d533` |
-| 4 | Checkout/deletion coordination via per-user advisory lock; customer link must land (`.returning()`); post-create survival re-check (#144). | `bf4a418` |
-| 5 | Webhook side: cancel only on proof of deletion, retry transient failures, integration-test DB hardening. | `031e9c1` |
-| 6 | Three review P1s: `wasAccountDeleted` port, transient cancel propagates, deletion re-reads the customer id under the lock. | `8634bf3` |
+| 1 | Deletion write order inverted: audit row first, then delete, so the FK never dangles (#141). | `95afd30` |
+| 2 | Route-level test driving the real `defaultDeleteUser`, because the helper-only test passed against the reverted bug. | `8687e82` |
+| 3 | Stripe lists walked to the end, failing closed past `MAX_BILLING_PAGES`. | `8d5d533` |
+| 4 | Checkout/deletion coordination via per-user advisory lock (#144). | `bf4a418` |
+| 5 | Webhook side: audit-only cancellation, integration-test DB hardening. | `031e9c1` |
+| 6 | Three review P1s: `wasAccountDeleted` proof, transient cancel propagates, deletion re-reads under the lock. | `8634bf3` |
+| 7 | This plan file. | `2821d1f` |
 
-Size at `8634bf3`: **12 files, +1493 / −60, 6 commits** — 4 source files changed, 3 source files added, 5 test files. This plan file makes it 13.
+## 2. The findings this round must close
 
-## 2. Merge readiness — open, in priority order
+### 2.1 `tests/billing-state.test.ts:50` — SEC-07, the route is still not covered
 
-### 2.1 `tests/billing-state.test.ts:50` — reviewer's Medium is **not** fixed (verified, not assumed)
+The review asked for a route-level regression because faking the page walk proves the helper walks
+pages, not that `deleteAccount` uses it. The claim that extracting `assessDeletionBilling` answered
+this is **wrong**, and the reviewer's own mutation proves it at head: replace the route's
+`assessDeletionBilling(...)` call with a first-page-only read and `tests/billing-state.test.ts` stays
+at **16 pass / 0 fail**.
 
-The thread asks for a route-level regression, because faking the page walk only proves the helper
-walks pages, not that `deleteAccount` uses it. The PR claims this was answered by extracting
-`assessDeletionBilling`. **That answer does not close the hole**, and I re-ran the reviewer's
-mutation to prove it:
+Cause: `deleteAccount()` calls `currentUser()`, `getLocale()` and `passwordHashFor()` directly, so no
+test can reach the branch that decides clear vs. ongoing.
 
-```
-# replace the route's assessDeletionBilling() call with a first-page-only read
-npx tsx --test tests/billing-state.test.ts
-# pass 16 / fail 0          <- the mutation survives
-```
+**Fix:** add the missing seams to `ProfileDeps` (`currentUser`, `locale`, `passwordHashFor`) and one
+DB-gated route-level test file driving the shipped handler. Collateral: the existing
+`tests/checkout-deletion-race.test.ts` injects whole user snapshots through `currentUser`, so the
+seam must be a function returning the same shape `currentUser()` does, not a narrower one.
 
-The reason is structural: `deleteAccount()` calls `currentUser()`, `getLocale()` and
-`passwordHashFor()` directly, so no test can reach the branch that decides *clear vs. ongoing*
-without a database and a request context. Extracting the helper moved the code; it did not make the
-caller observable.
+### 2.2 Two unresolved review threads block merge
 
-**Unblocking action (recommended):** add the two missing seams to `ProfileDeps`
-(`currentUser?`, `locale?`) — `stripe` and `deleteUser` are already injected, so this is the same
-pattern, ~20 lines. Then one test: an ongoing subscription on page 2 must block deletion, and
-first-page-only must fail it. This is the third time in this PR that a green test did not reach the
-broken code (`95afd30` → `8687e82` → this), so it is worth doing properly rather than re-arguing.
+`required_review_thread_resolution: true` on `staging`. Thread 1 (`profile/route.ts`) is
+`isOutdated` with `path: null` — addressed in code, but detached, so only the reviewer or operator
+can resolve it. Thread 2 is the SEC-07 finding above and must be resolved **after** §2.1 lands.
 
-**Alternative:** record explicit operator risk acceptance on the thread. Legitimate, but note that
-the same class of gap has already produced two real defects here.
+### 2.3 PR body is false at head
 
-### 2.2 Two unresolved review threads block merge mechanically
+L16 "One story", L89 "Risk level: **low**. **Three files**", L109–111, L121 all describe the original
+ordering fix. Actual: 13 files, +1688/−60, 7 commits. Rewrite, do not append.
 
-`required_review_thread_resolution: true` on `staging`, so merge is blocked until both threads are
-resolved — regardless of code quality or CI. Current state:
+### 2.4 #144 acceptance criteria — 2 of 4 unmet
 
-| Thread | Anchored | Resolved |
+- Box 1 (failure modes documented): the lock is held across Stripe network calls with no timeout and
+  deletion's billing gate runs outside the lock. Neither documented.
+- Box 4 (`webhook:unmapped` owner + runbook): unmet, nothing under `docs/operations/`.
+
+### 2.5 No verdict at head
+
+Last verdict names `8d5d533`. This document cannot fix that; it records it so the operator does not
+merge on a stale verdict.
+
+---
+
+## 3. Execution plan for this round
+
+Ordered so each step's evidence exists before the next depends on it.
+
+| Step | Work | Why it cannot be skipped |
 |---|---|---|
-| `src/app/api/profile/route.ts` — P1 checkout/deletion race | `isOutdated: true`, `line: null` | **no** |
-| `tests/billing-state.test.ts:50` — SEC-07, route wiring | `isOutdated: false`, `line: 50` | **no** |
+| **E1** | `ProfileDeps` gains `currentUser`, `locale`, `passwordHashFor` | Without it no test can reach the billing branch; §2.1 is unfixable |
+| **E2** | New `tests/profile-deletion-gate.test.ts` (DB-gated): live sub on page 2 blocks with 409/`subscription_ongoing`; Stripe list failure blocks with 503/`billing_unverifiable`; clear path deletes and returns 200 | Drives `deleteAccount`, the shipped handler |
+| **E3** | Mutation: revert the call to first-page-only → E2 must fail | Proves E2 reaches the code, not a copy of it |
+| **E4** | Lock timeout: `SET LOCAL lock_timeout` + `statement_timeout` in both `pg_advisory_xact_lock` sites | A hung Stripe call inside the checkout lock otherwise pins a pooled connection **and** blocks deletion for that user indefinitely — an availability bug this PR introduced |
+| **E5** | New test: a held lock makes a deletion attempt fail closed and fast, rather than hang | E4 is unproven without it; also needs a dedicated pool so the stuck session cannot starve the harness |
+| **E6** | Deletion billing gate inside the locking transaction (re-read customer under lock, assess, then delete) | Today checkout can link a customer between the gate and the delete; the deletion then skips Stripe entirely and relies on a compensating cleanup that may fail |
+| **E7** | `docs/operations/webhook-unmapped.md` — owner, steps, what never to do | #144 box 4 |
+| **E8** | Document lock-across-I/O failure modes in code + this file | #144 box 1 |
+| **E9** | Rewrite PR body top sections; tick #144 boxes; close #144 manually after merge | §2.3, §2.4 |
+| **E10** | Full verification: typegen, tsc, eslint, build, whole suite twice, leak check, mutation matrix | "No more findings" is only credible if measured |
 
-The first is addressed in code (`bf4a418`, `031e9c1`) and has a real two-session interleaving test.
-It cannot be resolved by the author: it is outdated and detached, so it needs either the reviewer to
-re-anchor it at head or the operator to resolve it. **Do not resolve 2.2-thread-1 before
-2.1 is settled** — the reverse order would silently close the thread that still has an open finding.
+### 3.1 Collateral changes this plan expects (and must handle)
 
-### 2.3 PR body is materially false at head
+| Collateral | Handling |
+|---|---|
+| `deleteAccount`'s signature grows six optional deps | All default to production behaviour; `DELETE` keeps Next's exact `(request) => Response` shape or route typegen fails |
+| `tests/checkout-deletion-race.test.ts` passes whole snapshots as `currentUser` | Seam type must match `typeof currentUser`; verified by tsc, not by hope |
+| Deletion now opens a transaction around billing | `billingIsConfigured()` / `getStripe()` must be resolved **before** the transaction, or a 503 gets raised inside a held lock |
+| `tests/billing-state.test.ts` stays green through all of it | It tests helpers; it must not start failing for unrelated reasons |
+| Leaked rows: several tests share one process | Every new test cleans by user id **and** customer id, in `finally` |
+| CI: `db:migrate` needs `DATABASE_URL_DIRECT` in `ci.yml` | Verified by reading the workflow — it is set |
+| Local `initdb`/Postgres is not on `PATH` | Use `pgserver` binaries on loopback; the suite's own loopback guard rejects anything else |
+| A test that holds an advisory lock needs its own connection | Otherwise it consumes one of the 5 pool slots in the same process for the whole file |
 
-The body's first sections were written for `95afd30` and appended to, never invalidated:
+### 3.2 Items to justify or explicitly skip
 
-| Line | Claim | Actual |
-|---|---|---|
-| L16 | "One story: one bug, one fix, one test rework" | 6 commits, 4 logical changes, one of them (`bf4a418`) a coordination feature |
-| L89 | "Risk level: **low**. **Three files**, one transaction's statement order" | 12 files, +1493/−60, a lock protocol and webhook behaviour change |
-| L109–111 | "Plan adherence: diff matches #141", "no silent catches" | matches #141 **and** #144; catch behaviour was itself a P1 in round 5 |
-| L121 | self-review checklist | describes the original ordering fix only |
+| Item | Decision |
+|---|---|
+| Background reconciliation for orphaned Stripe customers | **Skip** — needs ops infrastructure and a human owner; the webhook quarantine covers detection. Recorded in §6. |
+| Retry/backoff for `cancelBillingForDeletedAccount` | **Skip** — the account is already gone; Stripe retries the webhook, and the audit row makes it findable. A retry queue is its own issue. |
+| Paginated reads in `checkout/route.ts` (live `subscriptions.list`, `sessions.list`) | **Not this PR** — it is #143, same bug class, different path. Listed in §6 so it cannot age. |
+| A second reviewer / approval gate | **Never** — catch-22 rule, PR_WORKFLOW §0. |
 
-This is the same failure mode as §2.1 and the same one the reviewer fell into (their P1-c was
-accurate at `031e9c1` and is stale at `8634bf3`): the artefact that describes the work was not
-re-derived from the head. **Fix before merge** — replace the stale lines, do not append again.
-The recommendation this produced is now item A3/A4 in §5.
+---
 
-### 2.4 #144 acceptance criteria — 2 of 4 are genuinely unmet
+## 4. Sequence to merge
 
-`Closes #144` is in the body, but #144 targets `staging` while the default branch is `main`, so it
-will **not** auto-close; it needs a manual close after merge.
+1. E1–E6 land with E2/E5 tests and the mutation matrix.
+2. E7–E9: runbook, documentation, body rewrite, issue bookkeeping.
+3. E10: full verification; record exact numbers.
+4. Request a fresh verdict at the new head — this document is the input to that request, not a
+   substitute for it.
+5. Reviewer re-anchors thread 1; thread 2 resolved once E2 exists.
+6. Squash merge to `staging`; confirm issue auto-closes rather than assuming either way.
+7. Post-merge: close #144 manually, staging QA per §5.
 
-- [x] **Box 1 — failure modes documented:** *partly*. The lock is held across Stripe network calls
-  with no timeout, and deletion's billing gate runs *outside* the locked transaction. Both are real
-  failure modes, and neither is documented in code as the box requires. The lock-across-I/O point is
-  also an availability risk: a hung Stripe call stalls checkout *and* deletion for that user while
-  holding a pooled connection.
-- [x] **Box 2 — test that fails if coordination is removed:** met. Mutation-verified: removing the
-  deletion lock fails the `lock:` test; dropping the under-lock re-read fails the `escape path` test.
-- [x] **Box 3 — outcome observable:** met. Session expired, or customer cancelled, or quarantined.
-- [ ] **Box 4 — `webhook:unmapped` has a defined owner and runbook step:** **unmet**. The code writes
-  the audit action and names it clearly, but no runbook tells a human what to do with one. Nothing
-  under `docs/operations/` covers it.
-
-### 2.5 Verdict drift — a procedural blocker, not a technical one
-
-Last posted verdict names `8d5d533`. Head is `8634bf3` — three commits later, including the three
-P1s that changed cancellation policy. The operator's own standing rule (PR_WORKFLOW §3.3) is that no
-PR merges without a verdict naming the reviewed SHA. **A fresh verdict at `8634bf3` is required**,
-and it must verify §2.1 as fixed rather than take this document's word for it.
-
-### 2.6 Confirmed non-blocker: CI
-
-Run `43375868349` on `8634bf3` is green: `verify` 3m33s, `pr-lint`, Vercel, GitGuardian, Vercel
-Preview Comments. No required check is failing, and required checks are `verify` only.
-
-## 3. Sequence to merge
-
-1. Fix §2.1 (seams + one route-level test, mutation-verified).
-2. Correct §2.3 in the body — one rewrite, not another appendix.
-3. Request a fresh verdict at the new head (§2.5).
-4. Reviewer re-anchors or resolves thread 1; resolve thread 2 once §2.1's test exists.
-5. Merge squash to `staging` (linear history is required).
-6. Close #144 manually; verify #141 auto-closed (it targets `staging` like this PR — check, do not
-   assume either way).
-7. Tick the four #144 boxes *after* the code that satisfies them has landed.
-
-## 4. Deploy and rollback
+## 5. Deploy and rollback
 
 `deploy:required` — runtime behaviour changes in two route handlers and the Stripe webhook.
 
-- No `drizzle/` change: no migration, no `migrate.yml` dispatch. Confirm this on the diff rather
-  than the label.
-- Staging QA after merge: delete a test account with no billing (expect 200, account gone, audit row
-  with `actor_id = null` and `target` = the deleted id); attempt deletion with a live subscription
-  (expect blocked, not 500); replay a Stripe test webhook for an unmapped subscription (expect
-  `webhook:unmapped` quarantine and **no** cancellation); then one with a provable
-  `account:delete` row (expect cancellation).
-- Rollback: revert the squash commit and redeploy. The prior behaviour (deletion 500, and the
-  pagination blind spot) returns; no schema or data migration must be undone.
+- No `drizzle/` change, so no migration dispatch. Confirm on the diff, not on the label.
+- Staging QA: delete an account with no billing (200, gone, audit row with `actor_id` null and
+  `target` = deleted id); attempt deletion with a live subscription (blocked 409, not 500); replay an
+  unmapped subscription webhook (quarantine, **no** cancellation); replay one with a provable
+  `account:delete` row (cancellation).
+- Rollback: revert the squash commit and redeploy. Prior behaviour returns (deletion 500, pagination
+  blind spot); nothing to unwind in schema or data.
 
-## 5. Follow-up work this PR must not absorb
+## 6. Known limits after this PR
 
-Kept out on purpose — separate PR, `type:docs` + `type:ci`, against `staging`. All advisory or
-author-procedural; none may become a gate a solo operator cannot satisfy (PR_WORKFLOW §0).
+- Orphaned Stripe customers are **detected** (`webhook:unmapped`) and, when deletion is provable,
+  cancelled — but there is no sweeper reconciling Stripe against the database.
+- A deletion whose post-commit cancellation fails still needs a webhook to finish the job. Logged
+  with `profile.deletion_billing_cleanup_failed`; findable, not automatic.
+- **#143** (checkout duplicate-subscription guard reads only the first Stripe page) is live and
+  unfixed. Same class as #3 above, on a path this PR does not touch.
+- The `tests/billing-state.test.ts` helpers remain the unit-level proof; E2 is the route-level proof.
+  Both are needed — the first would pass a mutation the second catches.
 
-| ID | Change | Why |
+---
+
+## 7. Execution record
+
+**Baseline before this round:** `2821d1f`, real PostgreSQL 16.2, full suite **380 pass / 0 fail /
+0 skipped**. Every number below is measured on that database, not inferred.
+
+### 7.1 What changed
+
+| Step | Change | File |
 |---|---|---|
-| **A4** | `pr-lint` compares *declared* risk/size in the body to the actual `changed_files`/`additions` | Would have caught §2.3 mechanically — this exact bug, with no trust involved |
-| **A1** | PR template gains a completion matrix: `criterion → impl location → test/evidence → limitation`, first line `As of: <sha>` | Turns "it's done" into a claim with locations |
-| **A3** | `pr-lint` compares body `As of:` to head SHA; red advisory on drift | Catches §2.3 and §2.5 before a reviewer has to |
-| **D1** | Required "What these tests do NOT cover" section | §2.1 is precisely a test that proved the wrong layer |
-| **D2** | Mutation table gains *invariant protected* + *what it would still miss* | A mutation matrix that does not say what it misses overstates itself |
-| **B1–B4** | Machine-readable verdict comment pinned to a SHA; blocking findings must be inline; a verdict older than head is not a verdict; `isOutdated` threads re-anchored before resolve | §2.2 and §2.5 are both this |
-| **C2** | Re-scope #144 to six enumerated schedules (checkout→delete, delete→checkout, concurrent under lock, webhook before/after delete, transient cancel→retry) | Acceptance criteria as "pick one remedy" invites an argument about remedies instead of coverage |
+| E1 | `ProfileDeps` gains `currentUser`, `locale`, `passwordHashFor` | `src/app/api/profile/route.ts` |
+| E6 | The billing gate moved **inside** the locking transaction; `defaultDeleteUser` returns a `deleted > blocked` union instead of a nullable id | same |
+| E4 | `lock_timeout` 5s + `statement_timeout` 20s in all three advisory-lock sites | `src/app/api/profile/route.ts`, `src/app/api/billing/checkout/route.ts` |
+| E2 | `tests/profile-deletion-gate.test.ts` — 4 route-level tests driving the shipped handler | new |
+| E5 | Lock-contention test proving fail-closed, in `tests/checkout-deletion-race.test.ts` | same |
+| — | Existing call sites updated for the union: 1 in `profile-deletion.test.ts`, 3 in `checkout-deletion-race.test.ts` | same |
+| E7 | `docs/operations/webhook-unmapped.md` | new |
 
-Two smaller items: remove or document `dismiss_stale_reviews_on_push: true`, which is inert at
-`required_approving_review_count: 0` and reads as protection that does nothing; and add the
-`webhook:unmapped` runbook step that §2.4 box 4 requires.
+### 7.2 Why E6 was not optional
 
-Also unfixed and out of scope: **#143** (checkout duplicate-subscription guard reads only the first
-Stripe page) — the same pagination bug class, on a path this PR does not touch. It is live and
-should not be allowed to age.
+The gate used to be assessed from the request's snapshot *before* the delete transaction took the
+lock. Checkout takes that same lock to link a customer, so a link landing between the two steps was
+invisible to the gate: the deletion proceeded and the only thing that would cancel the subscription
+was a post-commit compensating call that can fail. Moving the gate under the lock makes "is money
+moving?" and "delete" one serialised step. The Stripe round trip now happens while the lock is held —
+which is why E4 exists.
 
-## 6. Decisions needed from the operator
+### 7.3 Mutations (each restarted from a clean file; each verified with `grep` before running)
 
-1. **§2.1:** add the `currentUser`/`locale` seams and one route-level test, or record explicit risk
-   acceptance on the thread? *(Recommend: seams. Both prior versions of this gap produced real
-   defects.)*
-2. **§2.4 box 1:** document the lock-across-I/O failure mode as accepted, or add a lock timeout?
-   *(Recommend: document now, timeout as its own issue — a timeout changes behaviour and needs its
-   own tests.)*
-3. **§2.4 box 4:** where does the `webhook:unmapped` runbook live — `docs/operations/`, or a section
-   in this file? *(Recommend: `docs/operations/`, since it is an operational step, not a plan.)*
-4. **§5 timing:** land the workflow PR before or after #142 merges? *(Recommend: after. #142 is the
-   evidence for it; shipping the fix and then the mechanism that would have caught its drift is a
-   cleaner narrative than the reverse.)*
+| # | Mutation | Result |
+|---|---|---|
+| M1 | Route's `assessDeletionBilling` call replaced by a first-page-only read — **the reviewer's own mutation** | `profile-deletion-gate`: **pass 2 / fail 2** (was 16/0 at head) |
+| M2 | Gate reduced to the database row only (provider check ignored) | **pass 2 / fail 2** |
+| M3 | `unverifiable` treated as `clear` (fail open) | **pass 3 / fail 1** — the 503 test fails |
+| M4 | `lock_timeout` raised 5s → 30s | lock test fails at **20017ms**: `statement_timeout` is the backstop, and the bound is real |
+| — | A first attempt at M3 added unreachable code after an existing `return` and therefore **proved nothing** (4 pass). Discarded and redone correctly. Recorded because a mutation that cannot fail is the same defect the PR is fixing. | |
 
-## 7. Standing constraints for whoever picks this up
+### 7.4 Collateral, as predicted in §3.1
 
-- Do not "fix" the FK by dropping `actorId` from the insert or making `actor_id` nullable — the
-  audit event must outlive the account, which is the whole point of the row.
-- Do not assert `actorId === userId` on the stored row: `ON DELETE SET NULL` nulls it. Assert on
-  `target`.
-- Cancellation is only ever justified by a durable `account:delete` proof. "Unmapped" alone is not
-  evidence of deletion — an unrelated subscription on the same Stripe account is equally unmapped.
-- `assert.rejects(..., /23503/)` does not work with Drizzle; the SQLSTATE is on `error.cause.code`.
-- Measure the whole suite for leaked rows, not just the file you changed — a cleanup scoped by user
-  id misses audit rows keyed by customer id.
-- This document must not contain the retired backlog filename, verbatim or otherwise:
-  `tests/backlog-snapshot.test.ts` fails if any tracked markdown still names it.
+Every item in that table occurred and was handled, except the CI `DATABASE_URL_DIRECT` item, which
+was checked by reading `.github/workflows/ci.yml` rather than changed.
+
+### 7.5 Skipped, and why
+
+| Item | Reason |
+|---|---|
+| Sweeper reconciling Stripe against the database | Needs scheduled infrastructure and an owner; the webhook quarantine plus the runbook is the detection story. §6. |
+| Retry queue for `cancelBillingForDeletedAccount` | The account is already gone; Stripe's own webhook retry is the durable retry, and the failure is logged with the customer id. |
+| Paginated reads in `checkout/route.ts` | That is **#143**, a different path. Included in §6 so it cannot go quiet. |
+| Approval counts / second reviewer | Catch-22 rule. Never. |

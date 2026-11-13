@@ -89,6 +89,10 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
        * released as soon as this transaction ends.
        */
       const linked = await db.transaction(async tx => {
+        // Bound the wait: deletion holds this lock across its own Stripe calls,
+        // so without a timeout a stuck peer would pin this request too. Timing
+        // out creates no customer and rolls back cleanly.
+        await tx.execute(sql`select set_config('lock_timeout', '5s', true)`);
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${user.id}`}))`);
 
         const [survivor] = await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
@@ -144,6 +148,7 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
     // the session was being created would otherwise leave a checkout that bills
     // an account nobody owns (#144).
     const stillThere = await db.transaction(async tx => {
+      await tx.execute(sql`select set_config('lock_timeout', '5s', true)`);
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${user.id}`}))`);
       const [row] = await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
       return Boolean(row);

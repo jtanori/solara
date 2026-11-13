@@ -14,6 +14,8 @@ import {
   assessDeletionGate,
   blockedResponseBody,
   writeAccountDeletion,
+  type BillingState,
+  type DeletionBlocker,
   type PasswordFacts,
 } from "@/lib/account-deletion";
 
@@ -22,10 +24,23 @@ export type ProfileDeps = {
   verify?: typeof verifyPassword;
   stripe?: ReturnType<typeof getStripe>;
   /**
+   * The authenticated user. Same type as the production import, so a test can
+   * pass a stale snapshot — which is the shape of the race in #144.
+   */
+  currentUser?: typeof currentUser;
+  /** `getLocale()` reads Next's request-scoped cookies, so tests supply one. */
+  locale?: "en" | "es";
+  /** Reads the stored password hash; the route needs it to verify the password. */
+  passwordHashFor?: (userId: string) => Promise<string>;
+  /**
    * Deletes the account and returns the Stripe customer id found *at deletion
    * time* — not the caller's snapshot, which may predate a checkout linking one.
+   *
+   * Takes the provider billing check as an argument rather than closing over it:
+   * the check must run *inside* the deletion transaction and under the per-user
+   * lock, and only the transaction's owner can guarantee that (#144).
    */
-  deleteUser?: (userId: string) => Promise<string | null>;
+  deleteUser?: (userId: string, assessProviderBilling: ProviderBillingCheck) => Promise<DeleteUserResult>;
 };
 
 export async function PATCH(request: Request) {
@@ -60,9 +75,9 @@ export async function DELETE(request: Request) {
  * so the testable form is a sibling function.
  */
 export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
-  const user = await currentUser();
+  const user = await (deps.currentUser ?? currentUser)();
   if (!user) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
-  const locale = await getLocale();
+  const locale = deps.locale ?? await getLocale();
   const es = locale === "es";
 
   const body = await request.json().catch(() => null) as { password?: unknown } | null;
@@ -81,7 +96,7 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
   // Only now do we pay for scrypt. A request without a password never hashes.
   let matches: boolean;
   try {
-    matches = await (deps.verify ?? verifyPassword)(password, await passwordHashFor(user.id));
+    matches = await (deps.verify ?? verifyPassword)(password, await (deps.passwordHashFor ?? passwordHashFor)(user.id));
   } catch (error) {
     // A hashing-capacity failure is a 503, not a wrong password.
     log.error("profile.delete_password_check_failed", { ...requestMeta(request), userId: user.id, error });
@@ -104,40 +119,37 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
     return NextResponse.json(blockedResponseBody(gate.blocker, locale), { status: gate.blocker.status });
   }
 
-  const [ongoing] = await db
-    .select({ id: subscriptions.stripeSubscriptionId })
-    .from(subscriptions)
-    .where(and(eq(subscriptions.userId, user.id), inArray(subscriptions.status, ONGOING_SUBSCRIPTION_STATUSES)))
-    .limit(1);
+  /*
+   * Resolve Stripe BEFORE taking any lock. A missing Stripe is a 503
+   * (`unverifiable`), and raising that inside a held advisory lock would block
+   * this user's own checkout for the duration of the transaction for no reason.
+   */
+  const stripe = deps.stripe ?? getStripe();
+  const remove = deps.deleteUser ?? defaultDeleteUser;
 
-  let billing: "clear" | "ongoing" | "unverifiable" = ongoing ? "ongoing" : "clear";
-
-  // Check Stripe as well, because a checkout could have completed before its
-  // webhook arrived.
-  if (billing === "clear" && user.stripeCustomerId) {
-    const stripe = deps.stripe ?? getStripe();
-    if (!stripe) {
-      billing = "unverifiable";
-    } else {
-      // Every page is walked, and any failure fails closed — see
-      // `assessDeletionBilling`, which is also what the tests drive.
-      const result = await assessDeletionBilling(stripe, user.stripeCustomerId);
-      if (result.state === "unverifiable") {
-        log.error("profile.billing_check_failed", { ...requestMeta(request), userId: user.id, error: result.error });
-      }
-      billing = result.state;
+  /*
+   * The gate and the delete are ONE serialised step (#144) — see
+   * `defaultDeleteUser`. Assessing billing from the request's snapshot and then
+   * deleting under the lock, in two separate transactions, left a window in
+   * which a checkout could link a customer that the gate never saw.
+   *
+   * The Stripe check runs inside the transaction holding the per-user lock.
+   * That is deliberate and bounded: `lock_timeout` stops a stuck session from
+   * pinning this user's checkout, and the lock is per user, so one slow Stripe
+   * response never delays anyone else.
+   */
+  const assessProviderBilling: ProviderBillingCheck = async (stripeCustomerId) => {
+    if (!stripe) return "unverifiable";
+    const result = await assessDeletionBilling(stripe, stripeCustomerId);
+    if (result.state === "unverifiable") {
+      log.error("profile.billing_check_failed", { ...requestMeta(request), userId: user.id, error: result.error });
     }
-  }
+    return result.state;
+  };
 
-  const billingGate = assessBillingGate(billing);
-  if (billingGate.kind === "blocked") {
-    return NextResponse.json(blockedResponseBody(billingGate.blocker, locale), { status: billingGate.blocker.status });
-  }
-
-  let deletedCustomerId: string | null = null;
+  let deleted: DeleteUserResult;
   try {
-    const remove = deps.deleteUser ?? defaultDeleteUser;
-    deletedCustomerId = await remove(user.id);
+    deleted = await remove(user.id, assessProviderBilling);
   } catch (error) {
     log.error("profile.delete_failed", { ...requestMeta(request), userId: user.id, error });
     return NextResponse.json(
@@ -147,13 +159,23 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
   }
 
   /*
+   * Blocked by the gate *inside* the transaction: nothing was deleted, so this
+   * is the same 409/503 the pre-lock version returned, minus the race.
+   */
+  if (deleted.kind === "blocked") {
+    return NextResponse.json(blockedResponseBody(deleted.blocker, locale), { status: deleted.blocker.status });
+  }
+
+  const deletedCustomerId = deleted.customerId;
+
+  /*
    * The account is gone; make sure billing is too.
    *
    * A checkout that authenticated before this request can still finish creating
-   * a customer *after* the row above disappears — the race in #144. That leaves
-   * a Stripe customer with a subscription pointing at a user that no longer
-   * exists, which the webhook can only record as `webhook:unmapped`. Cancelling
-   * here is the one action that actually stops the charge.
+   * a customer *after* the row above disappears. That leaves a Stripe customer
+   * with a subscription pointing at a user that no longer exists, which the
+   * webhook can only record as `webhook:unmapped`. Cancelling here is the one
+   * action that actually stops the charge.
    *
    * A failure must not fail the request: the account is already deleted, and
    * returning an error would tell the user it was not. It is logged with the
@@ -165,17 +187,14 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
    * while this request waited would be missing from the snapshot, and skipping
    * cleanup in that case leaves a paid subscription with no account.
    */
-  if (deletedCustomerId) {
-    const stripe = deps.stripe ?? getStripe();
-    if (stripe) {
-      const cleanup = await cancelBillingForDeletedAccount(stripe, deletedCustomerId);
-      if (cleanup.cancelled) {
-        log.info("profile.deletion_cancelled_billing", { ...requestMeta(request), userId: user.id });
-      } else if (cleanup.reason !== "no_live_subscription") {
-        log.error("profile.deletion_billing_cleanup_failed", {
-          ...requestMeta(request), userId: user.id, customerId: deletedCustomerId, reason: cleanup.reason,
-        });
-      }
+  if (deletedCustomerId && stripe) {
+    const cleanup = await cancelBillingForDeletedAccount(stripe, deletedCustomerId);
+    if (cleanup.cancelled) {
+      log.info("profile.deletion_cancelled_billing", { ...requestMeta(request), userId: user.id });
+    } else if (cleanup.reason !== "no_live_subscription") {
+      log.error("profile.deletion_billing_cleanup_failed", {
+        ...requestMeta(request), userId: user.id, customerId: deletedCustomerId, reason: cleanup.reason,
+      });
     }
   }
 
@@ -185,26 +204,59 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
 }
 
 /**
- * One transaction, so a deletion without a record stays impossible. The order
- * inside it lives in `writeAccountDeletion`: audit row first, delete second.
- * Written the other way round (delete, then insert) the audit row's foreign key
- * has nothing to reference and Postgres aborts with `23503`.
- *
- * Exported so the DB-gated test in `tests/profile-deletion.test.ts` can drive
- * this exact function. The ordering tests in `tests/account-deletion.test.ts`
- * prove `writeAccountDeletion` is called in the right order, but they substitute
- * their own writer — so they cannot see this file invert its own two statements
- * around it, which is precisely where the bug lived. Only a real database can
- * prove the pair this file actually issues is accepted.
+ * What a deletion attempt did. A union rather than a nullable id, because
+ * "blocked by billing" and "deleted, no customer" are different answers and the
+ * route must not have to infer one from the other.
  */
-export async function defaultDeleteUser(userId: string): Promise<string | null> {
+export type DeleteUserResult =
+  | { kind: "deleted"; customerId: string | null }
+  | { kind: "blocked"; blocker: DeletionBlocker };
+
+/**
+ * Stripe-side billing check, injected so the transaction can stay testable.
+ *
+ * Called only when the database has no live subscription for the user. There is
+ * no default: a default would have to answer "clear", and a fail-open answer to
+ * "is money moving?" is exactly the bug class this file exists to prevent.
+ */
+export type ProviderBillingCheck = (stripeCustomerId: string) => Promise<BillingState>;
+
+/**
+ * One transaction: lock, re-read, **gate**, audit row, delete — in that order.
+ *
+ * The gate lives inside the transaction on purpose (#144). Assessing billing
+ * before taking the lock left a window: checkout takes the same lock to link a
+ * customer, so a checkout that landed between the assessment and the delete was
+ * invisible, and the account was deleted with a live subscription attached. The
+ * only compensating action was a post-commit cancellation that can fail.
+ *
+ * With the gate under the lock, "is money moving?" and "delete" cannot be
+ * separated by a customer link.
+ *
+ * `lock_timeout` / `statement_timeout` bound the lock: the Stripe calls run
+ * inside it, so a socket that never answers would otherwise pin this user's
+ * checkout and their next deletion attempt forever, holding a pooled connection
+ * the whole time. Timing out is the safe failure — it rolls back, deletes
+ * nothing, and returns 500 so the user retries.
+ *
+ * Exported so DB-gated tests drive this exact function. The ordering tests in
+ * `tests/account-deletion.test.ts` substitute their own writer, so they cannot
+ * see this file invert its own two statements around it — which is precisely
+ * where the original bug lived. Only a real database can prove the pair this
+ * file actually issues is accepted.
+ */
+export async function defaultDeleteUser(
+  userId: string,
+  assessProviderBilling: ProviderBillingCheck,
+): Promise<DeleteUserResult> {
   return db.transaction(async tx => {
     /*
      * Serialise against checkout for this user (#144). Checkout takes the same
-     * lock around customer creation and session creation; holding it here from
-     * the re-read through the delete is what stops a customer being attached at
-     * the last moment.
+     * lock around customer creation and around its final survival check, so a
+     * customer cannot be linked between this gate and this delete.
      */
+    await tx.execute(sql`select set_config('lock_timeout', '5s', true)`);
+    await tx.execute(sql`select set_config('statement_timeout', '20s', true)`);
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${userId}`}))`);
 
     /*
@@ -218,6 +270,26 @@ export async function defaultDeleteUser(userId: string): Promise<string | null> 
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
+
+    /*
+     * The gate, also under the lock. The database answers first because it is
+     * authoritative and free; Stripe is consulted only when the database has
+     * nothing, because a checkout can complete before its webhook writes the
+     * `subscriptions` row.
+     */
+    const [ongoing] = await tx
+      .select({ id: subscriptions.stripeSubscriptionId })
+      .from(subscriptions)
+      .where(and(eq(subscriptions.userId, userId), inArray(subscriptions.status, ONGOING_SUBSCRIPTION_STATUSES)))
+      .limit(1);
+
+    let billing: BillingState = ongoing ? "ongoing" : "clear";
+    if (billing === "clear" && current?.stripeCustomerId) {
+      billing = await assessProviderBilling(current.stripeCustomerId);
+    }
+
+    const gate = assessBillingGate(billing);
+    if (gate.kind === "blocked") return { kind: "blocked", blocker: gate.blocker };
 
     await writeAccountDeletion({
       insertAudit: async (row) => {
@@ -234,7 +306,7 @@ export async function defaultDeleteUser(userId: string): Promise<string | null> 
     }, userId);
 
     // Hand the id back so the caller cleans up without trusting its snapshot.
-    return current?.stripeCustomerId ?? null;
+    return { kind: "deleted", customerId: current?.stripeCustomerId ?? null };
   });
 }
 

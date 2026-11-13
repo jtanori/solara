@@ -43,10 +43,15 @@ test("the route's own deletion transaction: audit row first, then the delete", {
     .values({ name: "Deletion probe", email: `deletion-${token}@example.test`, passwordHash: "not-a-login" })
     .returning({ id: users.id });
 
-  // The assertion is in `await` itself: if the route's statements were in the
-  // buggy order this rejects with 23503 (on `error.cause.code`) and the test
-  // fails before reaching the checks below.
-  await defaultDeleteUser(user.id);
+  /*
+   * No customer is linked, so the provider check is never called — but it is
+   * still supplied, because a check that silently falls back to "clear" would
+   * fail open on "is money moving?".
+   */
+  const deletion = await defaultDeleteUser(user.id, async () => {
+    throw new Error("no Stripe customer is linked: the provider check must not run");
+  });
+  assert.equal(deletion.kind, "deleted", "the deletion went through");
 
   try {
     const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
