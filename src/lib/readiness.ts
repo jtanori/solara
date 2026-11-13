@@ -27,10 +27,10 @@ const READINESS_STATEMENT_TIMEOUT_MS = 1_000;
 
 let readinessPool: Pool | undefined;
 
-export async function withDeadline<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
+export async function withDeadline<T>(promise: Promise<T>, deadlineMs: number, message = "readiness_timeout"): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("readiness_timeout")), deadlineMs);
+    timer = setTimeout(() => reject(new Error(message)), deadlineMs);
   });
   try {
     return await Promise.race([promise, timeout]);

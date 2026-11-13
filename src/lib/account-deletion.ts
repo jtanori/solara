@@ -152,10 +152,75 @@ export function blockedResponseBody(blocker: DeletionBlocker, locale: "en" | "es
 /**
  * The audit row written in the same transaction as the delete.
  *
- * `audit_logs.actor_id` references `users.id` with `on delete set null`, so this
- * row survives the deletion with a null actor while `target` keeps the id —
- * which is exactly what an audit trail needs: the event outlives the account.
+ * `actorId` is the deleted user on purpose: `audit_logs.actor_id` references
+ * `users.id` with `on delete set null`, and the delete is what nulls it. The row
+ * therefore has to be written while the user still exists — see
+ * `writeAccountDeletion`. Writing it after the delete fails the foreign key.
  */
 export function accountDeletionAudit(userId: string) {
   return { actorId: userId, action: "account:delete" as const, target: userId };
+}
+
+/**
+ * The companion row that makes a deletion provable from the customer side.
+ *
+ * `accountDeletionAudit` targets the *user* id, which a subscription can only be
+ * matched against through `metadata.solara_user_id`. When that metadata is
+ * missing there is nothing to compare, so deletion also records the Stripe
+ * customer id as a target. The webhook reads this to prove "this account was
+ * deleted" before cancelling anything — evidence, not inference.
+ *
+ * Returns null when there is no customer: nothing to prove from that side.
+ */
+export function accountDeletionCustomerAudit(userId: string, stripeCustomerId: string) {
+  return { actorId: userId, action: "account:delete" as const, target: stripeCustomerId };
+}
+
+/**
+ * The explicit association between a deleted account and the Stripe customer it
+ * owned.
+ *
+ * `accountDeletionCustomerAudit` above is the audit trail and stays, but two
+ * audit rows cannot prove they came from the *same* deletion: two independent
+ * deletions produce an identical pair of rows, and a customer id reused for
+ * another account reads the same. The webhook needs to answer "did *this*
+ * customer belong to *that* deleted user", so the pairing is recorded as one
+ * row instead of being inferred from two.
+ */
+export function deletedCustomerAssociation(userId: string, stripeCustomerId: string) {
+  return { stripeCustomerId, userId };
+}
+
+/**
+ * The two side effects of an account deletion, as a seam the route can hand to
+ * whatever runs a transaction. Keeping the *order* here — rather than inline in
+ * the route — is what makes it testable without a database.
+ */
+export type AccountDeletionWriter = {
+  insertAudit(row: ReturnType<typeof accountDeletionAudit>): Promise<void>;
+  deleteUser(userId: string): Promise<void>;
+};
+
+/**
+ * Delete the account and record that it happened — in the only order that
+ * works: **audit row first, delete second.**
+ *
+ * The row is inserted while the user row still exists, so `audit_logs.actor_id`
+ * satisfies its foreign key; the delete then fires `on delete set null` and the
+ * event outlives the account with `target` keeping the id — exactly what an
+ * audit trail is for.
+ *
+ * The reverse order asks Postgres to insert a row referencing a user deleted
+ * earlier in the same transaction: `23503` (foreign key violation), which aborts
+ * the transaction. The account then cannot be deleted at all and the caller
+ * returns 500 — the bug this function exists to prevent. Do not "fix" that by
+ * dropping `actorId` from the insert or by making the column nullable: the
+ * constraint is what proves the auditor and the audited are the same account.
+ */
+export async function writeAccountDeletion(
+  writer: AccountDeletionWriter,
+  userId: string,
+): Promise<void> {
+  await writer.insertAudit(accountDeletionAudit(userId));
+  await writer.deleteUser(userId);
 }

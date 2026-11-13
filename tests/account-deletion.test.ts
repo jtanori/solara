@@ -5,6 +5,7 @@ import {
   assessBillingGate,
   assessDeletionGate,
   blockedResponseBody,
+  writeAccountDeletion,
 } from "../src/lib/account-deletion";
 import { AUTH_RATE_LIMITS } from "../src/lib/rate-limit-policies";
 
@@ -118,16 +119,67 @@ test("billing: ongoing and unverifiable subscriptions block; clear passes", () =
 
 // ------------------------------------------------------------------ audit row
 
-test("audit: the deletion row survives the cascade (actor and target are the deleted id)", () => {
+test("audit: the row names the deleted account as its actor, so the FK has something to point at", () => {
   const row = accountDeletionAudit("11111111-2222-3333-4444-555555555555");
   assert.deepEqual(row, {
     actorId: "11111111-2222-3333-4444-555555555555",
     action: "account:delete",
     target: "11111111-2222-3333-4444-555555555555",
   });
-  // audit_logs.actor_id is `on delete set null`, so writing the row inside the
-  // same transaction as the delete leaves actor=null and target=the id.
-  assert.equal(row.target, row.actorId);
+});
+
+/*
+ * The regression guard. The bug was an ordering bug, not a shape bug: the route
+ * deleted the user and *then* inserted a row whose actor_id referenced it, so
+ * Postgres rejected the insert with `23503` and the deletion never completed.
+ *
+ * A row-level assertion cannot see ordering, which is why the original test here
+ * passed against broken code. These two tests drive `writeAccountDeletion`
+ * through a recorder and assert *sequence*, which no row-level check can.
+ */
+
+function recorder() {
+  // Every effect, in the order it happened — the only thing that distinguishes
+  // the broken code from the fixed one.
+  const calls: string[] = [];
+  return {
+    calls,
+    writer: {
+      insertAudit: async (row: { actorId: string | null; action: string; target: string }) => {
+        calls.push(`insert:${row.actorId}`);
+      },
+      deleteUser: async (id: string) => {
+        calls.push(`delete:${id}`);
+      },
+    },
+  };
+}
+
+test("audit: the row is written while the user still exists, then the user is deleted", async () => {
+  const id = "11111111-2222-3333-4444-555555555555";
+  const { calls, writer } = recorder();
+
+  await writeAccountDeletion(writer, id);
+
+  // Audit first: at insert time the user row is still there, so actor_id
+  // satisfies its foreign key. Delete second: that delete is what fires
+  // `on delete set null`. Inverted, the insert is a 23503.
+  assert.deepEqual(calls, [`insert:${id}`, `delete:${id}`]);
+});
+
+test("audit: a failed audit write must not delete the account", async () => {
+  const id = "11111111-2222-3333-4444-555555555555";
+  const { calls, writer } = recorder();
+  writer.insertAudit = async () => {
+    calls.push("insert:failed");
+    throw new Error("23503");
+  };
+
+  await assert.rejects(writeAccountDeletion(writer, id), /23503/);
+
+  // A deletion must never be committed without its record. If the audit insert
+  // fails, the delete must not have been attempted at all.
+  assert.deepEqual(calls, ["insert:failed"]);
 });
 
 // ------------------------------------------------------------------ budgets

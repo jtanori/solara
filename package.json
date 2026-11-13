@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "typegen": "next typegen",
     "test": "tsx --test tests/*.test.ts",
-    "test:integration": "RUN_BILLING_INTEGRATION_TESTS=1 tsx --test tests/*.test.ts",
+    "test:integration": "RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 tsx --test tests/*.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/db-run.ts --env local migrate",
     "db:status": "tsx scripts/db-run.ts --env local status",

@@ -10,6 +10,7 @@ export const REQUIRED_TABLES = [
   "public.email_tokens",
   "public.reading_documents",
   "public.generation_cache",
+  "public.deleted_customers",
 ] as const;
 
 export const REQUIRED_INDEXES = [

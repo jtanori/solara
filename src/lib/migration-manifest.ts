@@ -19,5 +19,9 @@ export const EXPECTED_MIGRATIONS: MigrationManifestEntry[] = [
   {
     "tag": "0003_readings_documents_generation_cache",
     "hash": "b3af103ee2e83fc3bca510736383d96c7acc6b70b502f1272228ced203199120"
+  },
+  {
+    "tag": "0004_yielding_speed_demon",
+    "hash": "43d0e7b824bac056d2bf48717cf04b61435c199c7a366effd1feb90a6b32b31a"
   }
 ];

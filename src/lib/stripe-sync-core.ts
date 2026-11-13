@@ -44,7 +44,14 @@ export type StripeEventOutcome =
       linkedCustomer: boolean;
     }
   /** No user matches the metadata id or the Stripe customer id. */
-  | { status: "unmapped"; eventId: string; subscriptionId: string; customerId: string }
+  | {
+      status: "unmapped";
+      eventId: string;
+      subscriptionId: string;
+      customerId: string;
+      /** True when the orphan was cancelled, so it cannot keep billing. */
+      cancelled: boolean;
+    }
   /** The user's stored customer id disagrees with the event's. */
   | {
       status: "mismatch";
@@ -93,12 +100,69 @@ export type SyncPorts = {
   recordAudit: (action: WebhookAuditAction, target: string) => Promise<void>;
   /** True when this price is one of the configured premium prices. */
   priceGrantsAccess: (priceId: string) => boolean;
+  /**
+   * Returns true only when this subscription is *proven* to belong to an account
+   * that was deleted — a durable `account:delete` audit row naming the deleted
+   * user, matched by metadata id or by the customer id recorded at deletion.
+   *
+   * "Unmapped" is not evidence of deletion. An unrelated subscription on the same
+   * Stripe account, or a legitimate one whose mapping is mid-repair, is also
+   * unmapped, and cancelling it is an irreversible change to a paying customer.
+   */
+  wasAccountDeleted?: (args: {
+    metadataUserId: string | undefined;
+    customerId: string;
+    /**
+     * The snapshot the decision is about. Deletion of *an* account is not proof
+     * that *this* subscription belongs to it: the price identifies the product,
+     * and the metadata/customer identities have to correspond.
+     */
+    subscription: SubscriptionSnapshot;
+  }) => Promise<boolean>;
+  /**
+   * True when the subscription's price is one that grants Solara access. Reuses
+   * the grant path's own test, so "is this our subscription?" and "does this
+   * price grant access?" cannot drift apart.
+   */
+  priceIdentifiesSubscription: (subscription: SubscriptionSnapshot) => boolean;
+  /**
+   * Optional: cancels a subscription. Absent in unit tests, wired to Stripe in
+   * production. Only called after `wasAccountDeleted` proves deletion.
+   */
+  cancelOrphanedSubscription?: (subscriptionId: string) => Promise<void>;
   now?: () => Date;
 };
 
-export type WebhookAuditAction = "webhook:applied" | "webhook:unmapped" | "webhook:mismatch" | "webhook:invalid";
+export type WebhookAuditAction =
+  | "webhook:applied"
+  | "webhook:unmapped"
+  | "webhook:unmapped_cancelled"
+  | "webhook:unmapped_deletion_detected"
+  /** Deletion proven but the subscription was already canceled/expired: nothing to do. */
+  | "webhook:unmapped_already_terminal"
+  | "webhook:mismatch"
+  | "webhook:invalid";
 
 const UUID = /^[0-9a-f-]{36}$/i;
+
+/** Statuses where there is nothing left to stop. Cancelling again is a no-op or an error. */
+const TERMINAL_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"]);
+
+/**
+ * True when the cancellation has nothing left to do. Covers a missing
+ * subscription AND one Stripe reports as already cancelled: a redelivery after a
+ * successful cancel, or a retry after a DB rollback, must be idempotent rather
+ * than a permanent 500 that Stripe retries until it gives up.
+ */
+function isNothingLeftToCancel(error: unknown): boolean {
+  const code = (error as { code?: string; statusCode?: number })?.code;
+  const status = (error as { statusCode?: number })?.statusCode;
+  const message = String((error as { message?: string })?.message ?? "");
+  if (code === "resource_missing" || status === 404) return true;
+  // Stripe returns 400 invalid_request when asked to cancel an already-canceled
+  // subscription. Match the specific message; a different 400 must still retry.
+  return status === 400 && /already (been )?cancel/i.test(message);
+}
 
 export async function processStripeEventWith(
   event: { id: string; type: string },
@@ -122,16 +186,75 @@ export async function processStripeEventWith(
   const customerId = subscription.customer;
 
   const metadataUserId = subscription.metadata.solara_user_id;
-  const owner = await ports.findOwner({
-    metadataUserId: metadataUserId && UUID.test(metadataUserId) ? metadataUserId : undefined,
-    customerId,
-  });
+  const legalMetadataUserId = metadataUserId && UUID.test(metadataUserId) ? metadataUserId : undefined;
+  const owner = await ports.findOwner({ metadataUserId: legalMetadataUserId, customerId });
 
   if (!owner) {
-    // Used to `return` silently. Now it commits an audit row: a paying customer
-    // who matches no account is exactly the case support needs to find later.
-    await ports.recordAudit("webhook:unmapped", subscriptionId);
-    return { status: "unmapped", eventId: event.id, subscriptionId, customerId };
+    /*
+     * No account matches. That is NOT on its own a reason to cancel: an unrelated
+     * subscription on this Stripe account, or a real one whose mapping is being
+     * repaired, is also unmapped. Cancellation is irreversible and takes money
+     * out of a customer's hands, so it needs positive proof of deletion.
+     *
+     * The proof has to identify *this* subscription, not just the account. On a
+     * Stripe account shared with another product, a customer-level match accepts
+     * an unrelated subscription and cancels it.
+     */
+    const ours = ports.priceIdentifiesSubscription(subscription);
+    const deleted = ours && ports.wasAccountDeleted
+      ? await ports.wasAccountDeleted({
+          metadataUserId: legalMetadataUserId,
+          customerId,
+          subscription,
+        })
+      : false;
+
+    /*
+     * A terminal status is the outcome we wanted. Cancelling emits
+     * `customer.subscription.deleted` with a NEW event id whose snapshot is
+     * usually already `canceled`; issuing another cancel either 500s forever or
+     * races the first cancellation. `incomplete_expired` never became a
+     * subscription at all.
+     */
+    if (TERMINAL_SUBSCRIPTION_STATUSES.has(subscription.status)) {
+      await ports.recordAudit(deleted ? "webhook:unmapped_already_terminal" : "webhook:unmapped", subscriptionId);
+      return { status: "unmapped", eventId: event.id, subscriptionId, customerId, cancelled: false };
+    }
+
+    if (!deleted) {
+      // Left alone on purpose: quarantine, not cancel. Recoverable by a person,
+      // unlike a cancellation.
+      await ports.recordAudit("webhook:unmapped", subscriptionId);
+      return { status: "unmapped", eventId: event.id, subscriptionId, customerId, cancelled: false };
+    }
+
+    let cancelled = false;
+    if (ports.cancelOrphanedSubscription) {
+      /*
+       * A transient failure must NOT be swallowed. Swallowing it commits the
+       * event claim and returns 200, so Stripe never redelivers and the
+       * subscription keeps billing with only a log line to show for it.
+       *
+       * Throwing rolls the claim back (same transaction) and surfaces as a 500,
+       * which is Stripe's retry signal — so the next delivery cancels it. This
+       * is the retry mechanism: durable, provider-driven, and already used for a
+       * transient Stripe read.
+       *
+       * `already cancelled` is success, not failure: a redelivery after a
+       * partial success must be idempotent. Permanent errors (the subscription
+       * does not exist) are also folded into success here because there is
+       * nothing left to cancel; anything else propagates for a retry.
+       */
+      try {
+        await ports.cancelOrphanedSubscription(subscriptionId);
+        cancelled = true;
+      } catch (error) {
+        if (!isNothingLeftToCancel(error)) throw error;
+        cancelled = true;
+      }
+    }
+    await ports.recordAudit(cancelled ? "webhook:unmapped_cancelled" : "webhook:unmapped_deletion_detected", subscriptionId);
+    return { status: "unmapped", eventId: event.id, subscriptionId, customerId, cancelled };
   }
 
   if (owner.customerId && owner.customerId !== customerId) {
