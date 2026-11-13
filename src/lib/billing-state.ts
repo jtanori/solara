@@ -96,3 +96,135 @@ export async function collectAcrossPages<T extends { id: string }>(
   });
   return collected;
 }
+
+/**
+ * The exact Stripe calls the account-deletion gate makes, as one function.
+ *
+ * The page-walk helpers above are tested directly, but that only proves the
+ * helper walks pages — not that the route passes it the right `starting_after`,
+ * the right `status`, or expires the right sessions. This function is that
+ * wiring, lifted out of the route so a fake Stripe can drive it end to end.
+ *
+ * `stripe` is structurally typed to just the three calls used, so a test can
+ * pass a stub without casting a whole `Stripe` object.
+ */
+export type DeletionBillingStripe = {
+  subscriptions: {
+    list(params: { customer: string; status: "all"; limit: number; starting_after?: string }): Promise<BillingPage<{ id: string; status: string }>>;
+  };
+  checkout: {
+    sessions: {
+      list(params: { customer: string; status: "open"; limit: number; starting_after?: string }): Promise<BillingPage<{ id: string; mode: string }>>;
+      expire(id: string): Promise<unknown>;
+    };
+  };
+};
+
+export type DeletionBillingResult =
+  | { state: "clear"; expiredSessionIds: string[] }
+  | { state: "ongoing" }
+  /** A Stripe call threw, including "the list would not end". */
+  | { state: "unverifiable"; error: unknown };
+
+/**
+ * Is a subscription live for this customer, and are there open checkouts?
+ *
+ * Both lists are walked to the end: a live subscription on page 2 is a
+ * subscription the gate would otherwise never see, and the account would be
+ * deleted with a paying customer still attached. Open subscription sessions on
+ * any page are expired, since a completed checkout would otherwise bill an
+ * account that no longer exists.
+ *
+ * Any failure — network, auth, or a list that never ends — returns
+ * `unverifiable`, which the caller's gate turns into a blocked deletion. That
+ * is fail-closed on purpose: a deletion must never proceed on a partial answer.
+ */
+export async function assessDeletionBilling(
+  stripe: DeletionBillingStripe,
+  customerId: string,
+): Promise<DeletionBillingResult> {
+  const hasOngoing = () => anyAcrossPages(
+    async startingAfter => stripe.subscriptions.list({
+      customer: customerId, status: "all", limit: 100, starting_after: startingAfter,
+    }),
+    subscription => isOngoingStatus(subscription.status),
+  );
+
+  try {
+    if (await hasOngoing()) return { state: "ongoing" };
+
+    const sessions = await collectAcrossPages(
+      async startingAfter => stripe.checkout.sessions.list({
+        customer: customerId, status: "open", limit: 100, starting_after: startingAfter,
+      }),
+      session => session.mode === "subscription",
+    );
+
+    // Expire every open subscription checkout before re-checking: a session that
+    // completes between the two checks is exactly the "billed with no account"
+    // case, so it is closed first and then looked for again.
+    const expiredSessionIds: string[] = [];
+    for (const session of sessions) {
+      await stripe.checkout.sessions.expire(session.id);
+      expiredSessionIds.push(session.id);
+    }
+
+    if (await hasOngoing()) return { state: "ongoing" };
+    return { state: "clear", expiredSessionIds };
+  } catch (error) {
+    return { state: "unverifiable", error };
+  }
+}
+
+/**
+ * Cancel whatever billing is live for a customer that no longer has an account.
+ *
+ * This is the remedy for the checkout/deletion race (#144). The race produces a
+ * Stripe customer with a subscription that resolves to no user, so nothing in
+ * the product can see it — `findOwner` returns null and the webhook only records
+ * `webhook:unmapped`. Deleting the customer cancels its subscriptions, which is
+ * the only action that actually stops the charge.
+ *
+ * Deletion cannot simply refuse when it finds an orphan: by definition the
+ * account is the thing being deleted. So it cleans up instead, and a failure
+ * here surfaces as `warnings` rather than failing the whole deletion — the
+ * account is already gone, and refusing to finish would leave the user unable
+ * to delete at all.
+ */
+export type DeletionCleanupStripe = {
+  customers: { del(id: string): Promise<unknown> };
+  subscriptions: {
+    list(params: { customer: string; status: "all"; limit: number; starting_after?: string }): Promise<BillingPage<{ id: string; status: string }>>;
+  };
+};
+
+export type StripeCleanupOutcome =
+  | { cancelled: true }
+  | { cancelled: false; reason: string };
+
+/**
+ * Best-effort cancel. Returns an outcome instead of throwing so the caller can
+ * log it and finish the deletion: an orphaned customer is a support problem,
+ * a half-deleted account is a worse one.
+ */
+export async function cancelBillingForDeletedAccount(
+  stripe: DeletionCleanupStripe,
+  customerId: string,
+): Promise<StripeCleanupOutcome> {
+  try {
+    const live = await collectAcrossPages(
+      async startingAfter => stripe.subscriptions.list({
+        customer: customerId, status: "all", limit: 100, starting_after: startingAfter,
+      }),
+      subscription => isOngoingStatus(subscription.status),
+    );
+    if (live.length === 0) return { cancelled: false, reason: "no_live_subscription" };
+
+    // Deleting the customer cancels active subscriptions immediately rather
+    // than waiting for the checkout session to be paid.
+    await stripe.customers.del(customerId);
+    return { cancelled: true };
+  } catch (error) {
+    return { cancelled: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}

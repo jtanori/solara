@@ -9,10 +9,27 @@ import { log, requestMeta } from "@/lib/log";
 import { AUTH_RATE_LIMITS, consumeBudgets, keyFor, rateLimitedResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+
+/**
+ * Test seams. Production passes nothing; the race test injects a Stripe stub and
+ * a `currentUser` snapshot so it can drive *this* handler rather than a copy of
+ * its logic — the mistake that let the audit-row bug survive a green suite.
+ */
+export type CheckoutDeps = {
+  stripe?: ReturnType<typeof getStripe>;
+  currentUser?: typeof currentUser;
+  /** `getLocale()` reads Next's request-scoped cookies, so tests supply one. */
+  locale?: "en" | "es";
+};
+
 export async function POST(request: Request) {
-  const user = await currentUser();
+  return startCheckout(request);
+}
+
+export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
+  const user = await (deps.currentUser ?? currentUser)();
   if (!user) return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
-  const locale = await getLocale();
+  const locale = deps.locale ?? await getLocale();
   if (!user.emailVerifiedAt) {
     return NextResponse.json({
       error: locale === "es"
@@ -21,7 +38,7 @@ export async function POST(request: Request) {
       code: "email_not_verified",
     }, { status: 403 });
   }
-  const stripe = getStripe();
+  const stripe = deps.stripe ?? getStripe();
   if (!stripe || !billingIsConfigured()) return NextResponse.json({ error: locale === "es" ? "Los pagos aún no están configurados." : "Payments are not configured yet." }, { status: 503 });
 
   /*
@@ -50,9 +67,35 @@ export async function POST(request: Request) {
     if (!price.active || price.currency !== currency || !price.recurring || price.unit_amount == null) return NextResponse.json({ error: "Configured price is unavailable." }, { status: 503 });
     let customerId = user.stripeCustomerId;
     if (!customerId) {
+      /*
+       * `currentUser()` was read before this request started doing I/O, so the
+       * account may have been deleted in between (#144). `db.update` on a
+       * missing row affects zero rows and does *not* throw, so the old code
+       * created a Stripe customer and a subscription checkout for a user that
+       * no longer existed — and Stripe kept billing them.
+       *
+       * Check survival first, then write the link back and require it to have
+       * landed. If either fails the account is gone; stop before touching Stripe.
+       */
+      const [survivor] = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
+      if (!survivor) {
+        return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
+      }
       const customer = await stripe.customers.create({ email: user.email, metadata: { solara_user_id: user.id } }, { idempotencyKey: `solara-customer-${user.id}` });
       customerId = customer.id;
-      await db.update(users).set({ stripeCustomerId: customerId }).where(eq(users.id, user.id));
+      const linked = await db
+        .update(users)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(users.id, user.id))
+        .returning({ id: users.id });
+      if (linked.length === 0) {
+        // The account vanished between the select and the update. The customer
+        // now exists with nothing pointing at it, so remove it rather than
+        // leave a billable orphan behind.
+        await stripe.customers.del(customerId).catch(() => undefined);
+        log.error("billing.checkout_user_vanished", { ...requestMeta(request), userId: user.id, customerId });
+        return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
+      }
     }
     // Query Stripe too: a completed checkout may not have reached our webhook yet.
     const providerSubscriptions = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100 });
@@ -75,6 +118,15 @@ export async function POST(request: Request) {
       allow_promotion_codes: true,
     }, { idempotencyKey: `solara-checkout-${user.id}-${currency}-${Math.floor(Date.now() / 900000)}` });
     if (!session.url) throw new Error("Checkout URL missing");
+    // Last look before handing back a payable URL: a deletion that landed while
+    // the session was being created would otherwise leave a checkout that bills
+    // an account nobody owns (#144).
+    const [stillThere] = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
+    if (!stillThere) {
+      await stripe.checkout.sessions.expire(session.id).catch(() => undefined);
+      log.error("billing.checkout_expired_after_deletion", { ...requestMeta(request), userId: user.id, sessionId: session.id });
+      return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
+    }
     return NextResponse.json({ url: session.url });
   } catch (error) {
     log.error("billing.checkout_failed", { ...requestMeta(request), userId: user.id, error });

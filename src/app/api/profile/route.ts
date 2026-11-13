@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { auditLogs, subscriptions, users } from "@/db/schema";
 import { currentUser, SESSION_COOKIE } from "@/lib/auth";
 import { getStripe } from "@/lib/billing";
-import { anyAcrossPages, collectAcrossPages, isOngoingStatus, ONGOING_SUBSCRIPTION_STATUSES } from "@/lib/billing-state";
+import { assessDeletionBilling, cancelBillingForDeletedAccount, ONGOING_SUBSCRIPTION_STATUSES } from "@/lib/billing-state";
 import { getLocale } from "@/lib/i18n-server";
 import { log, requestMeta } from "@/lib/log";
 import { verifyPassword } from "@/lib/passwords";
@@ -114,35 +114,13 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
     if (!stripe) {
       billing = "unverifiable";
     } else {
-      const customerId = user.stripeCustomerId;
-      // Both lists are walked to the end. Reading only the first page used to
-      // mean a live subscription on page 2 was never seen — and the account
-      // would be deleted with a paying customer still attached to it.
-      const hasOngoing = () => anyAcrossPages(
-        async startingAfter => stripe.subscriptions.list({
-          customer: customerId, status: "all", limit: 100, starting_after: startingAfter,
-        }),
-        subscription => isOngoingStatus(subscription.status),
-      );
-      try {
-        if (await hasOngoing()) {
-          billing = "ongoing";
-        } else {
-          const sessions = await collectAcrossPages(
-            async startingAfter => stripe.checkout.sessions.list({
-              customer: customerId, status: "open", limit: 100, starting_after: startingAfter,
-            }),
-            session => session.mode === "subscription",
-          );
-          for (const session of sessions) await stripe.checkout.sessions.expire(session.id);
-          if (await hasOngoing()) billing = "ongoing";
-        }
-      } catch (error) {
-        // Includes "the list would not end": fail closed, exactly like an
-        // unreachable Stripe, rather than deleting on a partial answer.
-        log.error("profile.billing_check_failed", { ...requestMeta(request), userId: user.id, error });
-        billing = "unverifiable";
+      // Every page is walked, and any failure fails closed — see
+      // `assessDeletionBilling`, which is also what the tests drive.
+      const result = await assessDeletionBilling(stripe, user.stripeCustomerId);
+      if (result.state === "unverifiable") {
+        log.error("profile.billing_check_failed", { ...requestMeta(request), userId: user.id, error: result.error });
       }
+      billing = result.state;
     }
   }
 
@@ -160,6 +138,33 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
       { error: es ? "No pudimos eliminar tu cuenta." : "We could not delete your account." },
       { status: 500 },
     );
+  }
+
+  /*
+   * The account is gone; make sure billing is too.
+   *
+   * A checkout that authenticated before this request can still finish creating
+   * a customer *after* the row above disappears — the race in #144. That leaves
+   * a Stripe customer with a subscription pointing at a user that no longer
+   * exists, which the webhook can only record as `webhook:unmapped`. Cancelling
+   * here is the one action that actually stops the charge.
+   *
+   * A failure must not fail the request: the account is already deleted, and
+   * returning an error would tell the user it was not. It is logged with the
+   * data support needs to chase it.
+   */
+  if (user.stripeCustomerId) {
+    const stripe = deps.stripe ?? getStripe();
+    if (stripe) {
+      const cleanup = await cancelBillingForDeletedAccount(stripe, user.stripeCustomerId);
+      if (cleanup.cancelled) {
+        log.info("profile.deletion_cancelled_billing", { ...requestMeta(request), userId: user.id });
+      } else if (cleanup.reason !== "no_live_subscription") {
+        log.error("profile.deletion_billing_cleanup_failed", {
+          ...requestMeta(request), userId: user.id, customerId: user.stripeCustomerId, reason: cleanup.reason,
+        });
+      }
+    }
   }
 
   const response = NextResponse.json({ ok: true });
