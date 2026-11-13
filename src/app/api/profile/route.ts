@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { auditLogs, subscriptions, users } from "@/db/schema";
 import { currentUser, SESSION_COOKIE } from "@/lib/auth";
 import { getStripe } from "@/lib/billing";
+import { anyAcrossPages, collectAcrossPages, isOngoingStatus, ONGOING_SUBSCRIPTION_STATUSES } from "@/lib/billing-state";
 import { getLocale } from "@/lib/i18n-server";
 import { log, requestMeta } from "@/lib/log";
 import { verifyPassword } from "@/lib/passwords";
@@ -14,8 +15,6 @@ import {
   writeAccountDeletion,
   type PasswordFacts,
 } from "@/lib/account-deletion";
-
-const ongoingStatuses = ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"];
 
 export type ProfileDeps = {
   /** Test seams; production uses the real module imports above. */
@@ -103,7 +102,7 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
   const [ongoing] = await db
     .select({ id: subscriptions.stripeSubscriptionId })
     .from(subscriptions)
-    .where(and(eq(subscriptions.userId, user.id), inArray(subscriptions.status, ongoingStatuses)))
+    .where(and(eq(subscriptions.userId, user.id), inArray(subscriptions.status, ONGOING_SUBSCRIPTION_STATUSES)))
     .limit(1);
 
   let billing: "clear" | "ongoing" | "unverifiable" = ongoing ? "ongoing" : "clear";
@@ -115,21 +114,32 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
     if (!stripe) {
       billing = "unverifiable";
     } else {
+      const customerId = user.stripeCustomerId;
+      // Both lists are walked to the end. Reading only the first page used to
+      // mean a live subscription on page 2 was never seen — and the account
+      // would be deleted with a paying customer still attached to it.
+      const hasOngoing = () => anyAcrossPages(
+        async startingAfter => stripe.subscriptions.list({
+          customer: customerId, status: "all", limit: 100, starting_after: startingAfter,
+        }),
+        subscription => isOngoingStatus(subscription.status),
+      );
       try {
-        const hasOngoing = async () => {
-          const list = await stripe.subscriptions.list({ customer: user.stripeCustomerId!, status: "all", limit: 100 });
-          return list.data.some(subscription => ongoingStatuses.includes(subscription.status));
-        };
         if (await hasOngoing()) {
           billing = "ongoing";
         } else {
-          const sessions = await stripe.checkout.sessions.list({ customer: user.stripeCustomerId, status: "open", limit: 100 });
-          for (const session of sessions.data) {
-            if (session.mode === "subscription") await stripe.checkout.sessions.expire(session.id);
-          }
+          const sessions = await collectAcrossPages(
+            async startingAfter => stripe.checkout.sessions.list({
+              customer: customerId, status: "open", limit: 100, starting_after: startingAfter,
+            }),
+            session => session.mode === "subscription",
+          );
+          for (const session of sessions) await stripe.checkout.sessions.expire(session.id);
           if (await hasOngoing()) billing = "ongoing";
         }
       } catch (error) {
+        // Includes "the list would not end": fail closed, exactly like an
+        // unreachable Stripe, rather than deleting on a partial answer.
         log.error("profile.billing_check_failed", { ...requestMeta(request), userId: user.id, error });
         billing = "unverifiable";
       }
