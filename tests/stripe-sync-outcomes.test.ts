@@ -56,7 +56,9 @@ function harness(options: {
   premiumPrice?: boolean;
   retrieveError?: Error;
   /** undefined = cancellation not wired (unit-test default). */
-  cancel?: "ok" | "throws";
+  cancel?: "ok" | "throws" | "missing";
+  /** Proof of deletion. Default false: "unmapped" alone is not evidence. */
+  accountDeleted?: boolean;
 } = {}) {
   const calls: Calls = { claims: [], locks: [], retrieved: [], audits: [], upserts: [], customerLinks: [], cancelled: [] };
   const ports: SyncPorts = {
@@ -79,11 +81,15 @@ function harness(options: {
     },
     recordAudit: async (action, target) => { calls.audits.push({ action, target }); },
     priceGrantsAccess: priceId => (options.premiumPrice ?? true) && priceId === PREMIUM_PRICE,
+    ...(options.accountDeleted !== undefined
+      ? { wasAccountDeleted: async () => options.accountDeleted! }
+      : {}),
     ...(options.cancel
       ? {
           cancelOrphanedSubscription: async (subscriptionId: string) => {
             calls.cancelled.push(subscriptionId);
             if (options.cancel === "throws") throw new Error("stripe cancel failed");
+            if (options.cancel === "missing") throw Object.assign(new Error("No such subscription"), { code: "resource_missing" });
           },
         }
       : {}),
@@ -179,43 +185,68 @@ test("unmapped: no matching user is RECORDED instead of silently dropped", async
   assert.equal(outcomeLogLevel(outcome), "warn");
 });
 
-test("unmapped: the orphaned subscription is CANCELLED, not just recorded", async () => {
-  // Recording alone left Stripe billing a customer the product could not see.
-  // This is the property that actually stops the charge.
-  const { calls, ports } = harness({ owner: null, cancel: "ok" });
+test("unmapped WITHOUT proof of deletion: left alone, not cancelled", async () => {
+  // An unrelated subscription on the same Stripe account also looks "unmapped".
+  // Cancelling it would be an irreversible change to a paying customer.
+  const { calls, ports } = harness({ owner: null, cancel: "ok", accountDeleted: false });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, [], "nothing is cancelled on a guess");
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped", target: "sub_123" }], "quarantined for a human");
+});
+
+test("unmapped WITH proof of deletion: cancelled", async () => {
+  const { calls, ports } = harness({ owner: null, cancel: "ok", accountDeleted: true });
   const outcome = await run(ports);
 
   assert.deepEqual(calls.cancelled, ["sub_123"], "the subscription is cancelled");
   assert.equal(outcome.status === "unmapped" && outcome.cancelled, true);
-  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped", target: "sub_123" }]);
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped_cancelled", target: "sub_123" }]);
 });
 
-test("unmapped: a failed cancellation is recorded and still reports the event as handled", async () => {
-  const { calls, ports } = harness({ owner: null, cancel: "throws" });
-  const outcome = await run(ports);
-
-  assert.deepEqual(calls.cancelled, ["sub_123"], "it was attempted");
-  assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
-  // A 500 here would retry forever while Stripe kept billing; the audit row is
-  // written with a distinct action so support can find it.
-  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped_cancel_failed", target: "sub_123" }]);
-  assert.equal(outcomeIsHandled(outcome), true, "no infinite retry");
-});
-
-test("unmapped: without the port there is no cancellation (unit tests stay offline)", async () => {
-  const { calls, ports } = harness({ owner: null });
+test("unmapped with deletion but no cancellation port: recorded as detected, nothing cancelled", async () => {
+  const { calls, ports } = harness({ owner: null, accountDeleted: true });
   const outcome = await run(ports);
 
   assert.deepEqual(calls.cancelled, []);
   assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped_deletion_detected", target: "sub_123" }]);
 });
 
-test("unmapped: a matching user is never cancelled", async () => {
-  const { calls, ports } = harness({ cancel: "ok" });
-  await run(ports);
+test("unmapped: a TRANSIENT cancel failure throws, so the claim rolls back and Stripe retries", async () => {
+  // Swallowing this would commit the claim and return 200: Stripe never
+  // redelivers and the subscription bills forever.
+  const { ports } = harness({ owner: null, cancel: "throws", accountDeleted: true });
 
-  assert.deepEqual(calls.cancelled, [], "only orphans are cancelled");
-  assert.deepEqual(calls.upserts.length, 1);
+  await assert.rejects(run(ports), /stripe cancel failed/);
+});
+
+test("unmapped: a retry after a transient failure succeeds and cancels once", async () => {
+  let attempt = 0;
+  const cancelled: string[] = [];
+  const { ports } = harness({ owner: null, accountDeleted: true });
+  const flaky: SyncPorts = {
+    ...ports,
+    cancelOrphanedSubscription: async id => {
+      attempt++;
+      if (attempt === 1) throw new Error("ECONNRESET");
+      cancelled.push(id);
+    },
+  };
+
+  await assert.rejects(run(flaky), /ECONNRESET/);
+  const outcome = await run(flaky);
+  assert.equal(outcome.status, "unmapped");
+  assert.deepEqual(cancelled, ["sub_123"], "the redelivery cancels it");
+});
+
+test("unmapped: an already-cancelled subscription is success, not a failure to retry", async () => {
+  const { calls, ports } = harness({ owner: null, cancel: "missing", accountDeleted: true });
+  const outcome = await run(ports);
+
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, true, "nothing left to cancel");
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped_cancelled", target: "sub_123" }]);
 });
 
 test("unmapped: a metadata id that is not a uuid falls back to the customer lookup", async () => {

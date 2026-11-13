@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { subscriptions, users } from "@/db/schema";
@@ -77,25 +77,47 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
        * Check survival first, then write the link back and require it to have
        * landed. If either fails the account is gone; stop before touching Stripe.
        */
-      const [survivor] = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
-      if (!survivor) {
+      /*
+       * Take the same per-user lock deletion takes. Everything from here to the
+       * commit — survival check, customer creation, linking — happens with
+       * deletion excluded, so it cannot read a user, link a customer, and have
+       * the account deleted underneath it (#144).
+       *
+       * The Stripe call therefore runs *inside* a transaction holding a lock.
+       * That is the cost of correctness here: a slow Stripe call delays a
+       * deletion of the same account, never another account's, and the lock is
+       * released as soon as this transaction ends.
+       */
+      const linked = await db.transaction(async tx => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${user.id}`}))`);
+
+        const [survivor] = await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
+        if (!survivor) return { ok: false as const, customerId: null };
+
+        const customer = await stripe.customers.create(
+          { email: user.email, metadata: { solara_user_id: user.id } },
+          { idempotencyKey: `solara-customer-${user.id}` },
+        );
+        const written = await tx
+          .update(users)
+          .set({ stripeCustomerId: customer.id })
+          .where(eq(users.id, user.id))
+          .returning({ id: users.id });
+
+        if (written.length === 0) {
+          // Cannot happen while the lock is held, but a silent orphan would be
+          // worse than a redundant guard.
+          return { ok: false as const, customerId: customer.id };
+        }
+        return { ok: true as const, customerId: customer.id };
+      });
+
+      if (!linked.ok) {
+        if (linked.customerId) await stripe.customers.del(linked.customerId).catch(() => undefined);
+        log.error("billing.checkout_user_vanished", { ...requestMeta(request), userId: user.id, customerId: linked.customerId });
         return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
       }
-      const customer = await stripe.customers.create({ email: user.email, metadata: { solara_user_id: user.id } }, { idempotencyKey: `solara-customer-${user.id}` });
-      customerId = customer.id;
-      const linked = await db
-        .update(users)
-        .set({ stripeCustomerId: customerId })
-        .where(eq(users.id, user.id))
-        .returning({ id: users.id });
-      if (linked.length === 0) {
-        // The account vanished between the select and the update. The customer
-        // now exists with nothing pointing at it, so remove it rather than
-        // leave a billable orphan behind.
-        await stripe.customers.del(customerId).catch(() => undefined);
-        log.error("billing.checkout_user_vanished", { ...requestMeta(request), userId: user.id, customerId });
-        return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
-      }
+      customerId = linked.customerId;
     }
     // Query Stripe too: a completed checkout may not have reached our webhook yet.
     const providerSubscriptions = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100 });
@@ -121,7 +143,11 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
     // Last look before handing back a payable URL: a deletion that landed while
     // the session was being created would otherwise leave a checkout that bills
     // an account nobody owns (#144).
-    const [stillThere] = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
+    const stillThere = await db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${user.id}`}))`);
+      const [row] = await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
+      return Boolean(row);
+    });
     if (!stillThere) {
       await stripe.checkout.sessions.expire(session.id).catch(() => undefined);
       log.error("billing.checkout_expired_after_deletion", { ...requestMeta(request), userId: user.id, sessionId: session.id });

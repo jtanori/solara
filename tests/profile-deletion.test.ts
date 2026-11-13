@@ -48,19 +48,23 @@ test("the route's own deletion transaction: audit row first, then the delete", {
   // fails before reaching the checks below.
   await defaultDeleteUser(user.id);
 
-  const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
-  assert.deepEqual(survivors, [], "the account is gone");
+  try {
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    assert.deepEqual(survivors, [], "the account is gone");
 
-  const rows = await db.select().from(auditLogs).where(eq(auditLogs.target, user.id));
-  assert.equal(rows.length, 1, "exactly one audit row was written");
-  assert.equal(rows[0].action, "account:delete");
-  // `on delete set null` fires on the delete that follows the insert: this is
-  // the property the row exists for, and the reason the insert must come first.
-  assert.equal(rows[0].actorId, null, "actor_id was nulled by ON DELETE SET NULL");
-  assert.equal(rows[0].target, user.id, "target keeps the deleted id");
-
-  // Leave no trace: the deleted user is gone, but its audit row is not.
-  await db.delete(auditLogs).where(eq(auditLogs.target, user.id));
+    const rows = await db.select().from(auditLogs).where(eq(auditLogs.target, user.id));
+    assert.equal(rows.length, 1, "exactly one audit row was written");
+    assert.equal(rows[0].action, "account:delete");
+    // `on delete set null` fires on the delete that follows the insert: this is
+    // the property the row exists for, and the reason the insert must come first.
+    assert.equal(rows[0].actorId, null, "actor_id was nulled by ON DELETE SET NULL");
+    assert.equal(rows[0].target, user.id, "target keeps the deleted id");
+  } finally {
+    // In `finally`: cleanup that runs only after passing assertions leaves rows
+    // behind precisely when a regression makes the test fail.
+    const { eq: eq2 } = await import("drizzle-orm");
+    await db.delete(auditLogs).where(eq2(auditLogs.target, user.id));
+  }
 });
 
 /*

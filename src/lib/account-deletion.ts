@@ -162,6 +162,21 @@ export function accountDeletionAudit(userId: string) {
 }
 
 /**
+ * The companion row that makes a deletion provable from the customer side.
+ *
+ * `accountDeletionAudit` targets the *user* id, which a subscription can only be
+ * matched against through `metadata.solara_user_id`. When that metadata is
+ * missing there is nothing to compare, so deletion also records the Stripe
+ * customer id as a target. The webhook reads this to prove "this account was
+ * deleted" before cancelling anything — evidence, not inference.
+ *
+ * Returns null when there is no customer: nothing to prove from that side.
+ */
+export function accountDeletionCustomerAudit(userId: string, stripeCustomerId: string) {
+  return { actorId: userId, action: "account:delete" as const, target: stripeCustomerId };
+}
+
+/**
  * The two side effects of an account deletion, as a seam the route can hand to
  * whatever runs a transaction. Keeping the *order* here — rather than inline in
  * the route — is what makes it testable without a database.

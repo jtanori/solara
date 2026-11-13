@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { auditLogs, subscriptions, users } from "@/db/schema";
@@ -9,6 +9,7 @@ import { getLocale } from "@/lib/i18n-server";
 import { log, requestMeta } from "@/lib/log";
 import { verifyPassword } from "@/lib/passwords";
 import {
+  accountDeletionCustomerAudit,
   assessBillingGate,
   assessDeletionGate,
   blockedResponseBody,
@@ -20,7 +21,11 @@ export type ProfileDeps = {
   /** Test seams; production uses the real module imports above. */
   verify?: typeof verifyPassword;
   stripe?: ReturnType<typeof getStripe>;
-  deleteUser?: (userId: string) => Promise<void>;
+  /**
+   * Deletes the account and returns the Stripe customer id found *at deletion
+   * time* — not the caller's snapshot, which may predate a checkout linking one.
+   */
+  deleteUser?: (userId: string) => Promise<string | null>;
 };
 
 export async function PATCH(request: Request) {
@@ -129,9 +134,10 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
     return NextResponse.json(blockedResponseBody(billingGate.blocker, locale), { status: billingGate.blocker.status });
   }
 
+  let deletedCustomerId: string | null = null;
   try {
     const remove = deps.deleteUser ?? defaultDeleteUser;
-    await remove(user.id);
+    deletedCustomerId = await remove(user.id);
   } catch (error) {
     log.error("profile.delete_failed", { ...requestMeta(request), userId: user.id, error });
     return NextResponse.json(
@@ -153,15 +159,21 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
    * returning an error would tell the user it was not. It is logged with the
    * data support needs to chase it.
    */
-  if (user.stripeCustomerId) {
+  /*
+   * `deletedCustomerId` comes from inside the deletion transaction, not from the
+   * snapshot read at the start of the request. A checkout that linked a customer
+   * while this request waited would be missing from the snapshot, and skipping
+   * cleanup in that case leaves a paid subscription with no account.
+   */
+  if (deletedCustomerId) {
     const stripe = deps.stripe ?? getStripe();
     if (stripe) {
-      const cleanup = await cancelBillingForDeletedAccount(stripe, user.stripeCustomerId);
+      const cleanup = await cancelBillingForDeletedAccount(stripe, deletedCustomerId);
       if (cleanup.cancelled) {
         log.info("profile.deletion_cancelled_billing", { ...requestMeta(request), userId: user.id });
       } else if (cleanup.reason !== "no_live_subscription") {
         log.error("profile.deletion_billing_cleanup_failed", {
-          ...requestMeta(request), userId: user.id, customerId: user.stripeCustomerId, reason: cleanup.reason,
+          ...requestMeta(request), userId: user.id, customerId: deletedCustomerId, reason: cleanup.reason,
         });
       }
     }
@@ -185,15 +197,45 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
  * around it, which is precisely where the bug lived. Only a real database can
  * prove the pair this file actually issues is accepted.
  */
-export async function defaultDeleteUser(userId: string): Promise<void> {
-  await db.transaction(tx => writeAccountDeletion({
-    insertAudit: async (row) => {
-      await tx.insert(auditLogs).values(row);
-    },
-    deleteUser: async (id) => {
-      await tx.delete(users).where(eq(users.id, id));
-    },
-  }, userId));
+export async function defaultDeleteUser(userId: string): Promise<string | null> {
+  return db.transaction(async tx => {
+    /*
+     * Serialise against checkout for this user (#144). Checkout takes the same
+     * lock around customer creation and session creation; holding it here from
+     * the re-read through the delete is what stops a customer being attached at
+     * the last moment.
+     */
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${userId}`}))`);
+
+    /*
+     * Re-read the customer id UNDER the lock. The route's snapshot was taken
+     * before checkout could have linked one: a checkout that completed while we
+     * waited would otherwise be invisible, the deletion would skip cleanup, and
+     * a paid subscription would outlive the account with nothing cancelling it.
+     */
+    const [current] = await tx
+      .select({ stripeCustomerId: users.stripeCustomerId })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    await writeAccountDeletion({
+      insertAudit: async (row) => {
+        await tx.insert(auditLogs).values(row);
+        // Second row keyed by the customer id, so the webhook can prove deletion
+        // even when a subscription's metadata has lost `solara_user_id`.
+        if (current?.stripeCustomerId) {
+          await tx.insert(auditLogs).values(accountDeletionCustomerAudit(userId, current.stripeCustomerId));
+        }
+      },
+      deleteUser: async (id) => {
+        await tx.delete(users).where(eq(users.id, id));
+      },
+    }, userId);
+
+    // Hand the id back so the caller cleans up without trusting its snapshot.
+    return current?.stripeCustomerId ?? null;
+  });
 }
 
 /**
