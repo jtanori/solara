@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { after } from "node:test";
 
 /*
  * The one test that touches the shipped deletion path.
@@ -59,5 +59,16 @@ test("the route's own deletion transaction: audit row first, then the delete", {
   assert.equal(rows[0].actorId, null, "actor_id was nulled by ON DELETE SET NULL");
   assert.equal(rows[0].target, user.id, "target keeps the deleted id");
 
+  // Leave no trace: the deleted user is gone, but its audit row is not.
+  await db.delete(auditLogs).where(eq(auditLogs.target, user.id));
+});
+
+/*
+ * One teardown for the module-level pool. Ending it inside a test closes it for
+ * every later test in the file.
+ */
+after(async () => {
+  if (process.env.RUN_INTEGRATION_TESTS !== "1") return;
+  const { pool } = await import("../src/db");
   await pool.end();
 });

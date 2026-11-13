@@ -91,6 +91,15 @@ export async function processStripeEvent(event: Stripe.Event, stripe: Stripe): P
         },
 
         priceGrantsAccess: priceId => isPremiumPrice(priceId),
+
+        /*
+         * The last place that knows a subscription belongs to nobody. Cancelling
+         * is the only thing that actually stops the charge, and it is best-effort
+         * by contract — the core records the outcome either way.
+         */
+        cancelOrphanedSubscription: async subscriptionId => {
+          await stripe.subscriptions.cancel(subscriptionId);
+        },
       };
 
       return processStripeEventWith(event, subscriptionId, ports);

@@ -44,7 +44,14 @@ export type StripeEventOutcome =
       linkedCustomer: boolean;
     }
   /** No user matches the metadata id or the Stripe customer id. */
-  | { status: "unmapped"; eventId: string; subscriptionId: string; customerId: string }
+  | {
+      status: "unmapped";
+      eventId: string;
+      subscriptionId: string;
+      customerId: string;
+      /** True when the orphan was cancelled, so it cannot keep billing. */
+      cancelled: boolean;
+    }
   /** The user's stored customer id disagrees with the event's. */
   | {
       status: "mismatch";
@@ -93,10 +100,20 @@ export type SyncPorts = {
   recordAudit: (action: WebhookAuditAction, target: string) => Promise<void>;
   /** True when this price is one of the configured premium prices. */
   priceGrantsAccess: (priceId: string) => boolean;
+  /**
+   * Optional: cancel a subscription that belongs to no account. Absent in unit
+   * tests, wired to Stripe in production. See `unmapped` handling below.
+   */
+  cancelOrphanedSubscription?: (subscriptionId: string) => Promise<void>;
   now?: () => Date;
 };
 
-export type WebhookAuditAction = "webhook:applied" | "webhook:unmapped" | "webhook:mismatch" | "webhook:invalid";
+export type WebhookAuditAction =
+  | "webhook:applied"
+  | "webhook:unmapped"
+  | "webhook:unmapped_cancel_failed"
+  | "webhook:mismatch"
+  | "webhook:invalid";
 
 const UUID = /^[0-9a-f-]{36}$/i;
 
@@ -128,10 +145,31 @@ export async function processStripeEventWith(
   });
 
   if (!owner) {
-    // Used to `return` silently. Now it commits an audit row: a paying customer
-    // who matches no account is exactly the case support needs to find later.
-    await ports.recordAudit("webhook:unmapped", subscriptionId);
-    return { status: "unmapped", eventId: event.id, subscriptionId, customerId };
+    /*
+     * A subscription that matches no account is a paying customer we cannot
+     * serve — the product cannot see it, so nothing else would ever cancel it.
+     *
+     * Recording `webhook:unmapped` alone was not enough: the row is a note, and
+     * the charge keeps running. This is the last place that knows the
+     * subscription id, so it cancels as well. Cancellation is best-effort and
+     * never throws: a webhook that 500s here would retry forever, and Stripe
+     * would keep billing in the meantime. The audit row is written either way.
+     */
+    let cancelled = false;
+    let cancelFailed = false;
+    if (ports.cancelOrphanedSubscription) {
+      try {
+        await ports.cancelOrphanedSubscription(subscriptionId);
+        cancelled = true;
+      } catch {
+        // Attempted and failed: distinct from "not attempted", and the reason a
+        // distinct audit action exists. A failure must not fail the webhook —
+        // Stripe would retry forever while the charge kept running.
+        cancelFailed = true;
+      }
+    }
+    await ports.recordAudit(cancelFailed ? "webhook:unmapped_cancel_failed" : "webhook:unmapped", subscriptionId);
+    return { status: "unmapped", eventId: event.id, subscriptionId, customerId, cancelled };
   }
 
   if (owner.customerId && owner.customerId !== customerId) {

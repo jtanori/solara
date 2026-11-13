@@ -58,6 +58,21 @@ const gated = {
   skip: process.env.RUN_INTEGRATION_TESTS !== "1" ? "needs RUN_INTEGRATION_TESTS=1 and a local database" : false,
 };
 
+/**
+ * Refuse to touch anything but a local disposable database.
+ *
+ * This lives above the first write, not inside a helper that runs after it. The
+ * earlier version asserted the host in `stageDeletedUser`, which is called after
+ * the user row is inserted — so pointing this file at a hosted database would
+ * have created and deleted real rows before the check ever ran.
+ */
+function assertLocalDisposableDatabase() {
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname;
+  if (!["localhost", "127.0.0.1"].includes(host)) {
+    throw new Error(`checkout/deletion race tests must run against a local disposable database, got host "${host}"`);
+  }
+}
+
 async function stageDeletedUser() {
   const { eq } = await import("drizzle-orm");
   const { db, pool } = await import("../src/db");
@@ -82,7 +97,9 @@ async function stageDeletedUser() {
   const gone = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
   assert.deepEqual(gone, [], "precondition: the account really is deleted");
 
-  return { snapshot, pool };
+  // `pool` is not returned: it is module-level state, and ending it inside a
+  // test closes it for every later test in this file.
+  return { snapshot, userId: user.id };
 }
 
 test("race: a checkout for an account deleted mid-request creates no Stripe customer", gated, async () => {
@@ -92,8 +109,9 @@ test("race: a checkout for an account deleted mid-request creates no Stripe cust
   process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
   process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
 
+  assertLocalDisposableDatabase();
   const { startCheckout } = await import("../src/app/api/billing/checkout/route");
-  const { snapshot } = await stageDeletedUser();
+  const { snapshot, userId } = await stageDeletedUser();
 
   const calls: string[] = [];
   const request = new Request("http://localhost/api/billing/checkout", {
@@ -118,6 +136,12 @@ test("race: a checkout for an account deleted mid-request creates no Stripe cust
     "no Stripe customer and no checkout session for a deleted account",
   );
 
+  // Leave no trace. The race writes an audit row by design; a test that leaves it
+  // behind makes every later run — and every local database — accumulate rows.
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { auditLogs } = await import("../src/db/schema");
+  await db.delete(auditLogs).where(eq(auditLogs.target, userId));
 });
 
 test("race: an account that still exists does reach Stripe (the guard is not a blanket refusal)", gated, async () => {
@@ -127,6 +151,7 @@ test("race: an account that still exists does reach Stripe (the guard is not a b
   process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
   process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
 
+  assertLocalDisposableDatabase();
   const { startCheckout } = await import("../src/app/api/billing/checkout/route");
   const { eq } = await import("drizzle-orm");
   const { db } = await import("../src/db");
@@ -156,6 +181,10 @@ test("race: an account that still exists does reach Stripe (the guard is not a b
   assert.ok(calls.includes("customers.create"), "the customer was created");
   assert.ok(calls.includes("sessions.create"), "the session was created");
 
+  // This user survives the test (nothing deletes it), and
+  // `users.stripe_customer_id` is UNIQUE — a leftover row would make the next
+  // run fail on a constraint. Remove it and anything the route attached.
+  await db.delete(users).where(eq(users.id, user.id));
 });
 
 /*

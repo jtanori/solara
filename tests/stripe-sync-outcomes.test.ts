@@ -45,6 +45,7 @@ type Calls = {
   audits: Array<{ action: WebhookAuditAction; target: string }>;
   upserts: Array<{ userId: string; grantsAccess: boolean; status: string }>;
   customerLinks: Array<{ userId: string; customerId: string }>;
+  cancelled: string[];
 };
 
 function harness(options: {
@@ -54,8 +55,10 @@ function harness(options: {
   owner?: { id: string; customerId: string | null } | null;
   premiumPrice?: boolean;
   retrieveError?: Error;
+  /** undefined = cancellation not wired (unit-test default). */
+  cancel?: "ok" | "throws";
 } = {}) {
-  const calls: Calls = { claims: [], locks: [], retrieved: [], audits: [], upserts: [], customerLinks: [] };
+  const calls: Calls = { claims: [], locks: [], retrieved: [], audits: [], upserts: [], customerLinks: [], cancelled: [] };
   const ports: SyncPorts = {
     claimEvent: async event => {
       calls.claims.push(event.id);
@@ -76,6 +79,14 @@ function harness(options: {
     },
     recordAudit: async (action, target) => { calls.audits.push({ action, target }); },
     priceGrantsAccess: priceId => (options.premiumPrice ?? true) && priceId === PREMIUM_PRICE,
+    ...(options.cancel
+      ? {
+          cancelOrphanedSubscription: async (subscriptionId: string) => {
+            calls.cancelled.push(subscriptionId);
+            if (options.cancel === "throws") throw new Error("stripe cancel failed");
+          },
+        }
+      : {}),
     now: () => new Date("2026-11-11T00:00:00Z"),
   };
   return { calls, ports };
@@ -168,6 +179,45 @@ test("unmapped: no matching user is RECORDED instead of silently dropped", async
   assert.equal(outcomeLogLevel(outcome), "warn");
 });
 
+test("unmapped: the orphaned subscription is CANCELLED, not just recorded", async () => {
+  // Recording alone left Stripe billing a customer the product could not see.
+  // This is the property that actually stops the charge.
+  const { calls, ports } = harness({ owner: null, cancel: "ok" });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, ["sub_123"], "the subscription is cancelled");
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, true);
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped", target: "sub_123" }]);
+});
+
+test("unmapped: a failed cancellation is recorded and still reports the event as handled", async () => {
+  const { calls, ports } = harness({ owner: null, cancel: "throws" });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, ["sub_123"], "it was attempted");
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
+  // A 500 here would retry forever while Stripe kept billing; the audit row is
+  // written with a distinct action so support can find it.
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped_cancel_failed", target: "sub_123" }]);
+  assert.equal(outcomeIsHandled(outcome), true, "no infinite retry");
+});
+
+test("unmapped: without the port there is no cancellation (unit tests stay offline)", async () => {
+  const { calls, ports } = harness({ owner: null });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, []);
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
+});
+
+test("unmapped: a matching user is never cancelled", async () => {
+  const { calls, ports } = harness({ cancel: "ok" });
+  await run(ports);
+
+  assert.deepEqual(calls.cancelled, [], "only orphans are cancelled");
+  assert.deepEqual(calls.upserts.length, 1);
+});
+
 test("unmapped: a metadata id that is not a uuid falls back to the customer lookup", async () => {
   const { ports } = harness({ subscription: subscription({ metadata: { solara_user_id: "not-a-uuid" } }) });
   const found: Array<string | undefined> = [];
@@ -224,7 +274,7 @@ test("log levels separate routine from attention", () => {
     [{ status: "applied", eventId: "e", subscriptionId: "s", userId: USER_ID, grantsAccess: true, linkedCustomer: false }, "info"],
     [{ status: "duplicate", eventId: "e", subscriptionId: "s" }, "info"],
     [{ status: "ignored", eventId: "e", reason: "no_subscription" }, "info"],
-    [{ status: "unmapped", eventId: "e", subscriptionId: "s", customerId: "c" }, "warn"],
+    [{ status: "unmapped", eventId: "e", subscriptionId: "s", customerId: "c", cancelled: true }, "warn"],
     [{ status: "mismatch", eventId: "e", subscriptionId: "s", customerId: "c", ownerId: USER_ID, ownerCustomerId: "c2" }, "warn"],
     [{ status: "invalid", eventId: "e", subscriptionId: "s", reason: "no_price_item" }, "warn"],
   ];
