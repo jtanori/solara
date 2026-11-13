@@ -267,3 +267,45 @@ after(async () => {
   const { pool } = await import("../src/db");
   await pool.end();
 });
+
+test("gate: a provider call that never resolves blocks the deletion within the deadline (B4)", gated, async () => {
+  /*
+   * The review's Medium, and my error: `lock_timeout` bounds SQL lock acquisition
+   * and `statement_timeout` bounds a running statement. Neither bounds an awaited
+   * HTTP call, during which the transaction is idle while holding the advisory
+   * lock and a pool connection. The previous test measured a *waiting peer*, not
+   * the lifetime of the holder — it never proved the holder is bounded.
+   *
+   * This test is the holder: a Stripe stub whose promise never settles. The
+   * deletion must abandon it at PROVIDER_BILLING_DEADLINE_MS, fail closed, and
+   * delete nothing.
+   */
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { PROVIDER_BILLING_DEADLINE_MS } = await import("../src/app/api/profile/route");
+
+  const neverResolves = { subscriptions: { list: () => new Promise(() => undefined) } };
+
+  await withProbeUser(async context => {
+    const started = Date.now();
+    const response = await callDeleteAccount(context, neverResolves);
+    const elapsed = Date.now() - started;
+
+    assert.equal(response.status, 503, "a stalled provider fails closed");
+    assert.match(await response.text(), /billing_unverifiable/);
+    assert.ok(
+      elapsed < PROVIDER_BILLING_DEADLINE_MS + 5_000,
+      `gave up after ${elapsed}ms, bounded by the ${PROVIDER_BILLING_DEADLINE_MS}ms deadline`,
+    );
+    assert.ok(elapsed >= PROVIDER_BILLING_DEADLINE_MS - 1_000, `waited for the deadline (${elapsed}ms)`);
+
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.equal(survivors.length, 1, "nothing was deleted on an unknown billing state");
+  });
+});

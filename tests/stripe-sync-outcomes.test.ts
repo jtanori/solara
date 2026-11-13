@@ -81,8 +81,11 @@ function harness(options: {
     },
     recordAudit: async (action, target) => { calls.audits.push({ action, target }); },
     priceGrantsAccess: priceId => (options.premiumPrice ?? true) && priceId === PREMIUM_PRICE,
+    priceIdentifiesSubscription: subscription => subscription.priceId === PREMIUM_PRICE,
     ...(options.accountDeleted !== undefined
-      ? { wasAccountDeleted: async () => options.accountDeleted! }
+      ? {
+          wasAccountDeleted: async args => options.accountDeleted!,
+        }
       : {}),
     ...(options.cancel
       ? {
@@ -313,4 +316,147 @@ test("log levels separate routine from attention", () => {
     assert.equal(outcomeLogLevel(outcome), level, outcome.status);
     assert.equal(outcomeIsHandled(outcome), true, `${outcome.status} is reported to Stripe as received`);
   }
+});
+
+test("unmapped: a subscription that is NOT ours is never cancelled, even for a deleted customer", async () => {
+  /*
+   * The review's finding: `wasAccountDeleted` accepted the customer id alone, so
+   * on a Stripe account shared with another product, an unrelated subscription
+   * for that customer was "proven deletion" and cancelled. Irreversible, and
+   * nothing to do with this product.
+   *
+   * Proof of deletion has to identify the subscription too: the price has to be
+   * one of ours (the same test the grant path uses), and when the subscription
+   * carries a user id, that id must be the deleted one.
+   */
+  const { calls, ports } = harness({
+    owner: null,
+    cancel: "ok",
+    accountDeleted: true,
+    subscription: subscription({ priceId: "price_other_product", metadata: {} }),
+  });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, [], "another product's subscription is not ours to cancel");
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped", target: "sub_123" }], "quarantined, not cancelled");
+});
+
+test("unmapped: a metadata user id that does not match the deletion is not proof", async () => {
+  /*
+   * Same class, one level in: the subscription says it belongs to user A, but a
+   * *different* account was deleted. The customer-level audit target must not be
+   * allowed to bridge that gap.
+   */
+  const otherUser = "11111111-2222-3333-4444-555555555555";
+  const { calls, ports } = harness({
+    owner: null,
+    cancel: "ok",
+    accountDeleted: false,
+    subscription: subscription({ metadata: { solara_user_id: otherUser } }),
+  });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, []);
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
+});
+
+test("unmapped: an ALREADY-CANCELLED subscription is terminal, not cancelled again", async () => {
+  /*
+   * Cancelling emits `customer.subscription.deleted` with a new event id whose
+   * snapshot is usually already `canceled`. Cancelling again either 400s into a
+   * permanent 500 loop or races the first cancellation. A terminal status means
+   * the outcome we wanted already happened.
+   */
+  const { calls, ports } = harness({
+    owner: null,
+    cancel: "ok",
+    accountDeleted: true,
+    subscription: subscription({ status: "canceled" }),
+  });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, [], "no second cancellation is issued");
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped_already_terminal", target: "sub_123" }]);
+});
+
+test("unmapped: an incomplete_expired subscription is terminal too", async () => {
+  const { calls, ports } = harness({
+    owner: null,
+    cancel: "ok",
+    accountDeleted: true,
+    subscription: subscription({ status: "incomplete_expired" }),
+  });
+  await run(ports);
+  assert.deepEqual(calls.cancelled, [], "it never became a subscription; nothing to stop");
+});
+
+test("unmapped: Stripe's 'already canceled' 400 is completion, not a retry loop", async () => {
+  /*
+   * The retry after a successful Stripe cancel followed by a DB rollback, and the
+   * redelivery of `customer.subscription.deleted`, both land here. Retrying these
+   * forever is the failure mode; 404 was already handled, 400 was not.
+   */
+  const { ports } = harness({ owner: null, accountDeleted: true });
+  const alreadyCanceled: SyncPorts = {
+    ...ports,
+    cancelOrphanedSubscription: async () => {
+      throw Object.assign(new Error("This subscription has already been canceled."), { statusCode: 400, code: "invalid_request_error" });
+    },
+  };
+
+  const outcome = await run(alreadyCanceled);
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, true, "already canceled counts as done");
+});
+
+test("unmapped: a DIFFERENT 400 still propagates so Stripe retries", async () => {
+  // The message match must not swallow every 400 — only the already-cancelled one.
+  const { ports } = harness({ owner: null, accountDeleted: true });
+  const otherBadRequest: SyncPorts = {
+    ...ports,
+    cancelOrphanedSubscription: async () => {
+      throw Object.assign(new Error("No such customer"), { statusCode: 400, code: "invalid_request_error" });
+    },
+  };
+
+  await assert.rejects(run(otherBadRequest), /No such customer/);
+});
+
+test("unmapped: subscription WITHOUT a metadata user id needs the customer's own id to be deleted", async () => {
+  /*
+   * Case 2 of the identity rule. With no `solara_user_id` on the subscription,
+   * the customer id is the only handle — and it must *correspond* to a deleted
+   * account, not merely exist. The port is what enforces that; here it accepts,
+   * so a genuine Solara subscription on a deleted customer is still cancelled.
+   */
+  const { calls, ports } = harness({
+    owner: null,
+    cancel: "ok",
+    accountDeleted: true,
+    subscription: subscription({ metadata: {} }),
+  });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, ["sub_123"], "a proven, identified Solara subscription is cancelled");
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, true);
+});
+
+test("unmapped: a subscription without a metadata id is NOT cancelled when correspondence fails", async () => {
+  /*
+   * The other half, and the reason the port takes the whole snapshot: `false`
+   * here means "the customer's own user id is not an id that was deleted". The
+   * core must not fall back to cancelling because the price looked right.
+   */
+  const { calls, ports } = harness({
+    owner: null,
+    cancel: "ok",
+    accountDeleted: false,
+    subscription: subscription({ metadata: {} }),
+  });
+  const outcome = await run(ports);
+
+  assert.deepEqual(calls.cancelled, []);
+  assert.equal(outcome.status === "unmapped" && outcome.cancelled, false);
+  assert.deepEqual(calls.audits, [{ action: "webhook:unmapped", target: "sub_123" }]);
 });

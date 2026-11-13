@@ -6,6 +6,7 @@ import { currentUser, SESSION_COOKIE } from "@/lib/auth";
 import { getStripe } from "@/lib/billing";
 import { assessDeletionBilling, cancelBillingForDeletedAccount, ONGOING_SUBSCRIPTION_STATUSES } from "@/lib/billing-state";
 import { getLocale } from "@/lib/i18n-server";
+import { withDeadline } from "@/lib/readiness";
 import { log, requestMeta } from "@/lib/log";
 import { verifyPassword } from "@/lib/passwords";
 import {
@@ -18,6 +19,13 @@ import {
   type DeletionBlocker,
   type PasswordFacts,
 } from "@/lib/account-deletion";
+
+/**
+ * How long the deletion may spend on the provider check while holding the
+ * per-user lock. Shorter than the transaction's `statement_timeout` (20s) so the
+ * deadline is what ends a stalled call, with the SQL timeout as a backstop.
+ */
+export const PROVIDER_BILLING_DEADLINE_MS = 8_000;
 
 export type ProfileDeps = {
   /** Test seams; production uses the real module imports above. */
@@ -138,9 +146,27 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
    * pinning this user's checkout, and the lock is per user, so one slow Stripe
    * response never delays anyone else.
    */
+  /*
+   * The check runs while the deletion transaction holds the per-user advisory
+   * lock, so its duration is the lock's duration. `lock_timeout` and
+   * `statement_timeout` cannot help here: they bound SQL, and this awaits HTTP.
+   * A Stripe socket that never answers would therefore hold the lock and a pool
+   * connection indefinitely while the database sat idle.
+   *
+   * `withDeadline` bounds the wait. It does NOT cancel the underlying request —
+   * fetch keeps running until the runtime's own timeout — so this bounds the
+   * lock, not the socket, and that distinction is the point.
+   *
+   * `unverifiable` is written even if the deadline is what fired, so a slow
+   * provider still fails closed and still blocks the deletion.
+   */
   const assessProviderBilling: ProviderBillingCheck = async (stripeCustomerId) => {
     if (!stripe) return "unverifiable";
-    const result = await assessDeletionBilling(stripe, stripeCustomerId);
+    const result = await withDeadline(
+      assessDeletionBilling(stripe, stripeCustomerId),
+      PROVIDER_BILLING_DEADLINE_MS,
+      "provider_billing_deadline_exceeded",
+    ).catch(error => ({ state: "unverifiable" as const, error }));
     if (result.state === "unverifiable") {
       log.error("profile.billing_check_failed", { ...requestMeta(request), userId: user.id, error: result.error });
     }

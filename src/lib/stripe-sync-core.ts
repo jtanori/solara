@@ -112,7 +112,19 @@ export type SyncPorts = {
   wasAccountDeleted?: (args: {
     metadataUserId: string | undefined;
     customerId: string;
+    /**
+     * The snapshot the decision is about. Deletion of *an* account is not proof
+     * that *this* subscription belongs to it: the price identifies the product,
+     * and the metadata/customer identities have to correspond.
+     */
+    subscription: SubscriptionSnapshot;
   }) => Promise<boolean>;
+  /**
+   * True when the subscription's price is one that grants Solara access. Reuses
+   * the grant path's own test, so "is this our subscription?" and "does this
+   * price grant access?" cannot drift apart.
+   */
+  priceIdentifiesSubscription: (subscription: SubscriptionSnapshot) => boolean;
   /**
    * Optional: cancels a subscription. Absent in unit tests, wired to Stripe in
    * production. Only called after `wasAccountDeleted` proves deletion.
@@ -126,21 +138,30 @@ export type WebhookAuditAction =
   | "webhook:unmapped"
   | "webhook:unmapped_cancelled"
   | "webhook:unmapped_deletion_detected"
+  /** Deletion proven but the subscription was already canceled/expired: nothing to do. */
+  | "webhook:unmapped_already_terminal"
   | "webhook:mismatch"
   | "webhook:invalid";
 
 const UUID = /^[0-9a-f-]{36}$/i;
 
+/** Statuses where there is nothing left to stop. Cancelling again is a no-op or an error. */
+const TERMINAL_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"]);
+
 /**
- * True when a cancellation failed for a reason that retrying cannot fix — the
- * subscription is already cancelled or no longer exists. Those are successes for
- * our purposes; everything else is transient and must reach the caller so Stripe
- * redelivers.
+ * True when the cancellation has nothing left to do. Covers a missing
+ * subscription AND one Stripe reports as already cancelled: a redelivery after a
+ * successful cancel, or a retry after a DB rollback, must be idempotent rather
+ * than a permanent 500 that Stripe retries until it gives up.
  */
 function isNothingLeftToCancel(error: unknown): boolean {
   const code = (error as { code?: string; statusCode?: number })?.code;
   const status = (error as { statusCode?: number })?.statusCode;
-  return code === "resource_missing" || status === 404;
+  const message = String((error as { message?: string })?.message ?? "");
+  if (code === "resource_missing" || status === 404) return true;
+  // Stripe returns 400 invalid_request when asked to cancel an already-canceled
+  // subscription. Match the specific message; a different 400 must still retry.
+  return status === 400 && /already (been )?cancel/i.test(message);
 }
 
 export async function processStripeEventWith(
@@ -174,10 +195,31 @@ export async function processStripeEventWith(
      * subscription on this Stripe account, or a real one whose mapping is being
      * repaired, is also unmapped. Cancellation is irreversible and takes money
      * out of a customer's hands, so it needs positive proof of deletion.
+     *
+     * The proof has to identify *this* subscription, not just the account. On a
+     * Stripe account shared with another product, a customer-level match accepts
+     * an unrelated subscription and cancels it.
      */
-    const deleted = ports.wasAccountDeleted
-      ? await ports.wasAccountDeleted({ metadataUserId: legalMetadataUserId, customerId })
+    const ours = ports.priceIdentifiesSubscription(subscription);
+    const deleted = ours && ports.wasAccountDeleted
+      ? await ports.wasAccountDeleted({
+          metadataUserId: legalMetadataUserId,
+          customerId,
+          subscription,
+        })
       : false;
+
+    /*
+     * A terminal status is the outcome we wanted. Cancelling emits
+     * `customer.subscription.deleted` with a NEW event id whose snapshot is
+     * usually already `canceled`; issuing another cancel either 500s forever or
+     * races the first cancellation. `incomplete_expired` never became a
+     * subscription at all.
+     */
+    if (TERMINAL_SUBSCRIPTION_STATUSES.has(subscription.status)) {
+      await ports.recordAudit(deleted ? "webhook:unmapped_already_terminal" : "webhook:unmapped", subscriptionId);
+      return { status: "unmapped", eventId: event.id, subscriptionId, customerId, cancelled: false };
+    }
 
     if (!deleted) {
       // Left alone on purpose: quarantine, not cancel. Recoverable by a person,

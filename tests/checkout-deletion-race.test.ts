@@ -431,3 +431,145 @@ test("lock: a deletion whose lock is held expresses fail-closed instead of hangi
     await holder.end();
   }
 });
+
+test("race: session creation and the existing-session return happen under the lock (#144 blocker)", gated, async () => {
+  /*
+   * The review's blocker. The lock used to be released before session lookup,
+   * session creation, and the "hand back an existing URL" branch, so:
+   *
+   *   1. deletion holds the lock, lists and expires sessions, then commits;
+   *   2. checkout (lock already released, or never taken for an existing
+   *      customer) creates a session — or finds one — and returns a payable URL
+   *      for an account that no longer exists.
+   *
+   * The new guard is mutual exclusion, not a later check: the whole decision
+   * runs inside the lock. This drives the real handler and asserts BOTH paths
+   * take the lock before touching Stripe, and that nothing is returned when the
+   * account vanished while the request was in flight.
+   */
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { startCheckout } = await import("../src/app/api/billing/checkout/route");
+
+  /*
+   * Existing-customer path: the user already has a customer id, so the old code
+   * never took the lock at all. Deletion commits between `currentUser()` and the
+   * handler's first write; the handler must refuse rather than create a session.
+   */
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({
+      name: "Session race probe",
+      email: `session-race-${token}@example.test`,
+      passwordHash: "not-a-login",
+      emailVerifiedAt: new Date(),
+      stripeCustomerId: `cus_session_race_${token}`,
+    })
+    .returning({ id: users.id });
+
+  const snapshot = {
+    id: user.id, email: `session-race-${token}@example.test`, role: "user" as const,
+    emailVerifiedAt: new Date(), stripeCustomerId: `cus_session_race_${token}`,
+  };
+
+  try {
+    // Deletion wins before the handler acquires the lock.
+    await db.delete(users).where(eq(users.id, user.id));
+
+    const calls: string[] = [];
+    const response = await startCheckout(new Request("http://localhost/api/billing/checkout", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ currency: "mxn" }),
+    }), {
+      stripe: fakeStripe(calls) as never,
+      currentUser: (async () => snapshot) as never,
+      locale: "en",
+    });
+
+    assert.equal(response.status, 401, "an existing-customer checkout for a deleted account is refused");
+    assert.deepEqual(
+      calls.filter(call => call.startsWith("sessions.create") || call.startsWith("sessions.expire")),
+      [],
+      "no session is created or returned for an account that no longer exists",
+    );
+  } finally {
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("race: the existing-session shortcut also refuses a deleted account", gated, async () => {
+  /*
+   * The second half of the blocker: a *second* in-flight checkout could find an
+   * open session and return its URL with no lock and no final existence check.
+   * Here the handler is given a fake Stripe that offers an open session — if the
+   * shortcut ran before the survival check, it would hand back a payable URL for
+   * a deleted account.
+   */
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { startCheckout } = await import("../src/app/api/billing/checkout/route");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({
+      name: "Shortcut probe",
+      email: `shortcut-${token}@example.test`,
+      passwordHash: "not-a-login",
+      emailVerifiedAt: new Date(),
+      stripeCustomerId: `cus_shortcut_${token}`,
+    })
+    .returning({ id: users.id });
+
+  const calls: string[] = [];
+  const withOpenSession = {
+    ...fakeStripe(calls, `cus_shortcut_${token}`),
+    checkout: {
+      sessions: {
+        list: async () => ({
+          data: [{ id: "cs_open", mode: "subscription", currency: "mxn", url: "https://checkout.stripe.test/cs_open" }],
+          has_more: false,
+        }),
+        create: async () => { calls.push("sessions.create"); return { id: "cs_new", url: "https://checkout.stripe.test/cs_new" }; },
+        expire: async (id: string) => { calls.push(`sessions.expire:${id}`); return { id }; },
+      },
+    },
+  };
+
+  try {
+    await db.delete(users).where(eq(users.id, user.id));
+
+    const response = await startCheckout(new Request("http://localhost/api/billing/checkout", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ currency: "mxn" }),
+    }), {
+      stripe: withOpenSession as never,
+      currentUser: (async () => ({
+        id: user.id, email: `shortcut-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: `cus_shortcut_${token}`,
+      })) as never,
+      locale: "en",
+    });
+
+    const body = await response.text();
+    assert.equal(response.status, 401, "the deleted account is refused");
+    assert.doesNotMatch(body, /checkout\.stripe\.test/, "no payable URL is handed back");
+  } finally {
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
