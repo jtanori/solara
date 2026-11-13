@@ -1,7 +1,7 @@
 import Stripe from "stripe";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLogs, stripeEvents, subscriptions, users } from "@/db/schema";
+import { auditLogs, deletedCustomers, stripeEvents, subscriptions, users } from "@/db/schema";
 import { subscriptionIdFrom } from "@/lib/stripe-events";
 import { isPremiumPrice } from "@/lib/billing";
 import { processStripeEventWith, type StripeEventOutcome, type SyncPorts } from "@/lib/stripe-sync-core";
@@ -130,37 +130,40 @@ export async function processStripeEvent(event: Stripe.Event, stripe: Stripe): P
         priceIdentifiesSubscription: subscription => ports.priceGrantsAccess(subscription.priceId),
 
         wasAccountDeleted: async ({ metadataUserId, subscription, customerId }) => {
-          const deletionRecordedFor = async (target: string) => {
-            const [row] = await tx
-              .select({ id: auditLogs.id })
-              .from(auditLogs)
-              .where(and(eq(auditLogs.action, "account:delete"), eq(auditLogs.target, target)))
+          /*
+           * Proof has to be about *this* subscription's owner, and it has to be
+           * one fact rather than two coincidences.
+           *
+           * Case 1 — the subscription names a user. That id must be an account we
+           * deleted AND must be the user this customer belonged to. Checking only
+           * the deletion row is not enough: a Solara-priced subscription with a
+           * stale `solara_user_id` naming some other deleted account would pass,
+           * while the customer actually belongs to someone else.
+           */
+          if (metadataUserId) {
+            const [association] = await tx
+              .select({ userId: deletedCustomers.userId })
+              .from(deletedCustomers)
+              .where(eq(deletedCustomers.stripeCustomerId, customerId))
               .limit(1);
-            return Boolean(row);
-          };
+            return Boolean(association && association.userId === metadataUserId);
+          }
 
           /*
-           * Case 1: the subscription names a user. That id is the only evidence
-           * that identifies *this* subscription; a customer-level match here would
-           * accept any subscription for a deleted customer, including another
-           * product's, and cancel it.
+           * Case 2 — no user id on the subscription. The customer's own
+           * `solara_user_id` is the only identity available, and it must match a
+           * recorded association for this customer. Two independent deletion rows
+           * used to be accepted here; they do not prove the rows came from the
+           * same deletion, which is precisely the gap this table closes.
            */
-          if (metadataUserId) return deletionRecordedFor(metadataUserId);
-
-          /*
-           * Case 2: no usable user id on the subscription. The customer id is the
-           * only handle left, and it must correspond to a deleted account — not
-           * merely exist. Two things are required:
-           *
-           *   a. deletion recorded this customer id (the carrier row), and
-           *   b. the customer's own `solara_user_id` is an id that was deleted.
-           *
-           * (b) is what ties *this* customer to *that* account. Without it, any
-           * subscription on a deleted customer would qualify.
-           */
-          if (!(await deletionRecordedFor(customerId))) return false;
           const customerUserId = await subscriptionCustomerUserId(stripe, customerId);
-          return Boolean(customerUserId && await deletionRecordedFor(customerUserId));
+          if (!customerUserId) return false;
+          const [association] = await tx
+            .select({ userId: deletedCustomers.userId })
+            .from(deletedCustomers)
+            .where(eq(deletedCustomers.stripeCustomerId, customerId))
+            .limit(1);
+          return Boolean(association && association.userId === customerUserId);
         },
 
         /*

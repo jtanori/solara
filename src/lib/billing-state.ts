@@ -102,7 +102,7 @@ export async function collectAcrossPages<T extends { id: string }>(
  *
  * The page-walk helpers above are tested directly, but that only proves the
  * helper walks pages — not that the route passes it the right `starting_after`,
- * the right `status`, or expires the right sessions. This function is that
+ * the right `status`, or reports the right sessions. This function is that
  * wiring, lifted out of the route so a fake Stripe can drive it end to end.
  *
  * `stripe` is structurally typed to just the three calls used, so a test can
@@ -115,13 +115,18 @@ export type DeletionBillingStripe = {
   checkout: {
     sessions: {
       list(params: { customer: string; status: "open"; limit: number; starting_after?: string }): Promise<BillingPage<{ id: string; mode: string }>>;
-      expire(id: string): Promise<unknown>;
     };
   };
 };
 
 export type DeletionBillingResult =
-  | { state: "clear"; expiredSessionIds: string[] }
+  /**
+   * Read-only by design. `clear` lists the open subscription checkouts it found,
+   * but **expires nothing**: this function is called under a deadline, and work
+   * that outlives the deadline would run with the lock released. The caller
+   * expires them inside its own locked transaction (see `defaultDeleteUser`).
+   */
+  | { state: "clear"; openSessionIds: string[] }
   | { state: "ongoing" }
   /** A Stripe call threw, including "the list would not end". */
   | { state: "unverifiable"; error: unknown };
@@ -132,8 +137,9 @@ export type DeletionBillingResult =
  * Both lists are walked to the end: a live subscription on page 2 is a
  * subscription the gate would otherwise never see, and the account would be
  * deleted with a paying customer still attached. Open subscription sessions on
- * any page are expired, since a completed checkout would otherwise bill an
- * account that no longer exists.
+ * any page are reported, because a completed checkout would otherwise bill an
+ * account that no longer exists. It expires nothing itself — see the note on the
+ * return type.
  *
  * Any failure — network, auth, or a list that never ends — returns
  * `unverifiable`, which the caller's gate turns into a blocked deletion. That
@@ -160,57 +166,60 @@ export async function assessDeletionBilling(
       session => session.mode === "subscription",
     );
 
-    // Expire every open subscription checkout before re-checking: a session that
-    // completes between the two checks is exactly the "billed with no account"
-    // case, so it is closed first and then looked for again.
-    const expiredSessionIds: string[] = [];
-    for (const session of sessions) {
-      await stripe.checkout.sessions.expire(session.id);
-      expiredSessionIds.push(session.id);
-    }
-
     if (await hasOngoing()) return { state: "ongoing" };
-    return { state: "clear", expiredSessionIds };
+    return { state: "clear", openSessionIds: sessions.map(session => session.id) };
   } catch (error) {
     return { state: "unverifiable", error };
   }
 }
 
 /**
- * Cancel whatever billing is live for a customer that no longer has an account.
+ * Cancel the subscriptions that provably belong to a deleted account.
  *
- * This is the remedy for the checkout/deletion race (#144). The race produces a
- * Stripe customer with a subscription that resolves to no user, so nothing in
- * the product can see it — `findOwner` returns null and the webhook only records
- * `webhook:unmapped`. Deleting the customer cancels its subscriptions, which is
- * the only action that actually stops the charge.
+ * **Not `customers.del`.** Deleting a Stripe customer cancels *every*
+ * subscription on it, including other products' on a shared Stripe account, and
+ * cannot tell whose they were. That is the same class of mistake as cancelling
+ * on "unmapped" alone, one layer up: an irreversible, customer-wide action
+ * justified by evidence that is only account-wide.
  *
- * Deletion cannot simply refuse when it finds an orphan: by definition the
- * account is the thing being deleted. So it cleans up instead, and a failure
- * here surfaces as `warnings` rather than failing the whole deletion — the
- * account is already gone, and refusing to finish would leave the user unable
- * to delete at all.
+ * Instead each subscription is inspected and cancelled individually, and only
+ * when it is attributed to us: a price that grants Solara access, and a user id
+ * (from subscription metadata or the customer's own metadata) that is an id we
+ * recorded as deleted. A subscription we cannot attribute is left alone and
+ * reported, because "someone else's subscription" and "ours, mid-repair" are
+ * indistinguishable at 200 OK.
+ *
+ * Failure handling: nothing here throws. The account is already gone, and a 500
+ * would tell the user it was not. Failures are returned by id so the caller logs
+ * them and the webhook — which sees the same subscriptions — can finish the job.
  */
 export type DeletionCleanupStripe = {
-  customers: { del(id: string): Promise<unknown> };
   subscriptions: {
-    list(params: { customer: string; status: "all"; limit: number; starting_after?: string }): Promise<BillingPage<{ id: string; status: string }>>;
+    list(params: { customer: string; status: "all"; limit: number; starting_after?: string }): Promise<BillingPage<{ id: string; status: string; priceId: string | null; metadataUserId: string | null }>>;
+    cancel(id: string): Promise<unknown>;
+  };
+  customers: {
+    retrieve(id: string): Promise<{ metadataUserId: string | null } | null>;
   };
 };
 
 export type StripeCleanupOutcome =
-  | { cancelled: true }
-  | { cancelled: false; reason: string };
+  | { cancelled: true; cancelledIds: string[]; unattributed: string[] }
+  | { cancelled: false; reason: string; cancelledIds: string[]; unattributed: string[] };
 
 /**
- * Best-effort cancel. Returns an outcome instead of throwing so the caller can
- * log it and finish the deletion: an orphaned customer is a support problem,
- * a half-deleted account is a worse one.
+ * @param deletedUserId every user id this deletion recorded, so attribution can
+ *   accept either the subscription's metadata id or the customer's own metadata
+ *   id — the same two sources the webhook reads.
  */
 export async function cancelBillingForDeletedAccount(
   stripe: DeletionCleanupStripe,
   customerId: string,
+  deletedUserId: string,
 ): Promise<StripeCleanupOutcome> {
+  const cancelledIds: string[] = [];
+  const unattributed: string[] = [];
+
   try {
     const live = await collectAcrossPages(
       async startingAfter => stripe.subscriptions.list({
@@ -218,13 +227,63 @@ export async function cancelBillingForDeletedAccount(
       }),
       subscription => isOngoingStatus(subscription.status),
     );
-    if (live.length === 0) return { cancelled: false, reason: "no_live_subscription" };
+    if (live.length === 0) return { cancelled: false, reason: "no_live_subscription", cancelledIds, unattributed };
 
-    // Deleting the customer cancels active subscriptions immediately rather
-    // than waiting for the checkout session to be paid.
-    await stripe.customers.del(customerId);
-    return { cancelled: true };
+    // The customer's own metadata is the fallback attribution source, read once.
+    const customer = await stripe.customers.retrieve(customerId).catch(() => null);
+
+    for (const subscription of live) {
+      const owned =
+        (subscription.priceId !== null && isPremiumPriceId(subscription.priceId)) &&
+        (subscription.metadataUserId === deletedUserId || customer?.metadataUserId === deletedUserId);
+
+      if (!owned) {
+        unattributed.push(subscription.id);
+        continue;
+      }
+
+      try {
+        await stripe.subscriptions.cancel(subscription.id);
+        cancelledIds.push(subscription.id);
+      } catch (error) {
+        // Already gone is success; anything else is reported, not thrown.
+        if (isAlreadyCancelled(error)) cancelledIds.push(subscription.id);
+        else return {
+          cancelled: false,
+          reason: error instanceof Error ? error.message : String(error),
+          cancelledIds,
+          unattributed,
+        };
+      }
+    }
+
+    return cancelledIds.length > 0
+      ? { cancelled: true, cancelledIds, unattributed }
+      : { cancelled: false, reason: "nothing_attributed", cancelledIds, unattributed };
   } catch (error) {
-    return { cancelled: false, reason: error instanceof Error ? error.message : String(error) };
+    return {
+      cancelled: false,
+      reason: error instanceof Error ? error.message : String(error),
+      cancelledIds,
+      unattributed,
+    };
   }
+}
+
+/** A price that grants access is the same test the gate and the webhook use. */
+function isPremiumPriceId(priceId: string): boolean {
+  const allowed = [
+    process.env.STRIPE_PRICE_ID_MXN,
+    process.env.STRIPE_PRICE_ID_USD,
+    ...(process.env.STRIPE_PREMIUM_PRICE_IDS ?? "").split(","),
+  ].map(value => value?.trim()).filter(Boolean);
+  return allowed.includes(priceId);
+}
+
+/** Stripe reports an already-cancelled subscription as 404 or an invalid-request 400. */
+function isAlreadyCancelled(error: unknown): boolean {
+  const status = (error as { statusCode?: number })?.statusCode;
+  const code = (error as { code?: string })?.code;
+  const message = String((error as { message?: string })?.message ?? "");
+  return status === 404 || code === "resource_missing" || (status === 400 && /already (been )?cancel/i.test(message));
 }

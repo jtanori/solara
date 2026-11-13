@@ -3,9 +3,29 @@ import Stripe from "stripe";
 export type BillingCurrency = "mxn" | "usd";
 export type PriceOption = { currency: BillingCurrency; amount: number; interval: string; intervalCount: number };
 
+/**
+ * Transport bounds for every Stripe call.
+ *
+ * The SDK's default timeout is 80 seconds. Two code paths hold a database
+ * transaction — and therefore a pooled connection — across Stripe I/O (checkout
+ * under the per-user lock, and the deletion gate), and SQL timeouts cannot bound
+ * an HTTP request. An 80-second stall per call, times a few sequential calls,
+ * would pin connections long enough for unrelated requests to queue behind them.
+ *
+ * 10s per request with one retry bounds a single call to roughly 20s. `timeout`
+ * is a transport deadline: an aborted request is ambiguous (it may have reached
+ * Stripe), so the callers that matter are written to be safe under that
+ * ambiguity — checkout links a customer with an idempotency key, and deletion is
+ * fail-closed on an unverifiable answer.
+ */
+export const STRIPE_TIMEOUT_MS = 10_000;
+export const STRIPE_MAX_NETWORK_RETRIES = 1;
+
 export function getStripe() {
   const key = process.env.STRIPE_SECRET_KEY;
-  return key ? new Stripe(key) : null;
+  return key
+    ? new Stripe(key, { timeout: STRIPE_TIMEOUT_MS, maxNetworkRetries: STRIPE_MAX_NETWORK_RETRIES })
+    : null;
 }
 export function priceIdFor(currency: BillingCurrency) {
   return currency === "mxn" ? process.env.STRIPE_PRICE_ID_MXN : process.env.STRIPE_PRICE_ID_USD;

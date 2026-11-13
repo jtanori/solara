@@ -123,10 +123,16 @@ async function withCleanup(
   } finally {
     const { eq, inArray } = await import("drizzle-orm");
     const { db } = await import("../src/db");
-    const { auditLogs, users } = await import("../src/db/schema");
+    const { auditLogs, deletedCustomers, users } = await import("../src/db/schema");
     const targets = [userId, ...extraTargets].filter((value): value is string => Boolean(value));
     if (targets.length > 0) {
       await db.delete(auditLogs).where(inArray(auditLogs.target, targets));
+      /*
+       * A deletion now also records the customer↔user association. `extraTargets`
+       * carries the customer ids, so clean those too — this is the same leak the
+       * audit rows had before `extraTargets` existed, one table over.
+       */
+      await db.delete(deletedCustomers).where(inArray(deletedCustomers.stripeCustomerId, targets));
     }
     if (userId) {
       // The user row may already be gone (the deletion test) or still present
@@ -263,7 +269,7 @@ test("escape path: a customer linked after the snapshot is still cleaned up (#14
   await withCleanup(user.id, async () => {
     // No live subscription exists for this customer, so the provider check
     // answers "clear" and the deletion proceeds.
-    const returned = await defaultDeleteUser(user.id, async () => "clear");
+    const returned = await defaultDeleteUser(user.id, async () => ({ state: "clear", openSessionIds: [], expireSessions: async () => undefined }));
 
     // The whole point: the deletion reports the customer that its snapshot never
     // saw, so the caller cannot skip cleanup.
@@ -300,7 +306,7 @@ test("escape path: the customer-side audit row makes deletion provable without m
 
   await withCleanup(user.id, async () => {
     const { defaultDeleteUser } = await import("../src/app/api/profile/route");
-    await defaultDeleteUser(user.id, async () => "clear");
+    await defaultDeleteUser(user.id, async () => ({ state: "clear", openSessionIds: [], expireSessions: async () => undefined }));
 
     // Scoped to this run's ids: a suite-wide query would also see rows from
     // other tests and fail for reasons that have nothing to do with this one.
@@ -351,7 +357,7 @@ test("lock: a deletion waits for a concurrent checkout and sees what it linked (
 
     // Give checkout the lock first, then start the deletion.
     await new Promise(resolve => setTimeout(resolve, 40));
-    const deletion = defaultDeleteUser(user.id, async () => "clear");
+    const deletion = defaultDeleteUser(user.id, async () => ({ state: "clear", openSessionIds: [], expireSessions: async () => undefined }));
     const [, returned] = await Promise.all([checkout, deletion]);
 
     assert.deepEqual(events, ["checkout:locked", "checkout:linked"], "deletion did not interleave");
@@ -569,6 +575,82 @@ test("race: the existing-session shortcut also refuses a deleted account", gated
     const body = await response.text();
     assert.equal(response.status, 401, "the deleted account is refused");
     assert.doesNotMatch(body, /checkout\.stripe\.test/, "no payable URL is handed back");
+  } finally {
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("pool: a stalled provider releases its connection, and the pool recovers (#142 review)", gated, async () => {
+  /*
+   * The review's fourth finding. Checkout holds an advisory lock AND a pooled
+   * connection across several sequential Stripe requests. SQL timeouts cannot
+   * bound HTTP, so enough slow checkouts for different users could occupy the
+   * whole pool and block unrelated database work.
+   *
+   * Two bounds now exist and this test measures both:
+   *   1. per-request transport timeout (STRIPE_TIMEOUT_MS) so a request cannot
+   *      hang forever, and
+   *   2. the operation is abandoned at the deadline, so the transaction ends and
+   *      the connection returns to the pool.
+   *
+   * The assertion that matters is the last one: after the stall, an unrelated
+   * query still runs. A leaked connection would hang it.
+   */
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { STRIPE_TIMEOUT_MS } = await import("../src/lib/billing");
+  const { startCheckout } = await import("../src/app/api/billing/checkout/route");
+
+  // A transport bound must exist and be finite; 0 or undefined means "no bound".
+  assert.ok(Number.isFinite(STRIPE_TIMEOUT_MS) && STRIPE_TIMEOUT_MS > 0, "a transport timeout is configured");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Pool probe", email: `pool-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
+    .returning({ id: users.id });
+
+  try {
+    /*
+     * A Stripe stub whose subscription list rejects the way a timed-out request
+     * does. The route must surface 503 and, crucially, end its transaction — the
+     * lock and the connection are released during the rollback.
+     */
+    const timedOut = Object.assign(new Error("Request timed out"), { type: "StripeConnectionError", statusCode: 500 });
+    const stalling = {
+      prices: { retrieve: async () => ({ id: "price_test_mxn", active: true, currency: "mxn", recurring: { interval: "month" }, unit_amount: 1000 }) },
+      customers: { create: async () => ({ id: `cus_pool_${token}` }), del: async () => ({}) },
+      subscriptions: { list: async () => { throw timedOut; } },
+      checkout: { sessions: { list: async () => ({ data: [], has_more: false }), create: async () => ({ id: "cs_pool", url: "https://x.test/cs_pool" }), expire: async () => ({}) } },
+    };
+
+    const response = await startCheckout(new Request("http://localhost/api/billing/checkout", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ currency: "mxn" }),
+    }), {
+      stripe: stalling as never,
+      currentUser: (async () => ({
+        id: user.id, email: `pool-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: null,
+      })) as never,
+      locale: "en",
+    });
+
+    assert.equal(response.status, 503, "a stalled provider is a retryable failure, not a success");
+
+    /*
+     * The pool must still work. If the failed checkout had leaked its connection,
+     * this query would block on an exhausted pool instead of returning.
+     */
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    assert.equal(survivors.length, 1, "the pool recovered: unrelated database work still completes");
   } finally {
     await db.delete(users).where(eq(users.id, user.id));
   }

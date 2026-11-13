@@ -177,6 +177,21 @@ export function accountDeletionCustomerAudit(userId: string, stripeCustomerId: s
 }
 
 /**
+ * The explicit association between a deleted account and the Stripe customer it
+ * owned.
+ *
+ * `accountDeletionCustomerAudit` above is the audit trail and stays, but two
+ * audit rows cannot prove they came from the *same* deletion: two independent
+ * deletions produce an identical pair of rows, and a customer id reused for
+ * another account reads the same. The webhook needs to answer "did *this*
+ * customer belong to *that* deleted user", so the pairing is recorded as one
+ * row instead of being inferred from two.
+ */
+export function deletedCustomerAssociation(userId: string, stripeCustomerId: string) {
+  return { stripeCustomerId, userId };
+}
+
+/**
  * The two side effects of an account deletion, as a seam the route can hand to
  * whatever runs a transaction. Keeping the *order* here — rather than inline in
  * the route — is what makes it testable without a database.

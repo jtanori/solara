@@ -1,4 +1,12 @@
 import assert from "node:assert/strict";
+
+/*
+ * `isPremiumPriceId` reads the configured prices from the environment at call
+ * time, so this file must pin them rather than inherit whatever the suite set
+ * earlier. Learned the hard way: the cleanup tests failed on their own fixtures
+ * because another file had set a different price id first.
+ */
+process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
 import test from "node:test";
 import { assessBillingGate } from "../src/lib/account-deletion";
 import {
@@ -201,8 +209,18 @@ test("wiring: a cancelled subscription on the first page still reaches page 2", 
   assert.equal(calls.subscriptionParams[1].starting_after, "sub_99", "cursor is the last id of page 1");
 });
 
-test("wiring: every open subscription checkout on every page is expired", async () => {
-  // Page 1: a one-off payment (must NOT be expired). Page 2: a subscription session.
+test("wiring: every open subscription checkout on every page is reported, and NONE is expired here", async () => {
+  /*
+   * This used to assert that `assessDeletionBilling` expired the sessions itself.
+   * It no longer does, and that is the fix for the review's third finding: this
+   * function runs under a deadline, so anything it did after that deadline would
+   * run with the deletion lock released — and could expire a session a *newer*
+   * checkout had just created. It reports the ids; the caller expires them while
+   * it still holds the lock.
+   *
+   * Page 1 is one-off payments (never candidates). Page 2 holds the subscription
+   * session that must be reported.
+   */
   const sessions = [
     ...Array.from({ length: 100 }, (_, index) => ({ id: `cs_pay_${index}`, mode: "payment" })),
     { id: "cs_sub_late", mode: "subscription" },
@@ -211,8 +229,8 @@ test("wiring: every open subscription checkout on every page is expired", async 
 
   const result = await assessDeletionBilling(stripe as never, "cus_abc");
 
-  assert.deepEqual(result, { state: "clear", expiredSessionIds: ["cs_sub_late"] });
-  assert.deepEqual(calls.expired, ["cs_sub_late"], "only the subscription session is expired");
+  assert.deepEqual(result, { state: "clear", openSessionIds: ["cs_sub_late"] });
+  assert.deepEqual(calls.expired, [], "the read-only assessment expires nothing");
   assert.equal(calls.sessionParams[0].status, "open");
   assert.equal(calls.sessionParams[1].starting_after, "cs_pay_99");
 });
@@ -236,65 +254,174 @@ test("wiring: unverifiable blocks the deletion at the gate", async () => {
 
 // ------------------------------------------------- deleting-account cleanup (#144)
 
-test("cleanup: a live subscription means the Stripe customer is deleted", async () => {
-  const deleted: string[] = [];
+test("cleanup: cancels the subscription, NOT the customer — customer-wide deletion hits other products", async () => {
+  /*
+   * Deleting the Stripe customer was the original implementation, and it was the
+   * defect the review found: `customers.del` cancels EVERY subscription on that
+   * customer, including another product's on a shared Stripe account. The action
+   * has to be per-subscription, and only for subscriptions we can attribute.
+   */
+  const cancelled: string[] = [];
+  const customerDeletes: string[] = [];
   const stripe = {
-    customers: { del: async (id: string) => { deleted.push(id); return { id, deleted: true }; } },
+    customers: {
+      del: async (id: string) => { customerDeletes.push(id); return {}; },
+      retrieve: async () => ({ metadataUserId: "user-deleted" }),
+    },
     subscriptions: {
-      list: async () => ({ data: [{ id: "sub_1", status: "active" }], has_more: false }),
+      list: async () => ({
+        data: [{ id: "sub_ours", status: "active", priceId: "price_test_mxn", metadataUserId: "user-deleted" }],
+        has_more: false,
+      }),
+      cancel: async (id: string) => { cancelled.push(id); return {}; },
     },
   };
 
-  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_orphan");
+  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_orphan", "user-deleted");
 
-  assert.deepEqual(outcome, { cancelled: true });
-  assert.deepEqual(deleted, ["cus_orphan"], "deleting the customer is what stops the charge");
+  assert.deepEqual(cancelled, ["sub_ours"], "the attributed subscription is cancelled");
+  assert.deepEqual(customerDeletes, [], "the customer is never deleted");
+  assert.equal(outcome.cancelled, true);
 });
 
-test("cleanup: a live subscription on a later page is still cancelled", async () => {
-  // The subscription that started the whole race is the late one.
+test("cleanup: a live subscription on a later page is still found and cancelled", async () => {
   const rows = [
-    ...Array.from({ length: 100 }, (_, index) => ({ id: `sub_${index}`, status: "canceled" })),
-    { id: "sub_late", status: "trialing" },
+    ...Array.from({ length: 100 }, (_, index) => ({
+      id: `sub_${index}`, status: "canceled", priceId: "price_test_mxn", metadataUserId: "user-deleted",
+    })),
+    { id: "sub_late", status: "trialing", priceId: "price_test_mxn", metadataUserId: "user-deleted" },
   ];
-  const deleted: string[] = [];
+  const cancelled: string[] = [];
   const stripe = {
-    customers: { del: async (id: string) => { deleted.push(id); return {}; } },
+    customers: { retrieve: async () => ({ metadataUserId: "user-deleted" }) },
     subscriptions: {
       list: async (params: { starting_after?: string }) => {
         const start = params.starting_after ? rows.findIndex(row => row.id === params.starting_after) + 1 : 0;
         return { data: rows.slice(start, start + 100), has_more: start + 100 < rows.length };
       },
+      cancel: async (id: string) => { cancelled.push(id); return {}; },
     },
   };
 
-  assert.deepEqual(await cancelBillingForDeletedAccount(stripe as never, "cus_orphan"), { cancelled: true });
-  assert.deepEqual(deleted, ["cus_orphan"]);
+  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_orphan", "user-deleted");
+  assert.deepEqual(cancelled, ["sub_late"]);
+  assert.equal(outcome.cancelled, true);
 });
 
-test("cleanup: nothing to cancel leaves Stripe untouched", async () => {
-  const deleted: string[] = [];
+test("cleanup: nothing live leaves Stripe untouched", async () => {
+  const cancelled: string[] = [];
   const stripe = {
-    customers: { del: async (id: string) => { deleted.push(id); return {}; } },
-    subscriptions: { list: async () => ({ data: [{ id: "sub_1", status: "canceled" }], has_more: false }) },
+    customers: { retrieve: async () => ({ metadataUserId: "user-deleted" }) },
+    subscriptions: {
+      list: async () => ({ data: [{ id: "sub_1", status: "canceled", priceId: "price_test_mxn", metadataUserId: "user-deleted" }], has_more: false }),
+      cancel: async (id: string) => { cancelled.push(id); return {}; },
+    },
   };
 
-  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_idle");
+  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_idle", "user-deleted");
 
-  assert.deepEqual(outcome, { cancelled: false, reason: "no_live_subscription" });
-  assert.deepEqual(deleted, [], "a cancelled subscription needs no cleanup");
+  assert.equal(outcome.cancelled, false);
+  assert.equal((outcome as { reason: string }).reason, "no_live_subscription");
+  assert.deepEqual(cancelled, []);
+});
+
+test("cleanup: an UNRELATED subscription appearing between the gate and cleanup is not cancelled", async () => {
+  /*
+   * The exact scenario in the review: the deletion gate sees nothing, then another
+   * product creates a subscription on the same customer before this cleanup runs.
+   * It must be reported as unattributed, never cancelled — and never taken down
+   * with `customers.del`.
+   */
+  const cancelled: string[] = [];
+  const customerDeletes: string[] = [];
+  const stripe = {
+    customers: {
+      del: async (id: string) => { customerDeletes.push(id); return {}; },
+      retrieve: async () => ({ metadataUserId: "someone-else" }),
+    },
+    subscriptions: {
+      list: async () => ({
+        data: [
+          { id: "sub_other_product", status: "active", priceId: "price_other_product", metadataUserId: null },
+          { id: "sub_other_user", status: "active", priceId: "price_test_mxn", metadataUserId: "someone-else" },
+        ],
+        has_more: false,
+      }),
+      cancel: async (id: string) => { cancelled.push(id); return {}; },
+    },
+  };
+
+  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_shared", "user-deleted");
+
+  assert.deepEqual(cancelled, [], "nothing unattributable is cancelled");
+  assert.deepEqual(customerDeletes, [], "the shared customer survives for the other product");
+  assert.deepEqual((outcome as { unattributed: string[] }).unattributed, ["sub_other_product", "sub_other_user"]);
+  assert.equal(outcome.cancelled, false);
 });
 
 test("cleanup: a Stripe failure is reported, not thrown — the account is already gone", async () => {
   const stripe = {
-    customers: { del: async () => { throw new Error("stripe down"); } },
-    subscriptions: { list: async () => ({ data: [{ id: "sub_1", status: "active" }], has_more: false }) },
+    customers: { retrieve: async () => ({ metadataUserId: "user-deleted" }) },
+    subscriptions: {
+      list: async () => ({ data: [{ id: "sub_1", status: "active", priceId: "price_test_mxn", metadataUserId: "user-deleted" }], has_more: false }),
+      cancel: async () => { throw new Error("stripe down"); },
+    },
   };
 
-  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_orphan");
+  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_orphan", "user-deleted");
 
   // Must not throw: throwing here would turn a completed deletion into a 500
   // and tell the user their account still exists.
   assert.equal(outcome.cancelled, false);
   assert.match((outcome as { reason: string }).reason, /stripe down/);
+});
+
+test("cleanup: an already-cancelled subscription counts as done, not as a failure", async () => {
+  const stripe = {
+    customers: { retrieve: async () => ({ metadataUserId: "user-deleted" }) },
+    subscriptions: {
+      list: async () => ({ data: [{ id: "sub_1", status: "active", priceId: "price_test_mxn", metadataUserId: "user-deleted" }], has_more: false }),
+      cancel: async () => { throw Object.assign(new Error("This subscription has already been canceled."), { statusCode: 400 }); },
+    },
+  };
+
+  const outcome = await cancelBillingForDeletedAccount(stripe as never, "cus_orphan", "user-deleted");
+  assert.deepEqual((outcome as { cancelledIds: string[] }).cancelledIds, ["sub_1"]);
+});
+
+test("assessment: expires NOTHING, even when it finds open subscription checkouts", async () => {
+  /*
+   * The review's third finding, at the layer where it can actually be decided.
+   *
+   * `assessDeletionBilling` runs under a deadline. Anything it *does* after that
+   * deadline runs with the deletion lock released, so a slow list call could
+   * finish and expire a session a newer checkout had just created. The fix is
+   * that this function has no side effects at all: it reports the ids, and the
+   * caller expires them while it still holds the lock.
+   *
+   * This test would pass vacuously if the stub had no `expire`, so the stub
+   * asserts: if the assessment ever reaches for it, the test fails.
+   */
+  let expireCalls = 0;
+  const stripe = {
+    subscriptions: { list: async () => ({ data: [], has_more: false }) },
+    checkout: {
+      sessions: {
+        list: async () => ({
+          data: [
+            { id: "cs_open_a", mode: "subscription" },
+            { id: "cs_open_b", mode: "subscription" },
+            { id: "cs_one_off", mode: "payment" },
+          ],
+          has_more: false,
+        }),
+        expire: async () => { expireCalls++; return {}; },
+      },
+    },
+  };
+
+  const result = await assessDeletionBilling(stripe as never, "cus_abc");
+
+  assert.deepEqual(result, { state: "clear", openSessionIds: ["cs_open_a", "cs_open_b"] });
+  assert.equal(expireCalls, 0, "the deadline-bounded assessment must not mutate anything");
 });

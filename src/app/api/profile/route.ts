@@ -1,10 +1,17 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { auditLogs, subscriptions, users } from "@/db/schema";
+import { auditLogs, deletedCustomers, subscriptions, users } from "@/db/schema";
 import { currentUser, SESSION_COOKIE } from "@/lib/auth";
 import { getStripe } from "@/lib/billing";
-import { assessDeletionBilling, cancelBillingForDeletedAccount, ONGOING_SUBSCRIPTION_STATUSES } from "@/lib/billing-state";
+import {
+  assessDeletionBilling,
+  cancelBillingForDeletedAccount,
+  ONGOING_SUBSCRIPTION_STATUSES,
+  type DeletionBillingResult,
+  type DeletionBillingStripe,
+  type DeletionCleanupStripe,
+} from "@/lib/billing-state";
 import { getLocale } from "@/lib/i18n-server";
 import { withDeadline } from "@/lib/readiness";
 import { log, requestMeta } from "@/lib/log";
@@ -12,6 +19,7 @@ import { verifyPassword } from "@/lib/passwords";
 import {
   accountDeletionCustomerAudit,
   assessBillingGate,
+  deletedCustomerAssociation,
   assessDeletionGate,
   blockedResponseBody,
   writeAccountDeletion,
@@ -161,16 +169,46 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
    * provider still fails closed and still blocks the deletion.
    */
   const assessProviderBilling: ProviderBillingCheck = async (stripeCustomerId) => {
-    if (!stripe) return "unverifiable";
+    const expireSessions = async (sessionIds: string[]) => {
+      if (!stripe) return;
+      for (const sessionId of sessionIds) {
+        // A session that vanished, expired already, or was paid is not a reason
+        // to fail a deletion; a completed checkout of a deleted account is what
+        // the webhook handles. Logged with the id so it is findable.
+        await stripe.checkout.sessions.expire(sessionId).catch(error => {
+          log.error("profile.checkout_session_expire_failed", { userId: user.id, sessionId, error });
+        });
+      }
+    };
+    if (!stripe) return { state: "unverifiable", error: new Error("stripe_not_configured"), expireSessions };
+
+    /*
+     * A deadline alone does not stop work: `withDeadline` races promises, so the
+     * underlying list/expire calls would keep running after this returns and the
+     * transaction commits — with the lock released. A slow list could then expire
+     * a session a *new* checkout had just created.
+     *
+     * Two changes close that:
+     *   1. `assessDeletionBilling` is read-only (it reports sessions, expires
+     *      nothing), so an abandoned check cannot mutate anything.
+     *   2. This wrapper stops *reading* too: once the deadline fires, a guard the
+     *      check consults between calls makes every later Stripe call a no-op, so
+     *      no further request is issued and no page walk continues.
+     */
+    let expired = false;
+    const guarded = abortionGuardedStripe(stripe, () => expired);
     const result = await withDeadline(
-      assessDeletionBilling(stripe, stripeCustomerId),
+      assessDeletionBilling(guarded, stripeCustomerId),
       PROVIDER_BILLING_DEADLINE_MS,
       "provider_billing_deadline_exceeded",
-    ).catch(error => ({ state: "unverifiable" as const, error }));
+    ).catch(error => {
+      expired = true;
+      return { state: "unverifiable" as const, error };
+    });
     if (result.state === "unverifiable") {
       log.error("profile.billing_check_failed", { ...requestMeta(request), userId: user.id, error: result.error });
     }
-    return result.state;
+    return { ...result, expireSessions };
   };
 
   let deleted: DeleteUserResult;
@@ -214,12 +252,35 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
    * cleanup in that case leaves a paid subscription with no account.
    */
   if (deletedCustomerId && stripe) {
-    const cleanup = await cancelBillingForDeletedAccount(stripe, deletedCustomerId);
+    /*
+     * Per-subscription and attributed — never `customers.del`. Deleting the
+     * customer would cancel every subscription on it, including another
+     * product's on a shared Stripe account, and nothing in the evidence can tell
+     * whose they were.
+     */
+    const cleanup = await cancelBillingForDeletedAccount(
+      deletionCleanupStripe(stripe),
+      deletedCustomerId,
+      user.id,
+    );
     if (cleanup.cancelled) {
-      log.info("profile.deletion_cancelled_billing", { ...requestMeta(request), userId: user.id });
+      log.info("profile.deletion_cancelled_billing", {
+        ...requestMeta(request), userId: user.id, cancelled: cleanup.cancelledIds,
+      });
     } else if (cleanup.reason !== "no_live_subscription") {
       log.error("profile.deletion_billing_cleanup_failed", {
         ...requestMeta(request), userId: user.id, customerId: deletedCustomerId, reason: cleanup.reason,
+      });
+    }
+    /*
+     * Subscriptions on this customer that could not be attributed to the deleted
+     * account are left alone on purpose and reported individually: cancelling
+     * them is exactly the shared-account mistake, and the webhook quarantines
+     * them as `webhook:unmapped` for a human when they next emit an event.
+     */
+    if (cleanup.unattributed.length > 0) {
+      log.error("profile.deletion_billing_unattributed", {
+        ...requestMeta(request), userId: user.id, customerId: deletedCustomerId, subscriptionIds: cleanup.unattributed,
       });
     }
   }
@@ -244,8 +305,24 @@ export type DeleteUserResult =
  * Called only when the database has no live subscription for the user. There is
  * no default: a default would have to answer "clear", and a fail-open answer to
  * "is money moving?" is exactly the bug class this file exists to prevent.
+ *
+ * Returns the whole result rather than just the state, because `clear` carries
+ * the open checkout sessions that must be expired — and they are expired by the
+ * caller, inside the transaction that holds the lock. See `defaultDeleteUser`.
  */
-export type ProviderBillingCheck = (stripeCustomerId: string) => Promise<BillingState>;
+export type ProviderBillingCheck = (stripeCustomerId: string) => Promise<ProviderBillingAssessment>;
+
+/**
+ * The assessment plus the one *action* the transaction is allowed to take.
+ *
+ * Expiry is a mutation, so it is passed in as a capability rather than the
+ * transaction reaching for the Stripe client: the deletion code stays testable,
+ * and it is obvious in the type that this is the only write the gate can cause.
+ * It must be called while the lock is held — see `defaultDeleteUser`.
+ */
+export type ProviderBillingAssessment = DeletionBillingResult & {
+  expireSessions: (sessionIds: string[]) => Promise<void>;
+};
 
 /**
  * One transaction: lock, re-read, **gate**, audit row, delete — in that order.
@@ -275,6 +352,11 @@ export async function defaultDeleteUser(
   userId: string,
   assessProviderBilling: ProviderBillingCheck,
 ): Promise<DeleteUserResult> {
+  /**
+   * Captured from the assessment, then used *after* the gate passes and still
+   * inside this transaction — the only write the gate can cause.
+   */
+  let expireSessions: ProviderBillingAssessment["expireSessions"] | undefined;
   return db.transaction(async tx => {
     /*
      * Serialise against checkout for this user (#144). Checkout takes the same
@@ -310,12 +392,29 @@ export async function defaultDeleteUser(
       .limit(1);
 
     let billing: BillingState = ongoing ? "ongoing" : "clear";
+    let openSessionIds: string[] = [];
     if (billing === "clear" && current?.stripeCustomerId) {
-      billing = await assessProviderBilling(current.stripeCustomerId);
+      const assessed = await assessProviderBilling(current.stripeCustomerId);
+      billing = assessed.state;
+      expireSessions = assessed.expireSessions;
+      if (assessed.state === "clear") openSessionIds = assessed.openSessionIds;
     }
 
     const gate = assessBillingGate(billing);
     if (gate.kind === "blocked") return { kind: "blocked", blocker: gate.blocker };
+
+    /*
+     * Expire the open checkouts HERE, not in the assessment (#142 review).
+     *
+     * The assessment runs under a deadline; anything it did after that deadline
+     * would run with the lock released and could expire a session a newer checkout
+     * had just created. Expiry belongs to the step that is still holding the lock,
+     * so it cannot race a checkout that follows. It is also last: if this throws,
+     * nothing has been deleted yet.
+     */
+    if (openSessionIds.length > 0 && expireSessions) {
+      await expireSessions(openSessionIds);
+    }
 
     await writeAccountDeletion({
       insertAudit: async (row) => {
@@ -324,6 +423,16 @@ export async function defaultDeleteUser(
         // even when a subscription's metadata has lost `solara_user_id`.
         if (current?.stripeCustomerId) {
           await tx.insert(auditLogs).values(accountDeletionCustomerAudit(userId, current.stripeCustomerId));
+          /*
+           * The pairing, explicitly. Two audit rows cannot prove they came from
+           * the same deletion, which is what the webhook needs to attribute a
+           * subscription; this row can. `onConflictDoNothing` because a
+           * redelivered deletion for the same customer must not fail.
+           */
+          await tx
+            .insert(deletedCustomers)
+            .values(deletedCustomerAssociation(userId, current.stripeCustomerId))
+            .onConflictDoNothing();
         }
       },
       deleteUser: async (id) => {
@@ -334,6 +443,87 @@ export async function defaultDeleteUser(
     // Hand the id back so the caller cleans up without trusting its snapshot.
     return { kind: "deleted", customerId: current?.stripeCustomerId ?? null };
   });
+}
+
+/**
+ * Wraps the pricing/gate Stripe client so that once `isAborted()` turns true, no
+ * further request is issued.
+ *
+ * The point is not to save work — it is to stop a check whose deadline already
+ * fired from mutating Stripe later, when the lock it was holding is gone. Each
+ * call re-checks, so a page walk that is between pages stops rather than running
+ * to completion after the caller has already answered.
+ */
+function abortionGuardedStripe(
+  stripe: NonNullable<ReturnType<typeof getStripe>>,
+  isAborted: () => boolean,
+): DeletionBillingStripe {
+  const abortIfExpired = () => {
+    if (isAborted()) throw new Error("provider_billing_deadline_exceeded");
+  };
+  return {
+    subscriptions: {
+      list: async params => {
+        abortIfExpired();
+        return stripe.subscriptions.list({
+          customer: params.customer,
+          status: params.status,
+          limit: params.limit,
+          ...(params.starting_after ? { starting_after: params.starting_after } : {}),
+        });
+      },
+    },
+    checkout: {
+      sessions: {
+        list: async params => {
+          abortIfExpired();
+          return stripe.checkout.sessions.list({
+            customer: params.customer,
+            status: params.status,
+            limit: params.limit,
+            ...(params.starting_after ? { starting_after: params.starting_after } : {}),
+          });
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Adapts the Stripe client to the narrow port `cancelBillingForDeletedAccount`
+ * uses, so the decision stays testable without a real client and the readings of
+ * `priceId` / `metadata.solara_user_id` happen in exactly one place.
+ */
+function deletionCleanupStripe(stripe: NonNullable<ReturnType<typeof getStripe>>): DeletionCleanupStripe {
+  return {
+    subscriptions: {
+      list: async params => {
+        const page = await stripe.subscriptions.list({
+          customer: params.customer,
+          status: "all",
+          limit: params.limit,
+          ...(params.starting_after ? { starting_after: params.starting_after } : {}),
+        });
+        return {
+          has_more: page.has_more,
+          data: page.data.map(subscription => ({
+            id: subscription.id,
+            status: subscription.status,
+            priceId: subscription.items.data[0]?.price.id ?? null,
+            metadataUserId: subscription.metadata?.solara_user_id ?? null,
+          })),
+        };
+      },
+      cancel: async id => stripe.subscriptions.cancel(id),
+    },
+    customers: {
+      retrieve: async id => {
+        const customer = await stripe.customers.retrieve(id);
+        if (customer.deleted) return null;
+        return { metadataUserId: customer.metadata?.solara_user_id ?? null };
+      },
+    },
+  };
 }
 
 /**

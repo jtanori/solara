@@ -93,9 +93,17 @@ async function withProbeUser(
   try {
     await body({ userId: user.id, customerId, email });
   } finally {
-    // Scoped to this run's ids: a blanket delete on `audit_logs` would also
-    // remove rows other tests in this process are asserting on.
+    /*
+     * Scoped to this run's ids: a blanket delete on `audit_logs` would also
+     * remove rows other tests in this process are asserting on.
+     *
+     * The association row has to go too. A successful deletion writes
+     * `deleted_customers` keyed by the customer id, so cleaning only the user and
+     * the audit rows left one behind per passing test.
+     */
+    const { deletedCustomers } = await import("../src/db/schema");
     await db.delete(auditLogs).where(inArray(auditLogs.target, [user.id, customerId]));
+    await db.delete(deletedCustomers).where(eq(deletedCustomers.stripeCustomerId, customerId));
     await db.delete(users).where(eq(users.id, user.id));
   }
 }
@@ -308,4 +316,126 @@ test("gate: a provider call that never resolves blocks the deletion within the d
     const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
     assert.equal(survivors.length, 1, "nothing was deleted on an unknown billing state");
   });
+});
+
+test("gate: work that outlives the deadline has NO side effects — expiry happens under the lock (B3)", gated, async () => {
+  /*
+   * The review's third finding. A deadline races promises; it does not stop work.
+   * The assessment used to expire checkout sessions itself, so a slow list could
+   * finish *after* the route returned `unverifiable`, after the transaction
+   * committed and the lock was released — and expire a session a newer checkout
+   * had just created.
+   *
+   * Two things must hold, and this test asserts both:
+   *   1. the assessment itself expires nothing (it is read-only), and
+   *   2. once the deadline fires, the guarded client issues no further request.
+   */
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { PROVIDER_BILLING_DEADLINE_MS } = await import("../src/app/api/profile/route");
+
+  const calls: string[] = [];
+  /*
+   * A list that resolves slowly, page after page, and an expire the test can
+   * observe. If the assessment expired as it went, `expired` would be non-empty
+   * even though the deadline had fired.
+   */
+  const slowStripe = {
+    subscriptions: {
+      list: async () => {
+        calls.push("subscriptions.list");
+        // Slower than the deadline on the first page, so the route gives up.
+        await new Promise(resolve => setTimeout(resolve, PROVIDER_BILLING_DEADLINE_MS + 1_000));
+        return { data: [], has_more: false };
+      },
+    },
+    checkout: {
+      sessions: {
+        list: async () => {
+          calls.push("sessions.list");
+          return { data: [{ id: "cs_after_deadline", mode: "subscription" }], has_more: false };
+        },
+        expire: async (id: string) => { calls.push(`sessions.expire:${id}`); return { id }; },
+      },
+    },
+  };
+
+  await withProbeUser(async context => {
+    const response = await callDeleteAccount(context, slowStripe);
+    assert.equal(response.status, 503, "the stalled check fails closed");
+
+    // Let the abandoned promise finish if it is going to.
+    await new Promise(resolve => setTimeout(resolve, 1_500));
+
+    assert.deepEqual(
+      calls.filter(call => call.startsWith("sessions.expire")),
+      [],
+      "nothing was expired after the deadline, so a newer checkout cannot be raced",
+    );
+    assert.ok(
+      !calls.includes("sessions.list"),
+      "once the deadline fires the guarded client issues no further request",
+    );
+
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.equal(survivors.length, 1, "the account survives a failed gate");
+  });
+});
+
+test("gate: open sessions are expired ONLY on the path that deletes, while holding the lock (B3)", gated, async () => {
+  /*
+   * The other half: expiry must still happen, or a session created before the
+   * deletion becomes a paying checkout for a deleted account. It happens inside
+   * `defaultDeleteUser`, after the gate passes, still under the advisory lock.
+   */
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { auditLogs, users } = await import("../src/db/schema");
+  const { defaultDeleteUser } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({
+      name: "Expiry probe",
+      email: `expiry-${token}@example.test`,
+      passwordHash: "not-a-login",
+      emailVerifiedAt: new Date(),
+      stripeCustomerId: `cus_expiry_${token}`,
+    })
+    .returning({ id: users.id });
+
+  try {
+    const expired: string[] = [];
+    const result = await defaultDeleteUser(user.id, async () => ({
+      state: "clear",
+      openSessionIds: ["cs_open_1", "cs_open_2"],
+      expireSessions: async ids => { expired.push(...ids); },
+    }));
+
+    assert.equal(result.kind, "deleted");
+    assert.deepEqual(expired, ["cs_open_1", "cs_open_2"], "the open sessions were expired by the deleting path");
+  } finally {
+    /*
+     * Three keys, because one deletion writes three kinds of row: `target` = the
+     * user, `target` = the customer id, and a `deleted_customers` association.
+     * Cleaning by user id alone left all of them behind — measured, not assumed.
+     */
+    const { inArray } = await import("drizzle-orm");
+    const { deletedCustomers } = await import("../src/db/schema");
+    await db.delete(auditLogs).where(inArray(auditLogs.target, [user.id, `cus_expiry_${token}`]));
+    await db.delete(deletedCustomers).where(eq(deletedCustomers.stripeCustomerId, `cus_expiry_${token}`));
+    await db.delete(users).where(eq(users.id, user.id));
+  }
 });

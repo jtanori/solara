@@ -101,17 +101,22 @@ async function withEvent(
 ): Promise<void> {
   const { eq, inArray } = await import("drizzle-orm");
   const { db } = await import("../src/db");
-  const { auditLogs, stripeEvents, subscriptions, users } = await import("../src/db/schema");
+  const { auditLogs, deletedCustomers, stripeEvents, subscriptions, users } = await import("../src/db/schema");
   const { processStripeEvent } = await import("../src/lib/stripe-sync");
 
   const eventId = `evt_${randomUUID()}`;
   const { userId, customerId, carrier } = setup.recordDeletionFor;
 
-  // The evidence a completed deletion leaves: target = deleted user id, and when
-  // a customer was linked, a second row targeting the customer id.
+  /*
+   * The evidence a completed deletion leaves. `audit_logs` carries the trail
+   * (target = deleted user, and a second row targeting the customer), but the
+   * *association* the webhook requires is the explicit row in
+   * `deleted_customers`: two audit rows cannot prove they came from one deletion.
+   */
   await db.insert(auditLogs).values({ actorId: null, action: "account:delete", target: userId });
   if (carrier) {
     await db.insert(auditLogs).values({ actorId: null, action: "account:delete", target: customerId });
+    await db.insert(deletedCustomers).values({ stripeCustomerId: customerId, userId });
   }
 
   const fake = fakeStripe(setup.subscription);
@@ -140,6 +145,7 @@ async function withEvent(
     await db.delete(auditLogs).where(
       inArray(auditLogs.target, [userId, customerId, setup.subscription.subscriptionId]),
     );
+    await db.delete(deletedCustomers).where(eq(deletedCustomers.stripeCustomerId, customerId));
     await db.delete(subscriptions).where(eq(subscriptions.stripeSubscriptionId, setup.subscription.subscriptionId));
     await db.delete(users).where(eq(users.id, userId));
   }
@@ -255,4 +261,114 @@ after(async () => {
   if (process.env.RUN_INTEGRATION_TESTS !== "1") return;
   const { pool } = await import("../src/db");
   await pool.end();
+});
+
+test("wiring: two INDEPENDENT deletions do not add up to proof for a third account", gated, async () => {
+  /*
+   * The review's second finding, second half. Two audit rows — one naming a
+   * deleted user, one naming this customer id — used to be accepted as proof that
+   * the customer belonged to that user. They do not: two separate deletions
+   * produce exactly that pair, and the webhook then cancels a subscription
+   * belonging to an account nobody deleted.
+   *
+   * The explicit association makes the difference testable: here the audit rows
+   * exist but the association row names a *different* user.
+   */
+  assertLocalDisposableDatabase();
+  const { eq, inArray } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { auditLogs, deletedCustomers, stripeEvents } = await import("../src/db/schema");
+  const { processStripeEvent } = await import("../src/lib/stripe-sync");
+
+  const token = randomUUID();
+  const deletedUserId = randomUUID();
+  const otherDeletedUserId = randomUUID();
+  const customerId = `cus_two_deletions_${token}`;
+  const subscriptionId = `sub_two_deletions_${token}`;
+  const eventId = `evt_${randomUUID()}`;
+
+  // Both users were deleted at some point; the customer belonged to the OTHER one.
+  await db.insert(auditLogs).values([
+    { actorId: null, action: "account:delete", target: deletedUserId },
+    { actorId: null, action: "account:delete", target: otherDeletedUserId },
+    { actorId: null, action: "account:delete", target: customerId },
+  ]);
+  await db.insert(deletedCustomers).values({ stripeCustomerId: customerId, userId: otherDeletedUserId });
+
+  const cancelled: string[] = [];
+  const fake = {
+    subscriptions: {
+      retrieve: async (id: string) => ({
+        id, customer: customerId, status: "active",
+        metadata: { solara_user_id: deletedUserId },
+        items: { data: [{ price: { id: PREMIUM_PRICE, currency: "mxn" }, current_period_end: null }] },
+        cancel_at_period_end: false,
+      }),
+      cancel: async (id: string) => { cancelled.push(id); return {}; },
+    },
+    customers: { retrieve: async () => ({ id: customerId, deleted: false, metadata: { solara_user_id: deletedUserId } }) },
+  };
+
+  try {
+    await processStripeEvent(
+      { id: eventId, type: "customer.subscription.updated", data: { object: { id: subscriptionId } } } as never,
+      fake as never,
+    );
+    assert.deepEqual(cancelled, [], "the customer belonged to another account: no cancellation");
+  } finally {
+    await db.delete(stripeEvents).where(eq(stripeEvents.id, eventId));
+    await db.delete(auditLogs).where(inArray(auditLogs.target, [deletedUserId, otherDeletedUserId, customerId, subscriptionId]));
+    await db.delete(deletedCustomers).where(eq(deletedCustomers.stripeCustomerId, customerId));
+  }
+});
+
+test("wiring: a stale metadata id naming a deleted user does not authorise cancelling another owner's subscription", gated, async () => {
+  /*
+   * The first half of the same finding: a Solara-priced subscription carrying a
+   * stale `solara_user_id` of *a* deleted user. If the check is "was that user
+   * deleted", it passes — but this customer belongs to someone else entirely.
+   * Requiring the association makes that impossible.
+   */
+  assertLocalDisposableDatabase();
+  const { eq, inArray } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { auditLogs, deletedCustomers, stripeEvents } = await import("../src/db/schema");
+  const { processStripeEvent } = await import("../src/lib/stripe-sync");
+
+  const token = randomUUID();
+  const staleDeletedUserId = randomUUID();
+  const actualOwnerId = randomUUID();
+  const customerId = `cus_stale_${token}`;
+  const subscriptionId = `sub_stale_${token}`;
+  const eventId = `evt_${randomUUID()}`;
+
+  await db.insert(auditLogs).values({ actorId: null, action: "account:delete", target: staleDeletedUserId });
+  // The customer belongs to a DIFFERENT (live, undeleted) account.
+  await db.insert(deletedCustomers).values({ stripeCustomerId: customerId, userId: actualOwnerId });
+
+  const cancelled: string[] = [];
+  const fake = {
+    subscriptions: {
+      retrieve: async (id: string) => ({
+        id, customer: customerId, status: "active",
+        metadata: { solara_user_id: staleDeletedUserId },
+        items: { data: [{ price: { id: PREMIUM_PRICE, currency: "mxn" }, current_period_end: null }] },
+        cancel_at_period_end: false,
+      }),
+      cancel: async (id: string) => { cancelled.push(id); return {}; },
+    },
+    customers: { retrieve: async () => ({ id: customerId, deleted: false, metadata: { solara_user_id: actualOwnerId } }) },
+  };
+
+  try {
+    await processStripeEvent(
+      { id: eventId, type: "customer.subscription.updated", data: { object: { id: subscriptionId } } } as never,
+      fake as never,
+    );
+    assert.deepEqual(cancelled, [], "a stale id on someone else's customer is not proof");
+  } finally {
+    await db.delete(stripeEvents).where(eq(stripeEvents.id, eventId));
+    await db.delete(auditLogs).where(inArray(auditLogs.target, [staleDeletedUserId, customerId, subscriptionId]));
+    await db.delete(deletedCustomers).where(eq(deletedCustomers.stripeCustomerId, customerId));
+  }
 });
