@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { generationSettings, type GenerationSettings } from "@/readings/execution";
+import { costMicros, generationSettings, type GenerationSettings } from "@/readings/execution";
+import { MAX_OUTPUT_TOKENS_PER_SECTION, TIER_CEILING_MXN } from "@/readings/config";
 import { createChatAdapter } from "@/readings/adapters/chat-completions";
 import type { ReadingProvider } from "@/readings/provider";
 import type { Locale } from "@/lib/i18n";
@@ -48,11 +49,17 @@ export function hash(value: unknown): string {
 /** No fixture/model/price fallback for a real account. All values stay server-side. */
 export function liveGenerationConfig(fetchImpl?: typeof fetch): LiveGenerationConfig | null {
   const profile = processorProfile();
-  if (!profile || !process.env.READINGS_API_KEY || !process.env.READINGS_CHEAP_MODEL || !process.env.READINGS_MODEL_PRICES) return null;
+  const rawKey = process.env.READINGS_API_KEY;
+  const apiKey = rawKey?.trim();
+  // Reject control/non-ASCII bytes before trimming; a CR/LF suffix must not
+  // become acceptable. Bearer keys contain visible ASCII, without whitespace.
+  if (!rawKey || /[^\x20-\x7e]/.test(rawKey) || !apiKey || /[^\x21-\x7e]/.test(apiKey)) return null;
+  if (!profile || !process.env.READINGS_CHEAP_MODEL || !process.env.READINGS_MODEL_PRICES) return null;
   const settings = generationSettings();
   const requested = settings.models.cheap;
+  if (requested === "fixture-1" || !Object.hasOwn(profile.inputTokenLimits, requested) || !Object.hasOwn(profile.servedModels, requested) || !settings.prices) return null;
   const served = profile.servedModels[requested];
-  if (requested === "fixture-1" || !Object.hasOwn(profile.inputTokenLimits, requested) || !served?.length || !settings.prices) return null;
+  if (!served?.length) return null;
   for (const model of [requested, ...served]) {
     const price = Object.hasOwn(settings.prices, model) ? settings.prices[model] : null;
     if (!price || price.inputMxnPerMillion <= 0 || price.outputMxnPerMillion <= 0) return null;
@@ -60,9 +67,13 @@ export function liveGenerationConfig(fetchImpl?: typeof fetch): LiveGenerationCo
     // Aliases currently must share the requested model's billing rates.
     if (!requestedPrice || price.inputMxnPerMillion !== requestedPrice.inputMxnPerMillion || price.outputMxnPerMillion !== requestedPrice.outputMxnPerMillion) return null;
   }
+  const quote = costMicros(settings.prices, requested, {
+    inputTokens: profile.inputTokenLimits[requested], outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION,
+  });
+  if (quote === null || quote > Math.round(TIER_CEILING_MXN.free * 1_000_000)) return null;
   try {
     const provider = createChatAdapter({
-      baseUrl: profile.baseUrl, apiKey: process.env.READINGS_API_KEY,
+      baseUrl: profile.baseUrl, apiKey,
       inputTokenLimits: profile.inputTokenLimits, fetchImpl,
       timeoutMs: process.env.READINGS_REQUEST_TIMEOUT_MS ? Number(process.env.READINGS_REQUEST_TIMEOUT_MS) : undefined,
     });

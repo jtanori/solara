@@ -573,3 +573,55 @@ for (const scenario of ["withdrawal", "disable", "delete", "preparation", "excep
     const recovered = await ledger(user.id); assert.equal(recovered.run.id, saved.run.id); assert.equal(recovered.run.locale, "en");
   });
 }
+
+test("PR148 R3: blank or header-unsafe API keys refuse availability and claims before dispatch", gated, async () => {
+  const { user, chart } = await account(); await grant(user.id); let calls = 0;
+  const options = deps(user, async () => { calls++; return response(); });
+  const originalEnv = process.env;
+  try {
+    for (const key of ["", "   ", "fake\rkey", "fake\nkey", "\nfake", "fake\0key", "fake\tkey", "fake key", "fake\u0100key"]) {
+      // A plain environment snapshot preserves NUL for testing; native env assignment truncates it.
+      process.env = { ...originalEnv, READINGS_API_KEY: key };
+      assert.equal(liveGenerationConfig(), null, "invalid credentials are configuration errors, not billable attempts");
+      assert.equal((await (await handleConsent(request("GET"), options)).json()).available, false);
+      const refused = await handleGeneration(request("POST", { locale: "en" }), chart.id, options);
+      assert.equal(refused.status, 503); assert.deepEqual(await refused.json(), { code: "generation_unavailable" });
+      assert.equal((await ledger(user.id)).run, undefined); assert.equal(calls, 0);
+    }
+  } finally { process.env = originalEnv; }
+});
+
+test("PR148 R3: affordable configuration includes the complete quote and rejects one micro-MXN over the ceiling", gated, async () => {
+  const { user, chart } = await account(); await grant(user.id); let calls = 0;
+  const options = deps(user, async () => { calls++; return response(); });
+  for (const inputRate of [500, 500.0001, 1000, Number.MAX_VALUE]) {
+    // At 500: 6000 input * 500 + 2000 output * 1000 = exactly 5,000,000 micro-MXN.
+    process.env.READINGS_MODEL_PRICES = JSON.stringify({ "test-model": { inputMxnPerMillion: inputRate, outputMxnPerMillion: 1000 } });
+    const available = inputRate === 500;
+    assert.equal(Boolean(liveGenerationConfig()), available);
+    assert.equal((await (await handleConsent(request("GET"), options)).json()).available, available);
+    if (!available) {
+      const refused = await handleGeneration(request("POST", { locale: "en" }), chart.id, options);
+      assert.equal(refused.status, 503); assert.deepEqual(await refused.json(), { code: "generation_unavailable" });
+    }
+    assert.equal((await ledger(user.id)).run, undefined); assert.equal(calls, 0);
+  }
+});
+
+test("PR148 R3: surrounding API-key spaces are normalized before the actual adapter sends", gated, async () => {
+  const { user, chart } = await account(); await grant(user.id); const headers: string[] = [];
+  process.env.READINGS_API_KEY = "  FAKE_PROVIDER_KEY_SENTINEL  ";
+  const options = deps(user, async (_url, init) => {
+    headers.push((init!.headers as Record<string, string>).Authorization); return response();
+  });
+  assert.equal((await (await handleGeneration(request("POST", { locale: "en" }), chart.id, options)).json()).status, "completed");
+  assert.deepEqual(headers, ["Bearer FAKE_PROVIDER_KEY_SENTINEL", "Bearer FAKE_PROVIDER_KEY_SENTINEL"]);
+});
+
+test("PR148 R3: inherited served-model properties are not a configured alias list", gated, () => {
+  process.env.READINGS_CHEAP_MODEL = "constructor";
+  process.env.READINGS_PROCESSOR_PROFILE = JSON.stringify({ ...profile, inputTokenLimits: { constructor: 6000 }, servedModels: {} });
+  process.env.READINGS_MODEL_PRICES = JSON.stringify({ constructor: { inputMxnPerMillion: 15, outputMxnPerMillion: 60 } });
+  assert.ok(processorProfile());
+  assert.doesNotThrow(() => { assert.equal(liveGenerationConfig(), null); });
+});
