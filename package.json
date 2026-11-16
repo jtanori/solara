@@ -19,6 +19,7 @@
     "check:setup": "node scripts/check-setup.mjs local",
     "rate-limits:report": "tsx scripts/report-rate-limits.ts",
     "rate-limits:cleanup": "tsx scripts/cleanup-rate-limits.ts",
+    "account-leases:cleanup": "tsx scripts/cleanup-account-leases.ts",
     "db:seed:local": "tsx scripts/local/seed-users.ts",
     "db:check:remote": "tsx scripts/db-remote.ts --check",
     "db:manifest": "tsx scripts/generate-migration-manifest.ts",

@@ -132,6 +132,21 @@ export const deletedCustomers = pgTable("deleted_customers", {
   deletedAt: timestamp("deleted_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/*
+ * Per-user account lifecycle lease.
+ *
+ * Deliberately no foreign key to `users`: a lease row can outlive the user it
+ * guarded, and deletion itself runs under the lease. The row is taken over
+ * atomically once `expires_at` passes and removed by its owner on release.
+ */
+export const accountLifecycleLeases = pgTable("account_lifecycle_leases", {
+  userId: uuid("user_id").primaryKey(),
+  owner: uuid("owner").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => [index("account_lifecycle_leases_expires_idx").on(table.expiresAt)]);
+
 export const emailTokens = pgTable("email_tokens", {
   tokenHash: text("token_hash").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),

@@ -23,5 +23,9 @@ export const EXPECTED_MIGRATIONS: MigrationManifestEntry[] = [
   {
     "tag": "0004_yielding_speed_demon",
     "hash": "43d0e7b824bac056d2bf48717cf04b61435c199c7a366effd1feb90a6b32b31a"
+  },
+  {
+    "tag": "0005_account_lifecycle_leases",
+    "hash": "ccb7a3569e0132e2637f2c9bbda33a953139b1199955733e01188748c324fc01"
   }
 ];

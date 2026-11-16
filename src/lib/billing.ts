@@ -6,11 +6,11 @@ export type PriceOption = { currency: BillingCurrency; amount: number; interval:
 /**
  * Transport bounds for every Stripe call.
  *
- * The SDK's default timeout is 80 seconds. Two code paths hold a database
- * transaction — and therefore a pooled connection — across Stripe I/O (checkout
- * under the per-user lock, and the deletion gate), and SQL timeouts cannot bound
- * an HTTP request. An 80-second stall per call, times a few sequential calls,
- * would pin connections long enough for unrelated requests to queue behind them.
+ * The SDK's default timeout is 80 seconds. Checkout and deletion hold the
+ * per-user lifecycle lease across Stripe I/O; compatibility mode additionally
+ * holds a coordination connection for the old advisory lock. SQL timeouts cannot
+ * bound an HTTP request, so an 80-second stall per call would delay other
+ * lifecycle work. No app-pool transaction is held during these calls.
  *
  * 10s per request with one retry bounds a single call to roughly 20s. `timeout`
  * is a transport deadline: an aborted request is ambiguous (it may have reached

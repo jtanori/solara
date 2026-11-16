@@ -101,7 +101,8 @@ async function withProbeUser(
      * `deleted_customers` keyed by the customer id, so cleaning only the user and
      * the audit rows left one behind per passing test.
      */
-    const { deletedCustomers } = await import("../src/db/schema");
+    const { accountLifecycleLeases, deletedCustomers } = await import("../src/db/schema");
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, user.id));
     await db.delete(auditLogs).where(inArray(auditLogs.target, [user.id, customerId]));
     await db.delete(deletedCustomers).where(eq(deletedCustomers.stripeCustomerId, customerId));
     await db.delete(users).where(eq(users.id, user.id));
@@ -121,6 +122,7 @@ async function callDeleteAccount(
     headers: { "content-type": "application/json", origin: "http://localhost" },
     body: JSON.stringify({ password: "correct horse" }),
   }),
+  extra: Record<string, unknown> = {},
 ) {
   const { deleteAccount } = await import("../src/app/api/profile/route");
   return deleteAccount(request, {
@@ -135,6 +137,7 @@ async function callDeleteAccount(
     locale: "en",
     verify: (async () => true) as never,
     passwordHashFor: async () => "stored-hash",
+    ...extra,
   });
 }
 
@@ -438,4 +441,852 @@ test("gate: open sessions are expired ONLY on the path that deletes, while holdi
     await db.delete(deletedCustomers).where(eq(deletedCustomers.stripeCustomerId, `cus_expiry_${token}`));
     await db.delete(users).where(eq(users.id, user.id));
   }
+});
+
+test("gate: a customer linked while deletion waits is assessed under the lock", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq, inArray } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { auditLogs, deletedCustomers, users } = await import("../src/db/schema");
+  const { withAccountLifecycleLock } = await import("../src/lib/account-lifecycle-lock");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const linkedCustomer = `cus_linked_${token}`;
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Link probe", email: `link-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
+    .returning({ id: users.id });
+
+  let releaseLock!: () => void;
+  const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+  let lockStarted!: () => void;
+  const started = new Promise<void>(resolve => { lockStarted = resolve; });
+
+  try {
+    const holder = withAccountLifecycleLock(user.id, async () => {
+      lockStarted();
+      await lockGate;
+    }, { waitMs: 2_000 });
+
+    await started;
+    const deletion = deleteAccount(new Request("http://localhost/api/profile", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ password: "correct horse" }),
+    }), {
+      stripe: {
+        subscriptions: {
+          list: async (params: { customer: string }) => ({
+            data: params.customer === linkedCustomer ? [{ id: `sub_linked_${token}`, status: "active" }] : [],
+            has_more: false,
+          }),
+        },
+        checkout: { sessions: { list: async () => ({ data: [], has_more: false }), expire: async () => ({}) } },
+      } as never,
+      currentUser: (async () => ({
+        id: user.id, email: `link-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: null,
+      })) as never,
+      locale: "en",
+      verify: (async () => true) as never,
+      passwordHashFor: async () => "stored-hash",
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await db.update(users).set({ stripeCustomerId: linkedCustomer }).where(eq(users.id, user.id));
+    releaseLock();
+    await holder;
+
+    const response = await deletion;
+    assert.equal(response.status, 409, "the customer linked under the lock is assessed");
+    assert.match(await response.text(), /subscription_ongoing/);
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    assert.equal(survivors.length, 1, "the account survives");
+  } finally {
+    releaseLock();
+    await db.delete(auditLogs).where(inArray(auditLogs.target, [user.id, linkedCustomer]));
+    await db.delete(deletedCustomers).where(eq(deletedCustomers.stripeCustomerId, linkedCustomer));
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("gate: owner role is re-read inside the final FOR UPDATE transaction", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const customerId = `cus_role_${token}`;
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Role probe", email: `role-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date(), stripeCustomerId: customerId })
+    .returning({ id: users.id });
+
+  let providerStarted!: () => void;
+  const started = new Promise<void>(resolve => { providerStarted = resolve; });
+  let releaseProvider!: () => void;
+  const providerGate = new Promise<void>(resolve => { releaseProvider = resolve; });
+  let first = true;
+
+  try {
+    const deletion = deleteAccount(new Request("http://localhost/api/profile", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ password: "correct horse" }),
+    }), {
+      stripe: {
+        subscriptions: {
+          list: async () => {
+            if (first) { first = false; providerStarted(); await providerGate; }
+            return { data: [], has_more: false };
+          },
+        },
+        checkout: { sessions: { list: async () => ({ data: [], has_more: false }), expire: async () => ({}) } },
+      } as never,
+      currentUser: (async () => ({
+        id: user.id, email: `role-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: customerId,
+      })) as never,
+      locale: "en",
+      verify: (async () => true) as never,
+      passwordHashFor: async () => "stored-hash",
+    });
+
+    await started;
+    await db.update(users).set({ role: "owner" }).where(eq(users.id, user.id));
+    releaseProvider();
+    const response = await deletion;
+
+    assert.equal(response.status, 400, "the owner role change is seen under the row lock");
+    assert.match(await response.text(), /owner_account/);
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    assert.equal(survivors.length, 1, "the owner account was not deleted");
+  } finally {
+    releaseProvider();
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("gate: a customer id change between assessment and delete fails closed", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const customerA = `cus_a_${token}`;
+  const customerB = `cus_b_${token}`;
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Customer change probe", email: `change-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date(), stripeCustomerId: customerA })
+    .returning({ id: users.id });
+
+  let providerStarted!: () => void;
+  const started = new Promise<void>(resolve => { providerStarted = resolve; });
+  let releaseProvider!: () => void;
+  const providerGate = new Promise<void>(resolve => { releaseProvider = resolve; });
+  let first = true;
+
+  try {
+    const deletion = deleteAccount(new Request("http://localhost/api/profile", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ password: "correct horse" }),
+    }), {
+      stripe: {
+        subscriptions: {
+          list: async () => {
+            if (first) { first = false; providerStarted(); await providerGate; }
+            return { data: [], has_more: false };
+          },
+        },
+        checkout: { sessions: { list: async () => ({ data: [], has_more: false }), expire: async () => ({}) } },
+      } as never,
+      currentUser: (async () => ({
+        id: user.id, email: `change-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: customerA,
+      })) as never,
+      locale: "en",
+      verify: (async () => true) as never,
+      passwordHashFor: async () => "stored-hash",
+    });
+
+    await started;
+    await db.update(users).set({ stripeCustomerId: customerB }).where(eq(users.id, user.id));
+    releaseProvider();
+    const response = await deletion;
+
+    assert.equal(response.status, 503, "a customer change fails closed");
+    assert.match(await response.text(), /billing_unverifiable/);
+    const survivors = await db.select({ id: users.id, stripeCustomerId: users.stripeCustomerId }).from(users).where(eq(users.id, user.id));
+    assert.equal(survivors.length, 1, "the account survives");
+    assert.equal(survivors[0]?.stripeCustomerId, customerB);
+  } finally {
+    releaseProvider();
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("gate: an expiry failure blocks the deletion instead of deleting a payable account", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { auditLogs, users } = await import("../src/db/schema");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const customerId = `cus_expire_fail_${token}`;
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Expiry failure probe", email: `expire-fail-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date(), stripeCustomerId: customerId })
+    .returning({ id: users.id });
+
+  try {
+    const response = await deleteAccount(new Request("http://localhost/api/profile", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ password: "correct horse" }),
+    }), {
+      stripe: {
+        subscriptions: { list: async () => ({ data: [], has_more: false }) },
+        checkout: {
+          sessions: {
+            list: async () => ({ data: [{ id: "cs_expire_fail", mode: "subscription" }], has_more: false }),
+            expire: async () => { throw Object.assign(new Error("stripe unavailable"), { statusCode: 503 }); },
+          },
+        },
+      } as never,
+      currentUser: (async () => ({
+        id: user.id, email: `expire-fail-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: customerId,
+      })) as never,
+      locale: "en",
+      verify: (async () => true) as never,
+      passwordHashFor: async () => "stored-hash",
+    });
+
+    assert.equal(response.status, 503, "an unexpired open session fails closed");
+    assert.match(await response.text(), /billing_unverifiable/);
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    assert.equal(survivors.length, 1, "the account survives");
+    const audits = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.target, user.id));
+    assert.equal(audits.length, 0, "no deletion audit was written");
+  } finally {
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("gate: a user who vanished while waiting returns 401, not a false deletion", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { withAccountLifecycleLock } = await import("../src/lib/account-lifecycle-lock");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Gone probe", email: `gone-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
+    .returning({ id: users.id });
+
+  let releaseLock!: () => void;
+  const lockGate = new Promise<void>(resolve => { releaseLock = resolve; });
+  let lockStarted!: () => void;
+  const started = new Promise<void>(resolve => { lockStarted = resolve; });
+
+  try {
+    const holder = withAccountLifecycleLock(user.id, async () => {
+      lockStarted();
+      await lockGate;
+    }, { waitMs: 2_000 });
+
+    await started;
+    const deletion = deleteAccount(new Request("http://localhost/api/profile", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ password: "correct horse" }),
+    }), {
+      stripe: { subscriptions: { list: async () => ({ data: [], has_more: false }) }, checkout: { sessions: { list: async () => ({ data: [], has_more: false }) } } } as never,
+      currentUser: (async () => ({
+        id: user.id, email: `gone-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: null,
+      })) as never,
+      locale: "en",
+      verify: (async () => true) as never,
+      passwordHashFor: async () => "stored-hash",
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await db.delete(users).where(eq(users.id, user.id));
+    releaseLock();
+    await holder;
+
+    const response = await deletion;
+    assert.equal(response.status, 401, "a vanished user is refused");
+  } finally {
+    releaseLock();
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("gate: the final transaction re-checks the database subscription row", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { subscriptions, users } = await import("../src/db/schema");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const customerId = `cus_final_${token}`;
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Final check probe", email: `final-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date(), stripeCustomerId: customerId })
+    .returning({ id: users.id });
+
+  let providerStarted!: () => void;
+  const started = new Promise<void>(resolve => { providerStarted = resolve; });
+  let releaseProvider!: () => void;
+  const providerGate = new Promise<void>(resolve => { releaseProvider = resolve; });
+  let first = true;
+
+  try {
+    const deletion = deleteAccount(new Request("http://localhost/api/profile", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ password: "correct horse" }),
+    }), {
+      stripe: {
+        subscriptions: {
+          list: async () => {
+            if (first) { first = false; providerStarted(); await providerGate; }
+            return { data: [], has_more: false };
+          },
+        },
+        checkout: { sessions: { list: async () => ({ data: [], has_more: false }), expire: async () => ({}) } },
+      } as never,
+      currentUser: (async () => ({
+        id: user.id, email: `final-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: customerId,
+      })) as never,
+      locale: "en",
+      verify: (async () => true) as never,
+      passwordHashFor: async () => "stored-hash",
+    });
+
+    await started;
+    await db.insert(subscriptions).values({
+      userId: user.id,
+      stripeSubscriptionId: `sub_final_${token}`,
+      stripeCustomerId: customerId,
+      stripePriceId: "price_test_mxn",
+      status: "active",
+      currency: "mxn",
+    });
+    releaseProvider();
+    const response = await deletion;
+
+    assert.equal(response.status, 409, "the final database re-check blocks the deletion");
+    assert.match(await response.text(), /subscription_ongoing/);
+  } finally {
+    releaseProvider();
+    await db.delete(subscriptions).where(eq(subscriptions.userId, user.id));
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("gate: the final FOR UPDATE timeout fails closed instead of hanging", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { Pool } = await import("pg");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Final lock probe", email: `final-lock-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
+    .returning({ id: users.id });
+
+  const holder = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 1,
+    application_name: `solara-final-lock-test-${token}`,
+    allowExitOnIdle: true,
+  });
+  const client = await holder.connect();
+
+  try {
+    await client.query("begin");
+    await client.query("select 1 from users where id = $1 for update", [user.id]);
+
+    const started = Date.now();
+    const response = await deleteAccount(new Request("http://localhost/api/profile", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ password: "correct horse" }),
+    }), {
+      stripe: { subscriptions: { list: async () => ({ data: [], has_more: false }) }, checkout: { sessions: { list: async () => ({ data: [], has_more: false }) } } } as never,
+      currentUser: (async () => ({
+        id: user.id, email: `final-lock-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: null,
+      })) as never,
+      locale: "en",
+      verify: (async () => true) as never,
+      passwordHashFor: async () => "stored-hash",
+    });
+    const elapsed = Date.now() - started;
+
+    assert.equal(response.status, 503, "a held row lock is retryable");
+    assert.ok(elapsed < 15_000, `gave up after ${elapsed}ms instead of hanging`);
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    assert.equal(survivors.length, 1, "nothing was deleted");
+  } finally {
+    await client.query("rollback").catch(() => undefined);
+    client.release();
+    await holder.end();
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("gate: an unavailable coordination pool returns 503 without touching the account", gated, async () => {
+  assertLocalDisposableDatabase();
+  const { randomUUID } = await import("node:crypto");
+  const { CoordinationPoolUnavailable } = await import("../src/lib/account-lifecycle-lock");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const response = await deleteAccount(new Request("http://localhost/api/profile", {
+    method: "DELETE",
+    headers: { "content-type": "application/json", origin: "http://localhost" },
+    body: JSON.stringify({ password: "correct horse" }),
+  }), {
+    stripe: { subscriptions: { list: async () => ({ data: [], has_more: false }) }, checkout: { sessions: { list: async () => ({ data: [], has_more: false }) } } } as never,
+    currentUser: (async () => ({
+      id: randomUUID(), email: "pool@example.test", role: "user" as const,
+      emailVerifiedAt: new Date(), stripeCustomerId: null,
+    })) as never,
+    locale: "en",
+    verify: (async () => true) as never,
+    passwordHashFor: async () => "stored-hash",
+    lifecycleLock: (async () => { throw new CoordinationPoolUnavailable(); }) as never,
+  });
+
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /service is busy|servicio está ocupado/i);
+});
+
+test("gate: FOR UPDATE serialises a concurrent role change before the delete", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+  const { Pool } = await import("pg");
+  const { deleteAccount } = await import("../src/app/api/profile/route");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({ name: "FOR UPDATE probe", email: `for-update-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
+    .returning({ id: users.id });
+
+  const holder = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 1,
+    application_name: `solara-row-lock-test-${token}`,
+    allowExitOnIdle: true,
+  });
+  const client = await holder.connect();
+
+  try {
+    await client.query("begin");
+    await client.query("update users set role = 'owner' where id = $1", [user.id]);
+
+    const deletion = deleteAccount(new Request("http://localhost/api/profile", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ password: "correct horse" }),
+    }), {
+      stripe: { subscriptions: { list: async () => ({ data: [], has_more: false }) }, checkout: { sessions: { list: async () => ({ data: [], has_more: false }) } } } as never,
+      currentUser: (async () => ({
+        id: user.id, email: `for-update-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: null,
+      })) as never,
+      locale: "en",
+      verify: (async () => true) as never,
+      passwordHashFor: async () => "stored-hash",
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+    await client.query("commit");
+
+    const response = await deletion;
+    assert.equal(response.status, 400, "the committed owner role is seen after the row lock wait");
+    assert.match(await response.text(), /owner_account/);
+    const survivors = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, user.id));
+    assert.equal(survivors.length, 1, "the owner account was not deleted");
+    assert.equal(survivors[0]?.role, "owner");
+  } finally {
+    await client.query("rollback").catch(() => undefined);
+    client.release();
+    await holder.end();
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("gate: too many open sessions fails closed before expiring anything", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, auditLogs, users } = await import("../src/db/schema");
+  const expired: string[] = [];
+
+  const stripe = {
+    subscriptions: { list: async () => ({ data: [], has_more: false }) },
+    checkout: {
+      sessions: {
+        list: async () => ({
+          data: ["cs_cap_1", "cs_cap_2", "cs_cap_3"].map(id => ({ id, mode: "subscription" })),
+          has_more: false,
+        }),
+        expire: async (id: string) => { expired.push(id); return { id }; },
+      },
+    },
+  };
+
+  await withProbeUser(async context => {
+    const response = await callDeleteAccount(context, stripe, undefined, { maxExpirySessions: 2 });
+    assert.equal(response.status, 503, "the cap fails closed");
+    assert.match(await response.text(), /billing_unverifiable/);
+    assert.deepEqual(expired, [], "nothing was expired before the cap was enforced");
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.equal(survivors.length, 1, "the account survives");
+    const audits = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.target, context.userId));
+    assert.equal(audits.length, 0, "no deletion audit was written");
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, context.userId));
+  });
+});
+
+test("gate: expiry deadline waits for the in-flight call before releasing the lease", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, auditLogs, users } = await import("../src/db/schema");
+  let settled = false;
+
+  const stripe = {
+    subscriptions: { list: async () => ({ data: [], has_more: false }) },
+    checkout: {
+      sessions: {
+        list: async () => ({ data: [{ id: "cs_deadline", mode: "subscription" }], has_more: false }),
+        expire: async () => {
+          await new Promise(resolve => setTimeout(resolve, 150));
+          settled = true;
+          return {};
+        },
+      },
+    },
+  };
+
+  await withProbeUser(async context => {
+    const started = Date.now();
+    const response = await callDeleteAccount(context, stripe, undefined, { expiryDeadlineMs: 40 });
+    const elapsed = Date.now() - started;
+
+    assert.equal(response.status, 503, "the deadline fails closed");
+    assert.equal(settled, true, "the route waited for the in-flight expiry to settle");
+    assert.ok(elapsed >= 130, `returned after ${elapsed}ms; a 40ms deadline must not release a running expiry`);
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.equal(survivors.length, 1, "the account survives");
+    const audits = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.target, context.userId));
+    assert.equal(audits.length, 0, "no deletion audit was written");
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, context.userId));
+  });
+});
+
+test("gate: checkout_session_not_open with an expired session is settled, not fatal", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, users } = await import("../src/db/schema");
+
+  const stripe = {
+    subscriptions: { list: async () => ({ data: [], has_more: false }) },
+    checkout: {
+      sessions: {
+        list: async () => ({ data: [{ id: "cs_not_open_expired", mode: "subscription" }], has_more: false }),
+        expire: async () => {
+          throw Object.assign(new Error("not open"), { code: "checkout_session_not_open" });
+        },
+        retrieve: async () => ({ status: "expired" }),
+      },
+    },
+  };
+
+  await withProbeUser(async context => {
+    const response = await callDeleteAccount(context, stripe);
+    assert.equal(response.status, 200, "an expired session needs no further action");
+    const gone = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.deepEqual(gone, [], "the account was deleted");
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, context.userId));
+  });
+});
+
+test("gate: checkout_session_not_open with a complete or open session fails closed", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, auditLogs, users } = await import("../src/db/schema");
+
+  for (const status of ["complete", "open"] as const) {
+    const stripe = {
+      subscriptions: { list: async () => ({ data: [], has_more: false }) },
+      checkout: {
+        sessions: {
+          list: async () => ({ data: [{ id: `cs_not_open_${status}`, mode: "subscription" }], has_more: false }),
+          expire: async () => {
+            throw Object.assign(new Error("not open"), { code: "checkout_session_not_open" });
+          },
+          retrieve: async () => ({ status }),
+        },
+      },
+    };
+
+    await withProbeUser(async context => {
+      const response = await callDeleteAccount(context, stripe);
+      assert.equal(response.status, 503, `a ${status} session is still payable`);
+      assert.match(await response.text(), /billing_unverifiable/);
+      const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+      assert.equal(survivors.length, 1, "the account survives");
+      const audits = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.target, context.userId));
+      assert.equal(audits.length, 0, "no deletion audit was written");
+      await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, context.userId));
+    });
+  }
+});
+
+test("gate: a lease that expires during the provider check blocks the delete", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, auditLogs, users } = await import("../src/db/schema");
+  const { withAccountLifecycleLock } = await import("../src/lib/account-lifecycle-lock");
+
+  let releaseProvider!: () => void;
+  const providerGate = new Promise<void>(resolve => { releaseProvider = resolve; });
+  let providerStarted!: () => void;
+  const started = new Promise<void>(resolve => { providerStarted = resolve; });
+  const expired: string[] = [];
+
+  const stripe = {
+    subscriptions: {
+      list: async () => {
+        providerStarted();
+        await providerGate;
+        return { data: [], has_more: false };
+      },
+    },
+    checkout: {
+      sessions: {
+        list: async () => ({ data: [{ id: "cs_expired_lease", mode: "subscription" }], has_more: false }),
+        expire: async (id: string) => { expired.push(id); return { id }; },
+      },
+    },
+  };
+
+  const lifecycleLock: typeof withAccountLifecycleLock = (userId, fn, deps) =>
+    withAccountLifecycleLock(userId, fn, {
+      ...deps,
+      ttlMs: 100,
+      heartbeatMs: 10_000,
+      advisoryCompat: false,
+    });
+
+  await withProbeUser(async context => {
+    const deletion = callDeleteAccount(context, stripe, undefined, { lifecycleLock });
+    await started;
+    await new Promise(resolve => setTimeout(resolve, 180));
+    releaseProvider();
+
+    const response = await deletion;
+    assert.equal(response.status, 503, "the expired lease fails closed");
+    assert.deepEqual(expired, [], "no Stripe write is made after the lease is lost");
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.equal(survivors.length, 1, "nothing was deleted");
+    const audits = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.target, context.userId));
+    assert.equal(audits.length, 0, "no deletion audit was written");
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, context.userId));
+  });
+});
+
+test("gate: a lease lost during expiry stops before the next session", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, auditLogs, users } = await import("../src/db/schema");
+  const { withAccountLifecycleLock } = await import("../src/lib/account-lifecycle-lock");
+
+  const expired: string[] = [];
+  const stripe = {
+    subscriptions: { list: async () => ({ data: [], has_more: false }) },
+    checkout: {
+      sessions: {
+        list: async () => ({
+          data: [
+            { id: "cs_first_expiry", mode: "subscription" },
+            { id: "cs_second_expiry", mode: "subscription" },
+          ],
+          has_more: false,
+        }),
+        expire: async (id: string) => {
+          expired.push(id);
+          await new Promise(resolve => setTimeout(resolve, 1_200));
+          return { id };
+        },
+      },
+    },
+  };
+
+  const lifecycleLock: typeof withAccountLifecycleLock = (userId, fn, deps) =>
+    withAccountLifecycleLock(userId, fn, {
+      ...deps,
+      ttlMs: 1_000,
+      heartbeatMs: 10_000,
+      advisoryCompat: false,
+    });
+
+  await withProbeUser(async context => {
+    const response = await callDeleteAccount(context, stripe, undefined, { lifecycleLock });
+    assert.equal(response.status, 503, "the expired lease fails closed");
+    assert.deepEqual(expired, ["cs_first_expiry"], "no second session is expired after takeover");
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.equal(survivors.length, 1, "nothing was deleted");
+    const audits = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.target, context.userId));
+    assert.equal(audits.length, 0, "no deletion audit was written");
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, context.userId));
+  });
+});
+
+test("gate: a bare 404 from expire is unverifiable, not gone", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, auditLogs, users } = await import("../src/db/schema");
+
+  const stripe = {
+    subscriptions: { list: async () => ({ data: [], has_more: false }) },
+    checkout: {
+      sessions: {
+        list: async () => ({ data: [{ id: "cs_bare_404", mode: "subscription" }], has_more: false }),
+        expire: async () => {
+          throw Object.assign(new Error("Not Found"), { statusCode: 404 });
+        },
+      },
+    },
+  };
+
+  await withProbeUser(async context => {
+    const response = await callDeleteAccount(context, stripe);
+    assert.equal(response.status, 503, "an unidentified 404 fails closed");
+    assert.match(await response.text(), /billing_unverifiable/);
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.equal(survivors.length, 1, "nothing was deleted");
+    const audits = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.target, context.userId));
+    assert.equal(audits.length, 0, "no deletion audit was written");
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, context.userId));
+  });
+});
+
+test("gate: resource_missing from expire is settled", gated, async () => {
+  assertLocalDisposableDatabase();
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { users } = await import("../src/db/schema");
+
+  const stripe = {
+    subscriptions: { list: async () => ({ data: [], has_more: false }) },
+    checkout: {
+      sessions: {
+        list: async () => ({ data: [{ id: "cs_resource_missing", mode: "subscription" }], has_more: false }),
+        expire: async () => {
+          throw Object.assign(new Error("No such checkout session"), { statusCode: 404, code: "resource_missing" });
+        },
+      },
+    },
+  };
+
+  await withProbeUser(async context => {
+    const response = await callDeleteAccount(context, stripe);
+    assert.equal(response.status, 200, "Stripe's resource-missing response settles the session");
+    const gone = await db.select({ id: users.id }).from(users).where(eq(users.id, context.userId));
+    assert.deepEqual(gone, [], "the account was deleted");
+  });
 });

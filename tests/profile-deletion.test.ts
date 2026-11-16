@@ -40,7 +40,7 @@ test("the route's own deletion transaction: audit row first, then the delete", {
   const token = randomUUID();
   const [user] = await db
     .insert(users)
-    .values({ name: "Deletion probe", email: `deletion-${token}@example.test`, passwordHash: "not-a-login" })
+    .values({ name: "Deletion probe", email: `deletion-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
     .returning({ id: users.id });
 
   /*

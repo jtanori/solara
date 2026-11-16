@@ -1,7 +1,8 @@
 # Plan — ship #142 (account deletion + billing coordination) and close what it leaves open
 
-As of: `2821d1f`. This plan is written **before** the fixes it describes; §2.7 onwards records
-execution, so a reader can see the intent and the result side by side rather than a reconstruction.
+As of: `b3a0a12` plus the v3.2 coordination-pool follow-up (working tree; not yet committed). This
+plan is written **before** the fixes it describes; §7 onwards records execution, so a reader can see
+the intent and the result side by side rather than a reconstruction.
 
 > **Why a plan file and not just a PR body.** The PR body records what was *done* and grew by
 > appending a section per review round. That reads as progress and hides drift: the body still
@@ -125,13 +126,20 @@ Ordered so each step's evidence exists before the next depends on it.
 
 `deploy:required` — runtime behaviour changes in two route handlers and the Stripe webhook.
 
-- No `drizzle/` change, so no migration dispatch. Confirm on the diff, not on the label.
+- **Migration-bearing:** `0005_account_lifecycle_leases` adds the lease table and index. Preflight the
+  preview DB against the exact PR head before `scripts/deploy.sh` checks preview readiness:
+  `npx tsx scripts/db-remote.ts --pr <n> --env staging`.
 - Staging QA: delete an account with no billing (200, gone, audit row with `actor_id` null and
-  `target` = deleted id); attempt deletion with a live subscription (blocked 409, not 500); replay an
-  unmapped subscription webhook (quarantine, **no** cancellation); replay one with a provable
-  `account:delete` row (cancellation).
-- Rollback: revert the squash commit and redeploy. Prior behaviour returns (deletion 500, pagination
-  blind spot); nothing to unwind in schema or data.
+  `target` = deleted id, plus the association row); attempt deletion with a live subscription
+  (blocked 409, not 500); deliver a new unmapped subscription event (quarantine, **no** cancellation; replaying the same
+  event id is a duplicate); deliver one with a provable `deleted_customers` association
+  (cancellation); confirm `/api/ready`.
+- While `0005` is applied but old code is still serving, the old deployment's `/api/ready` returns
+  `503`. That is expected readiness skew, not a rollback signal.
+- **Rollback:** after `0005`, old code does not know the migration and cannot pass `/api/ready`.
+  Recovery is forward-fix; a tested restore is the last resort. Do not promote a pre-`0005`
+  deployment. `LIFECYCLE_ADVISORY_COMPAT` is on during cutover and must be set to `0` after old
+  instances drain.
 
 ## 6. Known limits after this PR
 
@@ -143,6 +151,22 @@ Ordered so each step's evidence exists before the next depends on it.
   unfixed. Same class as #3 above, on a path this PR does not touch.
 - The `tests/billing-state.test.ts` helpers remain the unit-level proof; E2 is the route-level proof.
   Both are needed — the first would pass a mutation the second catches.
+- Coordination uses `account_lifecycle_leases` (TTL 60s, heartbeat 15s, acquire wait 5s) on the app
+  pool; those queries are short and autocommit. During cutover, compatibility additionally holds one
+  coordination connection for up to the Stripe transport timeout; with
+  `DB_COORDINATION_POOL_MAX=3`, a burst of compatibility holders returns 503 rather than consuming
+  the app pool. Lease queries use the app pool and are not starved by those holders.
+- An ambiguous `sessions.create` timeout can leave a server-side session after the lock is released.
+  Deletion expires it if still open; the webhook cancels a paid subscription but does not refund the
+  initial charge.
+- The webhook does not take the account lifecycle lock. A subscription row can be written after the
+  final database re-check; provider checks, post-commit cleanup, and the webhook are compensating,
+  not a full serialization.
+- Same-event webhook replay is a duplicate; only a new event id re-evaluates ownership.
+- Expiring sessions happens before the final `FOR UPDATE` gate, so a blocked final gate can leave
+  sessions expired without deleting the account.
+- A crash between `customers.create` and the DB link can leave an orphan customer; the idempotency key
+  makes retry safe, but there is no sweeper.
 
 ---
 
@@ -195,3 +219,108 @@ was checked by reading `.github/workflows/ci.yml` rather than changed.
 | Retry queue for `cancelBillingForDeletedAccount` | The account is already gone; Stripe's own webhook retry is the durable retry, and the failure is logged with the customer id. |
 | Paginated reads in `checkout/route.ts` | That is **#143**, a different path. Included in §6 so it cannot go quiet. |
 | Approval counts / second reviewer | Catch-22 rule. Never. |
+
+### 7.6 Coordination-pool follow-up (v3.2, historical)
+
+This section records the v3.2 design and is superseded by §7.7; it is not the current mechanism. It
+superseded the earlier `lock_timeout`-based acquisition described in §3 E4 and §7.3 M4.
+
+**Design.** Checkout and deletion now share a dedicated coordination pool (`DB_COORDINATION_POOL_MAX`,
+default 3, max 10, `application_name=solara-coordination`) and a bounded
+`pg_try_advisory_lock(1, hashtext('account-deletion:<userId>'))` session lock. The lock is acquired
+outside a transaction, released in `finally`, and the client is destroyed if rollback or unlock fails.
+Checkout uses autocommit `drizzle(client)`; deletion runs the provider assessment and expiry while
+holding the lock, then one short `drizzle(client).transaction` with `lock_timeout=5s` and
+`statement_timeout=20s` for the `FOR UPDATE` re-read, final subscription check, audit rows,
+association row, and delete. No transaction spans Stripe I/O.
+
+**Failure handling.** A transient checkout-session expiry is a 503 and deletes nothing. A vanished or
+already-expired session is treated as gone. The final transaction re-reads role, verification and
+customer id; a customer change fails closed. `kind:"gone"` maps to 401.
+
+**Tests added.**
+
+| File | Coverage |
+|---|---|
+| `tests/account-lifecycle-lock.test.ts` | same-user exclusion, different-user concurrency, bounded timeout, rollback safety net, unlock/client-destruction failure, no `idle in transaction` |
+| `tests/checkout-deletion-race.test.ts` | real stalled Stripe call: coordination connection held, app pool free, lock released; route uses injected lock; lock-timeout 503 |
+| `tests/profile-deletion-gate.test.ts` | customer linked under lock, owner/customer changes, final DB subscription re-check, expiry failure, `gone` 401, pool unavailable 503, final `FOR UPDATE` serialization |
+| `tests/db-pool.test.ts` | app/coordination names, defaults, caps, TLS, `allowExitOnIdle` |
+
+**Mutation evidence (each from a clean file, restored after the run).**
+
+| Mutation | Test result |
+|---|---|
+| Remove `pg_advisory_unlock` | lock test **pass 0 / fail 1** |
+| Ignore the injected `lifecycleLock` | app-pool isolation **pass 0 / fail 1** |
+| Remove the final database subscription re-check | final re-check **pass 0 / fail 1** |
+| Catch-and-continue an expiry failure | expiry failure **pass 0 / fail 1** |
+| Remove the customer-id change check | customer change **pass 0 / fail 1** |
+| Remove `FOR UPDATE` | concurrent role change **pass 0 / fail 1** |
+| Remove the `ROLLBACK` safety net | idle-in-transaction assertion **pass 0 / fail 1** |
+
+Two probes initially survived because the test was too weak: the lock probe shared the helper's pool
+(so the same session saw its own lock), and the rollback probe asserted only lock freedom, not
+transaction state. Both tests were strengthened and the mutations then failed as required.
+
+**Verification (v3.2).** Node `22.23.4`, PostgreSQL 16.15, disposable database:
+
+- Full suite **425 pass / 0 fail / 0 skipped**, run twice (247s and 258s).
+- `npx next typegen`, `tsc --noEmit`, `eslint src tests scripts --max-warnings=0`, `npm run build`, `npm run db:manifest:check`, `npm run db:check` (12/12 tables, 14/14 columns, 3/3 indexes) all clean.
+- `npm audit --omit=dev --audit-level=high`: 0 vulnerabilities.
+- Touched-file residue delta after `account-lifecycle-lock`, `checkout-deletion-race`, `profile-deletion-gate`, `profile-deletion`, and `db-pool`: **0 users / 0 audit rows / 0 associations / 0 subscriptions / 0 stripe events**. The disposable database still contains 2 users, 23 audit rows and 3 associations from earlier exploratory/failed runs before the final test fixes; those are not produced by the final touched suite.
+
+### 7.7 Lease follow-up (v3.3)
+
+The v3.2 session-level advisory lock is not preserved by PgBouncer transaction pooling, so the
+coordination mechanism is now a database lease.
+
+**Schema.** `0005_account_lifecycle_leases` adds `account_lifecycle_leases` (`user_id` PK, `owner`,
+`expires_at`, `created_at`, `updated_at`) and `account_lifecycle_leases_expires_idx`. No FK to
+`users`: the lease can outlive the user and deletion runs under it.
+
+**Protocol.** Acquire with `INSERT ... ON CONFLICT DO UPDATE ... WHERE expires_at <= now()`; TTL 60s,
+heartbeat 15s, acquire wait 5s. Lease acquire/heartbeat/release use the app pool: they are short,
+autocommit statements and are not held across provider I/O. Compatibility mode holds the old
+one-argument advisory lock on the separate coordination pool, so it cannot starve lease queries. The
+owner is fenced with `select 1 ... for update` inside the final checkout/deletion transaction, and
+both paths lock the lease row before the user row. Release deletes only the owned row.
+
+**Expiry.** The provider assessment remains read-only and deadline-bounded. Expiry is capped at 100
+open sessions and 20s; after the deadline the route aborts remaining calls and waits for the in-flight
+expiry before releasing the lease. The lease is re-checked before and after every session expiry, so
+a lost/taken-over lease stops the next Stripe write even though the final database fence comes later.
+A failed/lost lease fails closed with 503 and deletes nothing. The final delete transaction uses
+`statement_timeout=14s`, below the app pool's 15s. Expired-lease cleanup compares against database
+`now()`, never the application clock. A checkout-session expiry is settled only on Stripe's
+`resource_missing` code or an explicit already-expired 400; a bare 404 is unverifiable and blocks
+deletion.
+
+**Compatibility.** `LIFECYCLE_ADVISORY_COMPAT` defaults on. While enabled, the lease holder also takes
+the old one-argument `pg_advisory_xact_lock(hashtext('account-deletion:<userId>'))` so pre-lease
+instances are excluded. Set it to `0` after they drain.
+
+**Deploy.** Preflight the preview DB with `db-remote --pr <n> --env staging` before `deploy.sh`; the
+new preview needs `0005` before preview readiness can pass. After `0005`, old code's `/api/ready`
+returns 503 and automatic rollback cannot verify readiness: forward-fix or restore, do not promote a
+pre-`0005` deployment.
+
+**Mutation evidence (v3.3).**
+
+| Mutation | Test result |
+|---|---|
+| Acquire ignores `expires_at <= now()` | same-user serialisation **fail 1** |
+| `assertHeld` drops the owner predicate | old-owner fencing **fail 1** |
+| Deletion drops the final `lease.assertHeld` | lease-expiry deletion **fail 1 (200, expected 503)** |
+| Expiry cap disabled | cap test **fail 1 (200, expected 503)** |
+| `checkout_session_not_open` treated as gone | complete/open classifier **fail 1 (200, expected 503)** |
+| Checkout omits session cleanup after lease loss | lease-loss checkout **fail 1 (no expire call)** |
+| Deadline aborts without awaiting in-flight expiry | deadline test **fail 1 (settled false)** |
+| Compatibility uses the lease pool instead of a separate pool | pool-starvation test **fail 1 (CoordinationPoolUnavailable)** |
+| Expiry loop skips its per-session lease check | mid-expiry takeover test **fail 1 (second session expired)** |
+| Bare 404 treated as a missing checkout session | bare-404 test **fail 1 (200, expected 503)** |
+| `RELEASE_SQL` drops the owner predicate | release-takeover test **fail 1 (new owner row deleted)** |
+| Lease cleanup uses `new Date()` instead of DB `now()` | cleanup clock-skew test **fail 1 (future row deleted)** |
+
+**Verification (v3.3).** Full suite **442 pass / 0 fail / 0 skipped**; `db:check` is **13/13 tables,
+19/19 columns, 4/4 indexes**; typecheck, lint, build and manifest check clean.

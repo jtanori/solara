@@ -80,7 +80,7 @@ export async function probeReadiness(pool: Pool): Promise<ReadinessSnapshot> {
       select table_name, column_name, is_nullable, data_type, column_default
       from information_schema.columns
       where table_schema = 'public'
-        and table_name in ('users', 'rate_limits', 'email_tokens')
+        and table_name in ('users', 'rate_limits', 'email_tokens', 'account_lifecycle_leases')
     `);
     const missingColumns = findMissingColumns(columns.rows);
 

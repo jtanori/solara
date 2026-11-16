@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { subscriptions, users } from "@/db/schema";
+import { LifecycleLeaseLost, withAccountLifecycleLock } from "@/lib/account-lifecycle-lock";
 import { currentUser } from "@/lib/auth";
 import { appOrigin, billingIsConfigured, getStripe, priceIdFor, type BillingCurrency } from "@/lib/billing";
 import { getLocale } from "@/lib/i18n-server";
@@ -20,6 +21,8 @@ export type CheckoutDeps = {
   currentUser?: typeof currentUser;
   /** `getLocale()` reads Next's request-scoped cookies, so tests supply one. */
   locale?: "en" | "es";
+  /** Tests inject a dedicated coordination pool through this seam. */
+  lifecycleLock?: typeof withAccountLifecycleLock;
 };
 
 export async function POST(request: Request) {
@@ -66,56 +69,90 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
     const price = await stripe.prices.retrieve(priceId);
     if (!price.active || price.currency !== currency || !price.recurring || price.unit_amount == null) return NextResponse.json({ error: "Configured price is unavailable." }, { status: 503 });
     /*
-     * ONE lock scope for the whole decision, not just for linking a customer.
+     * ONE lease scope for the whole decision, not just for linking a customer.
      *
      * An earlier version held the lock only while creating and linking the
      * customer, then released it and went on to list sessions, create a session,
-     * and return an existing session's URL. Deletion takes the same lock, so it
+     * and return an existing session's URL. Deletion takes the same lease, so it
      * could hold it, finish listing/expiring sessions, and then this request
      * could create a session - or hand back one it found - that deletion had
-     * already decided was gone. The final "is the user still there?" check was a
-     * separate transaction: a check, not mutual exclusion.
+     * already decided was gone.
      *
      * Everything below runs while deletion is excluded for this user: the user
      * re-read, customer create/link, provider subscription and open-session
      * lookups, session create, and the decision to return a URL. This applies to
      * BOTH paths - a user who already has a customer id re-checks survival and
-     * creates its session under the same lock, which the previous version did
+     * creates its session under the same lease, which the previous version did
      * not do at all.
      *
-     * Cost: holds the lock across Stripe I/O and a pool connection for the whole
-     * scope. `lock_timeout` bounds acquisition (a stuck deletion must not pin
-     * checkout); `statement_timeout` bounds SQL. Neither bounds the HTTP calls
-     * themselves - a known limit, documented, not papered over.
+     * Cost: lease queries are short autocommit statements on the app pool. The
+     * optional compatibility advisory lock uses the separate coordination pool,
+     * so it cannot starve those queries. A slow provider therefore does not pin
+     * an app-pool transaction for the whole check. The Stripe client has
+     * per-request timeouts.
      */
-    const outcome = await db.transaction(async tx => {
-      await tx.execute(sql`select set_config('lock_timeout', '5s', true)`);
-      await tx.execute(sql`select set_config('statement_timeout', '60s', true)`);
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${user.id}`}))`);
-
+    const withLock = deps.lifecycleLock ?? withAccountLifecycleLock;
+    const outcome = await withLock(user.id, async (clientDb, lease) => {
       /*
-       * Deletion may have won before we got the lock. `currentUser()` was read
-       * before this request did any I/O, and `db.update` on a missing row affects
-       * zero rows without throwing - the silent no-op that let the original race
-       * bill a deleted account.
+       * Re-read under the lease. `currentUser()` was read before this request did
+       * any I/O; the row may have been deleted while this request waited, and the
+       * customer id may have changed since the snapshot.
        */
-      const [survivor] = await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).limit(1);
+      const [survivor] = await clientDb
+        .select({ id: users.id, stripeCustomerId: users.stripeCustomerId })
+        .from(users)
+        .where(eq(users.id, user.id))
+        .limit(1);
       if (!survivor) return { kind: "gone" as const, orphanCustomer: null };
 
-      let customer = user.stripeCustomerId;
+      /*
+       * Stop the heartbeat and fence the lease immediately before a result is
+       * returned. A URL that leaves this handler must be backed by a lease that
+       * is still valid, and the user row must still exist. The lease row is
+       * locked first so deletion and checkout share one lock order.
+       */
+      const assertStillOwner = async () => {
+        await lease.stopHeartbeat();
+        await clientDb.transaction(async tx => {
+          await tx.execute(sql`select set_config('lock_timeout', '5s', true)`);
+          await lease.assertHeld(tx);
+          const [still] = await tx
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.id, user.id))
+            .for("update");
+          if (!still) throw new LifecycleLeaseLost();
+        });
+      };
+
+      /*
+       * Stop before creating Stripe-side state if the lease heartbeat already
+       * failed. A final fence cannot undo a customer or session created after
+       * takeover; this narrows the window to the in-flight call itself.
+       */
+      const assertNotLost = () => {
+        if (lease.isLost()) throw new LifecycleLeaseLost();
+      };
+
+      let customer = survivor.stripeCustomerId;
       if (!customer) {
+        assertNotLost();
         const created = await stripe.customers.create(
           { email: user.email, metadata: { solara_user_id: user.id } },
           { idempotencyKey: `solara-customer-${user.id}` },
         );
-        const written = await tx
+        if (lease.isLost()) {
+          await stripe.customers.del(created.id).catch(() => undefined);
+          throw new LifecycleLeaseLost();
+        }
+        const written = await clientDb
           .update(users)
           .set({ stripeCustomerId: created.id })
           .where(eq(users.id, user.id))
           .returning({ id: users.id });
 
         if (written.length === 0) {
-          // Cannot happen while the lock is held, but a silent orphan would be
+          // Cannot happen while the lease is held, but a silent orphan would be
           // worse than a redundant guard.
           return { kind: "gone" as const, orphanCustomer: created.id };
         }
@@ -125,6 +162,7 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
       // Query Stripe too: a completed checkout may not have reached our webhook yet.
       const providerSubscriptions = await stripe.subscriptions.list({ customer, status: "all", limit: 100 });
       if (providerSubscriptions.data.some(subscription => ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"].includes(subscription.status))) {
+        await assertStillOwner();
         return { kind: "already-subscribed" as const };
       }
 
@@ -132,9 +170,13 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
       const openSession = openSessions.data.find(candidate => candidate.mode === "subscription" && candidate.currency === currency && candidate.url);
       // Handing back an existing URL is part of the decision: the session must
       // not be payable for an account that no longer exists, so it is returned
-      // from inside the lock rather than from a scope deletion can interleave.
-      if (openSession?.url) return { kind: "url" as const, url: openSession.url };
+      // only after the final lease/user fence.
+      if (openSession?.url) {
+        await assertStillOwner();
+        return { kind: "url" as const, url: openSession.url };
+      }
 
+      assertNotLost();
       const origin = appOrigin(request);
       const session = await stripe.checkout.sessions.create({
         mode: "subscription", customer,
@@ -148,6 +190,15 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
         allow_promotion_codes: true,
       }, { idempotencyKey: `solara-checkout-${user.id}-${currency}-${Math.floor(Date.now() / 900000)}` });
       if (!session.url) throw new Error("Checkout URL missing");
+
+      try {
+        await assertStillOwner();
+      } catch (error) {
+        // The session was created moments before the lease was lost. Expire it
+        // so a deleted account cannot be handed a payable URL.
+        await stripe.checkout.sessions.expire(session.id).catch(() => undefined);
+        throw error;
+      }
 
       return { kind: "url" as const, url: session.url };
     });
@@ -165,7 +216,11 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
     }
     return NextResponse.json({ url: outcome.url });
   } catch (error) {
-    log.error("billing.checkout_failed", { ...requestMeta(request), userId: user.id, error });
+    if (error instanceof LifecycleLeaseLost) {
+      log.error("billing.checkout_lease_lost", { ...requestMeta(request), userId: user.id });
+    } else {
+      log.error("billing.checkout_failed", { ...requestMeta(request), userId: user.id, error });
+    }
     return NextResponse.json({ error: locale === "es" ? "No pudimos abrir el pago. Inténtalo de nuevo." : "Could not open checkout. Please try again." }, { status: 503 });
   }
 }

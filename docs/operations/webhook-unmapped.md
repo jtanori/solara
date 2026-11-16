@@ -13,8 +13,8 @@ A Stripe webhook arrived for a subscription whose owner could not be resolved:
 
 - `subscription.metadata.solara_user_id` names no `users` row, **and**
 - `users.stripe_customer_id` has no match, **and**
-- no `account:delete` audit row proves the account was deleted (neither targeting the user id nor
-  targeting the Stripe customer id).
+- no `deleted_customers` row proves the account-customer association at deletion time (the
+  `account:delete` audit rows are the trail, but the association is the proof).
 
 Actions recorded on `audit_logs.target` = the **subscription id**:
 
@@ -43,18 +43,31 @@ select action, target, actor_id, created_at
 from audit_logs
 where target in ('<SUB_ID>', '<CUSTOMER_ID>', '<USER_ID_IF_KNOWN>')
 order by created_at desc;
+
+select stripe_customer_id, user_id, deleted_at
+from deleted_customers
+where stripe_customer_id = '<CUSTOMER_ID>';
 ```
 
 Then classify:
 
 | Finding | Action |
 |---|---|
-| An `account:delete` row targets the customer id | The account **is** gone: cancel the subscription (`stripe subscriptions cancel "$SUB_ID"`), then confirm a `webhook:unmapped_cancelled` row appears on the next webhook, or record the manual cancellation in the PR/issue. |
+| A `deleted_customers` row exists for the customer and its `user_id` matches the subscription or customer identity | The account **is** gone: cancel the subscription (`stripe subscriptions cancel "$SUB_ID"`), then confirm a `webhook:unmapped_cancelled` row appears on the next webhook, or record the manual cancellation in the PR/issue. Check whether the initial invoice was charged; cancellation does not refund it. |
 | The user still exists but `metadata.solara_user_id` is missing/wrong | **Repair, do not cancel.** Re-link the subscription to the user and let the webhook re-apply it. |
 | No user, no deletion evidence, subscription is a duplicate/test artefact | Cancel, and record *why* in the issue. |
 | No user, no deletion evidence, subscription is a real customer's | **Stop and escalate to the operator before cancelling.** This is the case the quarantine exists for. |
 
-## 3. What not to do
+## 3. Replay semantics
+
+A replay of the **same event id** is a `duplicate`: the event was already claimed, so it is not
+re-evaluated. Only a new event id (for example, a later `customer.subscription.updated`) re-runs the
+ownership check. If no new event arrives, repair the mapping manually and record why.
+
+The webhook does not take the account lifecycle lock. Its cancellation is a compensating action for
+an ambiguous checkout/deletion window, not a full serialization guarantee.
+
+## 4. What not to do
 
 - **Do not cancel on `webhook:unmapped` alone.** It is not evidence of deletion; the code refuses for
   the same reason.
@@ -64,7 +77,7 @@ Then classify:
 - **Do not "fix" an unmapped subscription by editing `metadata` only.** The next webhook will
   re-resolve, but the `subscriptions` row still has to be written for access and reporting.
 
-## 4. Why this is a runbook and not automation
+## 5. Why this is a runbook and not automation
 
 Automating "cancel anything unmapped" trades a rare manual step for a rare irreversible charge to
 the wrong customer. Automating "cancel anything unmapped **and** proven deleted" is what the code
@@ -72,7 +85,7 @@ already does at the webhook. The remaining cases are exactly the ones that need 
 about which human or customer the record belongs to — so the automation stops there on purpose, and
 this document is the owner the acceptance criterion asks for.
 
-## 5. Detection gap worth knowing
+## 6. Detection gap worth knowing
 
 There is no sweeper reconciling Stripe against the database. An orphaned customer whose subscription
 never fires another webhook stays invisible until someone looks. Filed as future work in

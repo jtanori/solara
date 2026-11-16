@@ -2,6 +2,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
+import { sql } from "drizzle-orm";
 
 /*
  * The checkout/deletion interleaving (#144).
@@ -123,7 +124,7 @@ async function withCleanup(
   } finally {
     const { eq, inArray } = await import("drizzle-orm");
     const { db } = await import("../src/db");
-    const { auditLogs, deletedCustomers, users } = await import("../src/db/schema");
+    const { accountLifecycleLeases, auditLogs, deletedCustomers, users } = await import("../src/db/schema");
     const targets = [userId, ...extraTargets].filter((value): value is string => Boolean(value));
     if (targets.length > 0) {
       await db.delete(auditLogs).where(inArray(auditLogs.target, targets));
@@ -136,7 +137,9 @@ async function withCleanup(
     }
     if (userId) {
       // The user row may already be gone (the deletion test) or still present
-      // (the live-account test); deleting twice is harmless.
+      // (the live-account test); deleting twice is harmless. The lease row has
+      // no FK, so it must be cleaned explicitly.
+      await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, userId));
       await db.delete(users).where(eq(users.id, userId));
     }
   }
@@ -332,9 +335,10 @@ test("lock: a deletion waits for a concurrent checkout and sees what it linked (
    * would otherwise have missed entirely.
    */
   assertLocalDisposableDatabase();
-  const { eq, sql } = await import("drizzle-orm");
+  const { eq } = await import("drizzle-orm");
   const { db } = await import("../src/db");
   const { users } = await import("../src/db/schema");
+  const { withAccountLifecycleLock } = await import("../src/lib/account-lifecycle-lock");
   const { defaultDeleteUser } = await import("../src/app/api/profile/route");
 
   const token = randomUUID();
@@ -346,14 +350,13 @@ test("lock: a deletion waits for a concurrent checkout and sees what it linked (
   const events: string[] = [];
 
   await withCleanup(user.id, async () => {
-    // Stand-in for checkout: same lock key, holds it while linking.
-    const checkout = db.transaction(async tx => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${user.id}`}))`);
+    // Stand-in for checkout: the same lifecycle lock, held while linking.
+    const checkout = withAccountLifecycleLock(user.id, async clientDb => {
       events.push("checkout:locked");
       await new Promise(resolve => setTimeout(resolve, 250));
-      await tx.update(users).set({ stripeCustomerId: customerId }).where(eq(users.id, user.id));
+      await clientDb.update(users).set({ stripeCustomerId: customerId }).where(eq(users.id, user.id));
       events.push("checkout:linked");
-    });
+    }, { waitMs: 1_000 });
 
     // Give checkout the lock first, then start the deletion.
     await new Promise(resolve => setTimeout(resolve, 40));
@@ -376,14 +379,14 @@ test("lock: a deletion whose lock is held expresses fail-closed instead of hangi
    * would otherwise pin this user's deletion (and their checkout) indefinitely —
    * an availability bug the coordination itself introduced.
    *
-   * `set_config('lock_timeout', '5s')` bounds it. What matters for correctness is
-   * the *direction* of the resulting failure: the deletion must abandon the
-   * attempt, delete nothing, and surface an error the user can retry — never
+   * The bounded lease acquire loop gives up at 5s. What matters for
+   * correctness is the *direction* of the resulting failure: the deletion must
+   * abandon the attempt, delete nothing, and surface a retryable 503 — never
    * proceed as if the gate had passed.
    *
    * The competing session gets its own pool. Using the module pool would consume
-   * one of its five connections for the length of the test and make any later
-   * test in this file depend on the order it ran in.
+   * one of its connections for the length of the test and make any later test in
+   * this file depend on the order it ran in.
    */
   process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
   process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
@@ -391,8 +394,8 @@ test("lock: a deletion whose lock is held expresses fail-closed instead of hangi
 
   assertLocalDisposableDatabase();
   const { eq } = await import("drizzle-orm");
-  const { db, createDatabasePool } = await import("../src/db");
-  const { users } = await import("../src/db/schema");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, users } = await import("../src/db/schema");
   const { deleteAccount } = await import("../src/app/api/profile/route");
 
   const token = randomUUID();
@@ -401,13 +404,13 @@ test("lock: a deletion whose lock is held expresses fail-closed instead of hangi
     .values({ name: "Lock probe", email: `lock-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
     .returning({ id: users.id });
 
-  // A single dedicated connection holds the same lock the deletion wants.
-  const holder = createDatabasePool(process.env.DATABASE_URL!, { ...process.env, DB_POOL_MAX: "1" });
-  const client = await holder.connect();
-
   try {
-    await client.query("begin");
-    await client.query("select pg_advisory_xact_lock(hashtext($1))", [`account-deletion:${user.id}`]);
+    // A different owner holds an unexpired lease, exactly as a live peer would.
+    await db.insert(accountLifecycleLeases).values({
+      userId: user.id,
+      owner: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000),
+    });
 
     await withCleanup(user.id, async () => {
       const started = Date.now();
@@ -425,16 +428,15 @@ test("lock: a deletion whose lock is held expresses fail-closed instead of hangi
       });
       const elapsed = Date.now() - started;
 
-      assert.equal(response.status, 500, "a held lock is an error the user can retry, not a silent success");
-      assert.ok(elapsed < 15_000, `gave up on the lock in ${elapsed}ms instead of hanging`);
+      assert.equal(response.status, 503, "a held lease is a retryable error, not a silent success");
+      assert.ok(elapsed < 15_000, `gave up on the lease in ${elapsed}ms instead of hanging`);
 
       const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
-      assert.equal(survivors.length, 1, "failing to acquire the lock deleted nothing");
+      assert.equal(survivors.length, 1, "failing to acquire the lease deleted nothing");
     });
   } finally {
-    await client.query("rollback").catch(() => undefined);
-    client.release();
-    await holder.end();
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, user.id));
+    await db.delete(users).where(eq(users.id, user.id));
   }
 });
 
@@ -652,6 +654,199 @@ test("pool: a stalled provider releases its connection, and the pool recovers (#
     const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
     assert.equal(survivors.length, 1, "the pool recovered: unrelated database work still completes");
   } finally {
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("pool: a stalled checkout holds coordination, not an app-pool connection (#142 review)", gated, async () => {
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { randomUUID } = await import("node:crypto");
+  const { Pool } = await import("pg");
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, users } = await import("../src/db/schema");
+  const { withAccountLifecycleLock } = await import("../src/lib/account-lifecycle-lock");
+  const { startCheckout } = await import("../src/app/api/billing/checkout/route");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Coordination pool probe", email: `coord-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
+    .returning({ id: users.id });
+
+  const lockPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 3,
+    application_name: `solara-coordination-test-${token}`,
+    allowExitOnIdle: true,
+  });
+  let lockCalls = 0;
+  const lifecycleLock: typeof withAccountLifecycleLock = (userId, fn, deps) => {
+    lockCalls += 1;
+    return withAccountLifecycleLock(userId, fn, { ...deps, pool: lockPool, compatPool: lockPool });
+  };
+
+  let providerStarted!: () => void;
+  const started = new Promise<void>(resolve => { providerStarted = resolve; });
+  let releaseProvider!: () => void;
+  const providerGate = new Promise<void>(resolve => { releaseProvider = resolve; });
+
+  const calls: string[] = [];
+  const customerId = `cus_coord_${token}`;
+  const stripe = {
+    prices: { retrieve: async () => ({ id: "price_test_mxn", active: true, currency: "mxn", recurring: { interval: "month" }, unit_amount: 1000 }) },
+    customers: { create: async () => ({ id: customerId }), del: async () => ({}) },
+    subscriptions: {
+      list: async () => {
+        calls.push("subscriptions.list");
+        providerStarted();
+        await providerGate;
+        return { data: [], has_more: false };
+      },
+    },
+    checkout: {
+      sessions: {
+        list: async () => ({ data: [], has_more: false }),
+        create: async () => ({ id: "cs_coord", url: "https://checkout.stripe.test/cs_coord" }),
+        expire: async () => ({}),
+      },
+    },
+  };
+
+  try {
+    const checkout = startCheckout(new Request("http://localhost/api/billing/checkout", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ currency: "mxn" }),
+    }), {
+      stripe: stripe as never,
+      currentUser: (async () => ({
+        id: user.id, email: `coord-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: null,
+      })) as never,
+      locale: "en",
+      lifecycleLock,
+    });
+
+    await started;
+    assert.equal(lockCalls, 1, "the shipped route used the injected lifecycle lock");
+
+    const { rows } = await db.execute<{ count: number }>(sql`
+      select count(*)::int as count
+      from pg_stat_activity
+      where application_name = 'solara-app' and state = 'idle in transaction'
+    `);
+    assert.equal(rows[0]?.count, 0, "the stalled checkout holds no app-pool transaction");
+
+    const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    assert.equal(survivors.length, 1, "unrelated app-pool work still completes");
+
+    const held = await db
+      .select({ owner: accountLifecycleLeases.owner })
+      .from(accountLifecycleLeases)
+      .where(eq(accountLifecycleLeases.userId, user.id));
+    assert.equal(held.length, 1, "the lease is held while Stripe is stalled");
+
+    releaseProvider();
+    const response = await checkout;
+    assert.equal(response.status, 200);
+    assert.ok(calls.includes("subscriptions.list"));
+
+    const after = await db
+      .select({ owner: accountLifecycleLeases.owner })
+      .from(accountLifecycleLeases)
+      .where(eq(accountLifecycleLeases.userId, user.id));
+    assert.deepEqual(after, [], "the lease is released");
+  } finally {
+    releaseProvider();
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, user.id));
+    await db.delete(users).where(eq(users.id, user.id));
+    await lockPool.end();
+  }
+});
+
+test("race: a checkout that loses its lease returns no URL and expires the new session", gated, async () => {
+  process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+  process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+  process.env.STRIPE_PRICE_ID_MXN ??= "price_test_mxn";
+
+  assertLocalDisposableDatabase();
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/db");
+  const { accountLifecycleLeases, users } = await import("../src/db/schema");
+  const { withAccountLifecycleLock } = await import("../src/lib/account-lifecycle-lock");
+  const { startCheckout } = await import("../src/app/api/billing/checkout/route");
+
+  const token = randomUUID();
+  const [user] = await db
+    .insert(users)
+    .values({ name: "Lease loss probe", email: `lease-loss-${token}@example.test`, passwordHash: "not-a-login", emailVerifiedAt: new Date() })
+    .returning({ id: users.id });
+
+  let releaseProvider!: () => void;
+  const providerGate = new Promise<void>(resolve => { releaseProvider = resolve; });
+  let providerStarted!: () => void;
+  const started = new Promise<void>(resolve => { providerStarted = resolve; });
+
+  const calls: string[] = [];
+  const stripe = {
+    prices: { retrieve: async () => ({ id: "price_test_mxn", active: true, currency: "mxn", recurring: { interval: "month" }, unit_amount: 1000 }) },
+    customers: { create: async () => ({ id: `cus_lease_loss_${token}` }), del: async () => ({}) },
+    subscriptions: {
+      list: async () => {
+        providerStarted();
+        await providerGate;
+        return { data: [], has_more: false };
+      },
+    },
+    checkout: {
+      sessions: {
+        list: async () => ({ data: [], has_more: false }),
+        create: async () => ({ id: "cs_lease_lost", url: "https://checkout.stripe.test/cs_lease_lost" }),
+        expire: async (id: string) => { calls.push(`sessions.expire:${id}`); return { id }; },
+      },
+    },
+  };
+
+  const lifecycleLock: typeof withAccountLifecycleLock = (userId, fn, deps) =>
+    withAccountLifecycleLock(userId, fn, {
+      ...deps,
+      ttlMs: 100,
+      heartbeatMs: 10_000,
+      advisoryCompat: false,
+    });
+
+  try {
+    const checkout = startCheckout(new Request("http://localhost/api/billing/checkout", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ currency: "mxn" }),
+    }), {
+      stripe: stripe as never,
+      currentUser: (async () => ({
+        id: user.id, email: `lease-loss-${token}@example.test`, role: "user" as const,
+        emailVerifiedAt: new Date(), stripeCustomerId: null,
+      })) as never,
+      locale: "en",
+      lifecycleLock,
+    });
+
+    await started;
+    await new Promise(resolve => setTimeout(resolve, 180));
+    releaseProvider();
+
+    const response = await checkout;
+    assert.equal(response.status, 503, "the expired lease fails closed");
+    const body = await response.text();
+    assert.doesNotMatch(body, /checkout\.stripe\.test/, "no payable URL is returned after lease loss");
+    assert.deepEqual(calls, ["sessions.expire:cs_lease_lost"], "the newly created session was expired");
+  } finally {
+    releaseProvider();
+    await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, user.id));
     await db.delete(users).where(eq(users.id, user.id));
   }
 });

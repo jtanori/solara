@@ -2,6 +2,12 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { auditLogs, deletedCustomers, subscriptions, users } from "@/db/schema";
+import {
+  CoordinationPoolUnavailable,
+  LifecycleLeaseLost,
+  LifecycleLeaseTimeout,
+  withAccountLifecycleLock,
+} from "@/lib/account-lifecycle-lock";
 import { currentUser, SESSION_COOKIE } from "@/lib/auth";
 import { getStripe } from "@/lib/billing";
 import {
@@ -30,10 +36,42 @@ import {
 
 /**
  * How long the deletion may spend on the provider check while holding the
- * per-user lock. Shorter than the transaction's `statement_timeout` (20s) so the
- * deadline is what ends a stalled call, with the SQL timeout as a backstop.
+ * per-user lease. The final transaction has its own, shorter statement timeout
+ * and holds no provider I/O.
  */
 export const PROVIDER_BILLING_DEADLINE_MS = 8_000;
+
+/** Refuse to delete while this many open checkout sessions remain. */
+export const MAX_EXPIRY_SESSIONS = 100;
+
+/** Bound the expiry phase; the lease is not released until an in-flight call settles. */
+export const EXPIRY_DEADLINE_MS = 20_000;
+
+/** Must stay below the app pool's 15s query_timeout. */
+export const FINAL_DELETE_STATEMENT_TIMEOUT_MS = 14_000;
+
+/**
+ * A provider interaction that cannot prove the account is clear of money.
+ * Mapped to 503 so the user retries instead of deleting a payable account.
+ */
+class BillingStateError extends Error {
+  readonly code = "billing_unverifiable";
+  constructor() {
+    super("billing_unverifiable");
+    this.name = "BillingStateError";
+  }
+}
+
+/** Drizzle wraps driver errors, so the SQLSTATE is usually on `cause`. */
+function databaseErrorCode(error: unknown): string | undefined {
+  const cause = (error as { cause?: { code?: string } })?.cause;
+  return cause?.code ?? (error as { code?: string })?.code;
+}
+
+function isRetryableDatabaseTimeout(error: unknown): boolean {
+  const code = databaseErrorCode(error);
+  return code === "55P03" || code === "57014";
+}
 
 export type ProfileDeps = {
   /** Test seams; production uses the real module imports above. */
@@ -53,10 +91,15 @@ export type ProfileDeps = {
    * time* — not the caller's snapshot, which may predate a checkout linking one.
    *
    * Takes the provider billing check as an argument rather than closing over it:
-   * the check must run *inside* the deletion transaction and under the per-user
-   * lock, and only the transaction's owner can guarantee that (#144).
+   * the check must run *under* the per-user lease, and only the lease owner can
+   * guarantee that (#144).
    */
-  deleteUser?: (userId: string, assessProviderBilling: ProviderBillingCheck) => Promise<DeleteUserResult>;
+  deleteUser?: (userId: string, assessProviderBilling: ProviderBillingCheck, deps?: DeleteUserDeps) => Promise<DeleteUserResult>;
+  /** Tests inject a dedicated coordination pool through this seam. */
+  lifecycleLock?: typeof withAccountLifecycleLock;
+  /** Test seams for the bounded expiry phase. */
+  expiryDeadlineMs?: number;
+  maxExpirySessions?: number;
 };
 
 export async function PATCH(request: Request) {
@@ -136,57 +179,83 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
   }
 
   /*
-   * Resolve Stripe BEFORE taking any lock. A missing Stripe is a 503
-   * (`unverifiable`), and raising that inside a held advisory lock would block
-   * this user's own checkout for the duration of the transaction for no reason.
+   * Resolve Stripe BEFORE taking the lease. A missing Stripe is a 503
+   * (`unverifiable`), and raising that inside a held lease would block this
+   * user's own checkout for no reason.
    */
   const stripe = deps.stripe ?? getStripe();
   const remove = deps.deleteUser ?? defaultDeleteUser;
 
   /*
    * The gate and the delete are ONE serialised step (#144) — see
-   * `defaultDeleteUser`. Assessing billing from the request's snapshot and then
-   * deleting under the lock, in two separate transactions, left a window in
-   * which a checkout could link a customer that the gate never saw.
-   *
-   * The Stripe check runs inside the transaction holding the per-user lock.
-   * That is deliberate and bounded: `lock_timeout` stops a stuck session from
-   * pinning this user's checkout, and the lock is per user, so one slow Stripe
-   * response never delays anyone else.
-   */
-  /*
-   * The check runs while the deletion transaction holds the per-user advisory
-   * lock, so its duration is the lock's duration. `lock_timeout` and
-   * `statement_timeout` cannot help here: they bound SQL, and this awaits HTTP.
-   * A Stripe socket that never answers would therefore hold the lock and a pool
-   * connection indefinitely while the database sat idle.
+   * `defaultDeleteUser`. The Stripe check runs while the deletion holds the
+   * per-user lifecycle lease; lease queries use the app pool, while the optional
+   * compatibility advisory lock uses the separate coordination pool. A slow
+   * provider therefore delays this user's own lifecycle work, not the app pool.
    *
    * `withDeadline` bounds the wait. It does NOT cancel the underlying request —
    * fetch keeps running until the runtime's own timeout — so this bounds the
-   * lock, not the socket, and that distinction is the point.
+   * lease, not the socket, and that distinction is the point.
    *
    * `unverifiable` is written even if the deadline is what fired, so a slow
    * provider still fails closed and still blocks the deletion.
    */
   const assessProviderBilling: ProviderBillingCheck = async (stripeCustomerId) => {
-    const expireSessions = async (sessionIds: string[]) => {
-      if (!stripe) return;
+    const expireSessions = async (
+      sessionIds: string[],
+      signal?: AbortSignal,
+      assertLease?: () => Promise<void>,
+    ) => {
+      if (!stripe) throw new BillingStateError();
       for (const sessionId of sessionIds) {
-        // A session that vanished, expired already, or was paid is not a reason
-        // to fail a deletion; a completed checkout of a deleted account is what
-        // the webhook handles. Logged with the id so it is findable.
-        await stripe.checkout.sessions.expire(sessionId).catch(error => {
-          log.error("profile.checkout_session_expire_failed", { userId: user.id, sessionId, error });
-        });
+        if (signal?.aborted) throw new BillingStateError();
+        /*
+         * Check before the write, not only in the final transaction. If the
+         * heartbeat failed or another owner took over, do not start a new
+         * Stripe mutation. The in-flight call is inherently uncancellable; this
+         * narrows the window instead of claiming it does not exist.
+         */
+        await assertLease?.();
+        try {
+          await stripe.checkout.sessions.expire(sessionId);
+        } catch (error) {
+          // Already gone is success. Anything else means we cannot prove the
+          // session is no longer payable, so fail closed instead of deleting.
+          if (isGoneCheckoutSession(error)) continue;
+          if (isCheckoutSessionNotOpen(error)) {
+            const status = await checkoutSessionStatus(stripe, sessionId);
+            if (status === "expired") continue;
+            log.error("profile.checkout_session_not_open", {
+              ...requestMeta(request),
+              userId: user.id,
+              sessionId,
+              status: status ?? "unknown",
+            });
+            throw new BillingStateError();
+          }
+          log.error("profile.checkout_session_expire_failed", {
+            ...requestMeta(request),
+            userId: user.id,
+            sessionId,
+            code: (error as { code?: string }).code ?? "unknown",
+          });
+          throw new BillingStateError();
+        }
+        /*
+         * If the lease was lost while this call was in flight, stop before the
+         * next session. The write that already completed cannot be undone, but
+         * no further sessions are touched after a takeover.
+         */
+        await assertLease?.();
       }
     };
     if (!stripe) return { state: "unverifiable", error: new Error("stripe_not_configured"), expireSessions };
 
     /*
      * A deadline alone does not stop work: `withDeadline` races promises, so the
-     * underlying list/expire calls would keep running after this returns and the
-     * transaction commits — with the lock released. A slow list could then expire
-     * a session a *new* checkout had just created.
+     * underlying list/expire calls would keep running after this returns — with
+     * the lease released. A slow list could then expire a session a *new* checkout
+     * had just created.
      *
      * Two changes close that:
      *   1. `assessDeletionBilling` is read-only (it reports sessions, expires
@@ -213,8 +282,29 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
 
   let deleted: DeleteUserResult;
   try {
-    deleted = await remove(user.id, assessProviderBilling);
+    deleted = await remove(user.id, assessProviderBilling, {
+      lifecycleLock: deps.lifecycleLock,
+      expiryDeadlineMs: deps.expiryDeadlineMs,
+      maxExpirySessions: deps.maxExpirySessions,
+    });
   } catch (error) {
+    if (error instanceof BillingStateError) {
+      const blocked = assessBillingGate("unverifiable");
+      if (blocked.kind === "blocked") {
+        return NextResponse.json(blockedResponseBody(blocked.blocker, locale), { status: blocked.blocker.status });
+      }
+    }
+    if (error instanceof LifecycleLeaseTimeout || error instanceof LifecycleLeaseLost || error instanceof CoordinationPoolUnavailable || isRetryableDatabaseTimeout(error)) {
+      log.error("profile.delete_coordination_unavailable", {
+        ...requestMeta(request),
+        userId: user.id,
+        code: databaseErrorCode(error) ?? (error instanceof Error ? error.name : "unknown"),
+      });
+      return NextResponse.json(
+        { error: es ? "El servicio está ocupado. Inténtalo de nuevo en un momento." : "The service is busy. Please try again shortly." },
+        { status: 503 },
+      );
+    }
     log.error("profile.delete_failed", { ...requestMeta(request), userId: user.id, error });
     return NextResponse.json(
       { error: es ? "No pudimos eliminar tu cuenta." : "We could not delete your account." },
@@ -222,9 +312,15 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
     );
   }
 
+  if (deleted.kind === "gone") {
+    const response = NextResponse.json({ error: es ? "Inicia sesión primero." : "Please sign in first." }, { status: 401 });
+    response.cookies.set(SESSION_COOKIE, "", { path: "/", maxAge: 0, httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" });
+    return response;
+  }
+
   /*
-   * Blocked by the gate *inside* the transaction: nothing was deleted, so this
-   * is the same 409/503 the pre-lock version returned, minus the race.
+   * Blocked by the gate *under* the lease: nothing was deleted, so this is the
+   * same 409/503 the pre-lease version returned, minus the race.
    */
   if (deleted.kind === "blocked") {
     return NextResponse.json(blockedResponseBody(deleted.blocker, locale), { status: deleted.blocker.status });
@@ -297,10 +393,17 @@ export async function deleteAccount(request: Request, deps: ProfileDeps = {}) {
  */
 export type DeleteUserResult =
   | { kind: "deleted"; customerId: string | null }
-  | { kind: "blocked"; blocker: DeletionBlocker };
+  | { kind: "blocked"; blocker: DeletionBlocker }
+  | { kind: "gone" };
+
+export type DeleteUserDeps = {
+  lifecycleLock?: typeof withAccountLifecycleLock;
+  expiryDeadlineMs?: number;
+  maxExpirySessions?: number;
+};
 
 /**
- * Stripe-side billing check, injected so the transaction can stay testable.
+ * Stripe-side billing check, injected so the leased path can stay testable.
  *
  * Called only when the database has no live subscription for the user. There is
  * no default: a default would have to answer "clear", and a fail-open answer to
@@ -308,39 +411,41 @@ export type DeleteUserResult =
  *
  * Returns the whole result rather than just the state, because `clear` carries
  * the open checkout sessions that must be expired — and they are expired by the
- * caller, inside the transaction that holds the lock. See `defaultDeleteUser`.
+ * caller, while the lifecycle lease is held. See `defaultDeleteUser`.
  */
 export type ProviderBillingCheck = (stripeCustomerId: string) => Promise<ProviderBillingAssessment>;
 
 /**
- * The assessment plus the one *action* the transaction is allowed to take.
+ * The assessment plus the one *action* the leased path is allowed to take.
  *
  * Expiry is a mutation, so it is passed in as a capability rather than the
- * transaction reaching for the Stripe client: the deletion code stays testable,
- * and it is obvious in the type that this is the only write the gate can cause.
- * It must be called while the lock is held — see `defaultDeleteUser`.
+ * deletion code reaching for the Stripe client: the code stays testable, and it
+ * is obvious in the type that this is the only write the gate can cause. It
+ * must be called while the lifecycle lease is held — see `defaultDeleteUser`.
  */
 export type ProviderBillingAssessment = DeletionBillingResult & {
-  expireSessions: (sessionIds: string[]) => Promise<void>;
+  expireSessions: (
+    sessionIds: string[],
+    signal?: AbortSignal,
+    /**
+     * Re-checks the lease immediately before and after each provider mutation.
+     * A session expiry is a Stripe write; a lease that was lost or taken over
+     * must stop the next write even though the final database fence comes later.
+     */
+    assertLease?: () => Promise<void>,
+  ) => Promise<void>;
 };
 
 /**
- * One transaction: lock, re-read, **gate**, audit row, delete — in that order.
+ * Lock, re-read, **gate**, then one short write transaction: audit row, association,
+ * delete — in that order.
  *
- * The gate lives inside the transaction on purpose (#144). Assessing billing
- * before taking the lock left a window: checkout takes the same lock to link a
- * customer, so a checkout that landed between the assessment and the delete was
- * invisible, and the account was deleted with a live subscription attached. The
- * only compensating action was a post-commit cancellation that can fail.
- *
- * With the gate under the lock, "is money moving?" and "delete" cannot be
- * separated by a customer link.
- *
- * `lock_timeout` / `statement_timeout` bound the lock: the Stripe calls run
- * inside it, so a socket that never answers would otherwise pin this user's
- * checkout and their next deletion attempt forever, holding a pooled connection
- * the whole time. Timing out is the safe failure — it rolls back, deletes
- * nothing, and returns 500 so the user retries.
+ * The gate lives under the lifecycle lease on purpose (#144). Checkout takes the
+ * same lease to link a customer, so a link landing between the assessment and the
+ * delete cannot be invisible. The provider assessment is read-only and runs on
+ * the app pool, not inside a database transaction; the final `FOR UPDATE`
+ * transaction fences the lease, re-reads role, verification and customer id
+ * before writing, and holds no Stripe I/O.
  *
  * Exported so DB-gated tests drive this exact function. The ordering tests in
  * `tests/account-deletion.test.ts` substitute their own writer, so they cannot
@@ -351,41 +456,36 @@ export type ProviderBillingAssessment = DeletionBillingResult & {
 export async function defaultDeleteUser(
   userId: string,
   assessProviderBilling: ProviderBillingCheck,
+  deps: DeleteUserDeps = {},
 ): Promise<DeleteUserResult> {
-  /**
-   * Captured from the assessment, then used *after* the gate passes and still
-   * inside this transaction — the only write the gate can cause.
-   */
-  let expireSessions: ProviderBillingAssessment["expireSessions"] | undefined;
-  return db.transaction(async tx => {
+  const withLock = deps.lifecycleLock ?? withAccountLifecycleLock;
+  const maxExpirySessions = deps.maxExpirySessions ?? MAX_EXPIRY_SESSIONS;
+  const expiryDeadlineMs = deps.expiryDeadlineMs ?? EXPIRY_DEADLINE_MS;
+  return withLock(userId, async (clientDb, lease) => {
     /*
-     * Serialise against checkout for this user (#144). Checkout takes the same
-     * lock around customer creation and around its final survival check, so a
-     * customer cannot be linked between this gate and this delete.
+     * Read the current identity UNDER the lease. The route's snapshot predates
+     * a checkout that may have linked a customer while this request waited.
      */
-    await tx.execute(sql`select set_config('lock_timeout', '5s', true)`);
-    await tx.execute(sql`select set_config('statement_timeout', '20s', true)`);
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`account-deletion:${userId}`}))`);
-
-    /*
-     * Re-read the customer id UNDER the lock. The route's snapshot was taken
-     * before checkout could have linked one: a checkout that completed while we
-     * waited would otherwise be invisible, the deletion would skip cleanup, and
-     * a paid subscription would outlive the account with nothing cancelling it.
-     */
-    const [current] = await tx
-      .select({ stripeCustomerId: users.stripeCustomerId })
+    const [current] = await clientDb
+      .select({ role: users.role, emailVerifiedAt: users.emailVerifiedAt, stripeCustomerId: users.stripeCustomerId })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
+    if (!current) return { kind: "gone" } as const;
+
+    const currentGate = assessDeletionGate({
+      role: current.role,
+      emailVerified: Boolean(current.emailVerifiedAt),
+      password: { submitted: true, matches: true },
+    });
+    if (currentGate.kind === "blocked") return { kind: "blocked", blocker: currentGate.blocker } as const;
 
     /*
-     * The gate, also under the lock. The database answers first because it is
-     * authoritative and free; Stripe is consulted only when the database has
-     * nothing, because a checkout can complete before its webhook writes the
-     * `subscriptions` row.
+     * The database answers first because it is authoritative and free; Stripe is
+     * consulted only when the database has nothing, because a checkout can
+     * complete before its webhook writes the `subscriptions` row.
      */
-    const [ongoing] = await tx
+    const [ongoing] = await clientDb
       .select({ id: subscriptions.stripeSubscriptionId })
       .from(subscriptions)
       .where(and(eq(subscriptions.userId, userId), inArray(subscriptions.status, ONGOING_SUBSCRIPTION_STATUSES)))
@@ -393,7 +493,8 @@ export async function defaultDeleteUser(
 
     let billing: BillingState = ongoing ? "ongoing" : "clear";
     let openSessionIds: string[] = [];
-    if (billing === "clear" && current?.stripeCustomerId) {
+    let expireSessions: ProviderBillingAssessment["expireSessions"] | undefined;
+    if (billing === "clear" && current.stripeCustomerId) {
       const assessed = await assessProviderBilling(current.stripeCustomerId);
       billing = assessed.state;
       expireSessions = assessed.expireSessions;
@@ -401,47 +502,116 @@ export async function defaultDeleteUser(
     }
 
     const gate = assessBillingGate(billing);
-    if (gate.kind === "blocked") return { kind: "blocked", blocker: gate.blocker };
+    if (gate.kind === "blocked") return { kind: "blocked", blocker: gate.blocker } as const;
 
-    /*
-     * Expire the open checkouts HERE, not in the assessment (#142 review).
-     *
-     * The assessment runs under a deadline; anything it did after that deadline
-     * would run with the lock released and could expire a session a newer checkout
-     * had just created. Expiry belongs to the step that is still holding the lock,
-     * so it cannot race a checkout that follows. It is also last: if this throws,
-     * nothing has been deleted yet.
-     */
-    if (openSessionIds.length > 0 && expireSessions) {
-      await expireSessions(openSessionIds);
+    if (openSessionIds.length > maxExpirySessions) {
+      log.error("profile.checkout_session_expiry_cap", {
+        userId,
+        count: openSessionIds.length,
+        max: maxExpirySessions,
+      });
+      throw new BillingStateError();
     }
 
-    await writeAccountDeletion({
-      insertAudit: async (row) => {
-        await tx.insert(auditLogs).values(row);
-        // Second row keyed by the customer id, so the webhook can prove deletion
-        // even when a subscription's metadata has lost `solara_user_id`.
-        if (current?.stripeCustomerId) {
-          await tx.insert(auditLogs).values(accountDeletionCustomerAudit(userId, current.stripeCustomerId));
-          /*
-           * The pairing, explicitly. Two audit rows cannot prove they came from
-           * the same deletion, which is what the webhook needs to attribute a
-           * subscription; this row can. `onConflictDoNothing` because a
-           * redelivered deletion for the same customer must not fail.
-           */
-          await tx
-            .insert(deletedCustomers)
-            .values(deletedCustomerAssociation(userId, current.stripeCustomerId))
-            .onConflictDoNothing();
-        }
-      },
-      deleteUser: async (id) => {
-        await tx.delete(users).where(eq(users.id, id));
-      },
-    }, userId);
+    /*
+     * Expire open checkouts while the lifecycle lease is held. The assessment is
+     * read-only and deadline-bounded; expiry is the mutating step, and a failure
+     * here fails closed before anything is deleted. If the deadline fires, wait
+     * for the in-flight Stripe call before releasing the lease: returning while
+     * an expiry is still running would let it mutate after the lease is gone.
+     */
+    if (openSessionIds.length > 0 && expireSessions) {
+      const assertLease = async () => {
+        if (lease.isLost()) throw new LifecycleLeaseLost();
+        await lease.assertHeld(clientDb);
+      };
+      /*
+       * Do not begin the mutating phase on an expired/taken-over lease. The
+       * assessment is read-only, so this is the first point where a lost lease
+       * could otherwise still cause a Stripe write.
+       */
+      await assertLease();
+      const controller = new AbortController();
+      const expiry = expireSessions(openSessionIds, controller.signal, assertLease);
+      try {
+        await withDeadline(expiry, expiryDeadlineMs, "checkout_session_expiry_deadline_exceeded");
+      } catch (error) {
+        controller.abort();
+        await expiry.catch(() => undefined);
+        throw error instanceof BillingStateError || error instanceof LifecycleLeaseLost
+          ? error
+          : new BillingStateError();
+      }
+    }
 
-    // Hand the id back so the caller cleans up without trusting its snapshot.
-    return { kind: "deleted", customerId: current?.stripeCustomerId ?? null };
+    /*
+     * One short write transaction. It holds no Stripe I/O, fences the lease,
+     * then re-reads the row with FOR UPDATE so a role change or webhook customer
+     * link cannot land between the gate and the delete. The lease row is locked
+     * first; checkout takes the same order.
+     */
+    await lease.stopHeartbeat();
+    return clientDb.transaction(async tx => {
+      await tx.execute(sql`select set_config('lock_timeout', '5s', true)`);
+      await tx.execute(sql`select set_config('statement_timeout', ${`${FINAL_DELETE_STATEMENT_TIMEOUT_MS}ms`}, true)`);
+      await lease.assertHeld(tx);
+
+      const [locked] = await tx
+        .select({ role: users.role, emailVerifiedAt: users.emailVerifiedAt, stripeCustomerId: users.stripeCustomerId })
+        .from(users)
+        .where(eq(users.id, userId))
+        .for("update");
+      if (!locked) return { kind: "gone" } as const;
+
+      const finalGate = assessDeletionGate({
+        role: locked.role,
+        emailVerified: Boolean(locked.emailVerifiedAt),
+        password: { submitted: true, matches: true },
+      });
+      if (finalGate.kind === "blocked") return { kind: "blocked", blocker: finalGate.blocker } as const;
+
+      if (locked.stripeCustomerId !== current.stripeCustomerId) {
+        const blocked = assessBillingGate("unverifiable");
+        if (blocked.kind === "blocked") return { kind: "blocked", blocker: blocked.blocker } as const;
+      }
+
+      const [finalOngoing] = await tx
+        .select({ id: subscriptions.stripeSubscriptionId })
+        .from(subscriptions)
+        .where(and(eq(subscriptions.userId, userId), inArray(subscriptions.status, ONGOING_SUBSCRIPTION_STATUSES)))
+        .limit(1);
+      if (finalOngoing) {
+        const blocked = assessBillingGate("ongoing");
+        if (blocked.kind === "blocked") return { kind: "blocked", blocker: blocked.blocker } as const;
+      }
+
+      await writeAccountDeletion({
+        insertAudit: async (row) => {
+          await tx.insert(auditLogs).values(row);
+          // Second row keyed by the customer id, so the webhook can prove deletion
+          // even when a subscription's metadata has lost `solara_user_id`.
+          if (locked.stripeCustomerId) {
+            await tx.insert(auditLogs).values(accountDeletionCustomerAudit(userId, locked.stripeCustomerId));
+            /*
+             * The pairing, explicitly. Two audit rows cannot prove they came from
+             * the same deletion, which is what the webhook needs to attribute a
+             * subscription; this row can. `onConflictDoNothing` because a
+             * redelivered deletion for the same customer must not fail.
+             */
+            await tx
+              .insert(deletedCustomers)
+              .values(deletedCustomerAssociation(userId, locked.stripeCustomerId))
+              .onConflictDoNothing();
+          }
+        },
+        deleteUser: async (id) => {
+          await tx.delete(users).where(eq(users.id, id));
+        },
+      }, userId);
+
+      // Hand the id back so the caller cleans up without trusting its snapshot.
+      return { kind: "deleted", customerId: locked.stripeCustomerId ?? null } as const;
+    });
   });
 }
 
@@ -487,6 +657,41 @@ function abortionGuardedStripe(
       },
     },
   };
+}
+
+/**
+ * A vanished or already-expired checkout session is already unpaid.
+ *
+ * A bare 404 is not enough: a proxy, a misrouted request, or a malformed API
+ * response can synthesize one without proving the Stripe resource is gone. Require
+ * Stripe's resource-missing code or an explicit "already expired" response.
+ */
+function isGoneCheckoutSession(error: unknown): boolean {
+  const status = (error as { statusCode?: number })?.statusCode;
+  const code = (error as { code?: string })?.code;
+  const message = String((error as { message?: string })?.message ?? "");
+  return code === "resource_missing" || (status === 400 && /already (been )?expired/i.test(message));
+}
+
+/**
+ * Stripe refuses to expire a session that is no longer open. That refusal is not
+ * enough to proceed: the session could be `open` on another page or `complete`
+ * and payable. Read it back and only treat `expired` as settled.
+ */
+function isCheckoutSessionNotOpen(error: unknown): boolean {
+  return (error as { code?: string })?.code === "checkout_session_not_open";
+}
+
+async function checkoutSessionStatus(
+  stripe: NonNullable<ReturnType<typeof getStripe>>,
+  sessionId: string,
+): Promise<string | null> {
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    return session.status ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**

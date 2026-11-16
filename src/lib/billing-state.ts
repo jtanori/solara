@@ -123,8 +123,8 @@ export type DeletionBillingResult =
   /**
    * Read-only by design. `clear` lists the open subscription checkouts it found,
    * but **expires nothing**: this function is called under a deadline, and work
-   * that outlives the deadline would run with the lock released. The caller
-   * expires them inside its own locked transaction (see `defaultDeleteUser`).
+   * that outlives the deadline would run with the lease released. The caller
+   * expires them while it still holds the lease (see `defaultDeleteUser`).
    */
   | { state: "clear"; openSessionIds: string[] }
   | { state: "ongoing" }

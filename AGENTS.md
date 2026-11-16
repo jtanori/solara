@@ -24,10 +24,11 @@ solara/
 │   ├── generate-migration-manifest.ts # regenerate/check the runtime migration manifest
 │   ├── report-rate-limits.ts   # hashed rate-limit state for operators (npm run rate-limits:report)
 │   ├── cleanup-rate-limits.ts  # delete expired rate-limit rows (npm run rate-limits:cleanup)
+│   ├── cleanup-account-leases.ts # delete expired account lifecycle leases (npm run account-leases:cleanup)
 │   ├── local/seed-users.ts     # local-only guarded seed: 9 accounts + subscriptions (ALLOW_LOCAL_SEED)
 │   └── verify-gating-production.ts # prod-mode gating verifier: 404 + role scoping + payload leak checks
 ├── docs/
-│   ├── decisions.md            # ADRs 001-009 (006 identity, 007 auth hardening, 008 migrations/deploy, 009 backlog)
+│   ├── decisions.md            # ADRs 001-010 (006 identity, 007 auth hardening, 008 migrations/deploy, 009 backlog, 010 lifecycle lease)
 │   └── setup/                  # 01-foundation, 02-stripe, 03-maps, 04-pdf, 05-i18n, 06-astro, 07-validation, 08-auth-security
 ├── .github/
 │   ├── workflows/ci.yml        # verify job: migrate → typegen → tsc → eslint → tests → audit → build → smoke
@@ -35,7 +36,7 @@ solara/
 │   └── pull_request_template.md
 ├── .env.example                # never commit real secrets (.gitignore: .env, .env.*)
 ├── .env.staging.example / .env.production.example # templates for Vercel Preview/Production
-└── package.json                # scripts: dev, build, start, lint, typecheck, test, db:seed:local, rate-limits:report/cleanup
+└── package.json                # scripts: dev, build, start, lint, typecheck, test, db:seed:local, rate-limits:report/cleanup, account-leases:cleanup
 ```
 
 **Where to look first:**
@@ -76,6 +77,7 @@ npm run db:check                 # schema + journal + unexpected applied hashes
 # Rate-limit state is hashed; inspect or prune it with:
 npm run rate-limits:report
 npm run rate-limits:cleanup
+npm run account-leases:cleanup
 
 # 5. Local seed (never in staging/prod, never set these in Vercel)
 ALLOW_LOCAL_SEED=true LOCAL_SEED_PASSWORD='a-strong-local-password-12+' \
@@ -108,7 +110,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - **Email delivery:** tokens are SHA-256 hashed at rest, single-use, 24h TTL, with a 60s resend cooldown (`src/lib/email-verification.ts`). Tokens live in the URL fragment and are submitted only by the explicit claim POST. Delivery runs in `after()`; retain the prior token until a new message is delivered, keep both on ambiguous outcomes, discard the new token only on definitive rejection, and keep it if finalization fails after acceptance. Finalization is generation-aware and uses user → token lock order; claim uses the same order. Verified accounts cannot receive or redeem another claim token. Hosted environments require a canonical HTTPS `APP_URL`. Local mail uses `MAIL_TRANSPORT=outbox` and `.mail-outbox/`; staging/production require Resend or Postmark. Never log a token.
 - **Password reset:** `password_reset` tokens are hashed, single-use, 1h TTL, and delivered only to verified accounts. Confirmation revokes all sessions and writes an `audit_logs` `password:reset` row. Requests and confirmations are rate-limited; never reveal whether an email exists.
 - **Places:** `/api/places` requires same-origin, 30/min/IP, bounded same-query cache, four upstream slots, and `PLACES_HOURLY_BUDGET`. The key and upstream URL are never logged.
-- **Database pool:** `src/db/index.ts` sets `DB_POOL_MAX` (default 5), idle/connection/statement timeouts, an error listener, and normalized `sslmode=verify-full` for all hosted modes; `disable`/`ssl=false` are rejected.
+- **Database pools:** `src/db/index.ts` sets `DB_POOL_MAX` (default 5, max 20) and `DB_COORDINATION_POOL_MAX` (default 3, max 10), idle/connection/statement timeouts, error listeners, application names (`solara-app`, `solara-coordination`), and normalized `sslmode=verify-full` for all hosted modes; `disable`/`ssl=false` are rejected. The total is per process/instance, so account for Vercel concurrency and Neon limits. Checkout and deletion serialize through an `account_lifecycle_leases` row (TTL 60s, heartbeat 15s, acquire wait 5s); lease queries use the app pool, and the owner is fenced with `FOR UPDATE` in the final transaction. No app-pool transaction spans Stripe I/O. `LIFECYCLE_ADVISORY_COMPAT` defaults on during cutover; its old one-argument advisory lock is held on the coordination pool across provider I/O, so use a lane separate from lease queries. Set it to `0` after pre-lease instances drain. Readiness requires 13 tables, 19 columns and 4 indexes.
 - **Mutating routes:** `src/proxy.ts` centrally rejects cookie-authenticated `POST/PUT/PATCH/DELETE` under `/api/*` unless the complete `Origin` (scheme, host, port) matches a trusted origin or `Sec-Fetch-Site: same-origin`. Exemptions: Stripe webhook (signature) and CSP reports. There is no Bearer exemption until a validated bearer flow exists. The matcher has a dedicated `/api/:path*` entry, so asset-looking API paths cannot skip the guard.
 - **Logging:** server code logs only through `src/lib/log.ts`; bare `console.*` is an ESLint error. Do not pass an `Error`, query, request body, or birth data object to a logger. Extract a redacted message/SQLSTATE, include the `x-request-id` on errors and rate-limit/backoff warnings, route path (never query), and a UUID `userId` only. Redaction strips emails, tokens, database URLs, Bearer values, Stripe/mail keys, long hex/base64, and sensitive keys (`password`, `token`, `secret`, `email`, `birth`, `stripe`, `authorization`, `cookie`).
 - **Security headers/CSP:** `src/lib/security-headers.ts` owns HSTS, frame/referrer/permissions/nosniff headers, authenticated `Cache-Control: private, no-store`, and the nonce CSP allowlist. `CSP_MODE=report-only` until a clean observation window, then `enforce`. Extend the allowlist in code and document it in `docs/setup/08-auth-security-hardening.md`.
@@ -136,7 +138,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - **Staging:** Neon project `solara-staging` (pooled `DATABASE_URL` for Vercel Preview → `staging` branch; direct for `db-run` migrations), Vercel Preview env (`APP_URL=https://staging...`, Stripe **test** keys), isolated previews.
 - **Production:** Neon `solara-prod` (pooled + direct, backups/PITR), Vercel Production env (`APP_URL=https://...`, Stripe **live** keys).
 - Secrets scoped per env in Vercel; `NEXT_PUBLIC_*` baked at build → redeploy after change.
-- Migrations: generate with `npx drizzle-kit generate --name=...` (review SQL + meta), run `npm run db:manifest`, test on fresh DB + staging, and apply through `db-run`/`migrate.yml` before code deploy (`push` forbidden on prod). See ADR 008.
+- Migrations: generate with `npx drizzle-kit generate --name=...` (review SQL + meta), run `npm run db:manifest`, test on fresh DB + staging, and apply through `db-run`/`migrate.yml` before code deploy (`push` forbidden on prod). See ADR 008. When a PR preview needs new schema before `deploy.sh` checks preview readiness, preflight the preview DB with `npx tsx scripts/db-remote.ts --pr <n> --env staging` against the PR head. After a migration that old code does not know (`0005`), rollback is forward-fix/restore; do not promote a pre-migration deployment and expect `/api/ready` to pass.
 
 **Verify:** `node scripts/check-setup.mjs staging|production --strict` + `GET /api/health` (liveness) + `GET /api/ready` (DB/schema/migrations/auth) + `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`.
 
