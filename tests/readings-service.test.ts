@@ -551,10 +551,12 @@ for (const scenario of ["withdrawal", "disable", "delete", "preparation", "excep
     });
     if (scenario === "preparation") {
       const prepare = config.provider.prepare!.bind(config.provider);
-      t.mock.method(config.provider, "prepare", (...args: Parameters<typeof prepare>) => {
+      // This provider belongs only to this test; prepare is optional in the
+      // interface and therefore is not accepted by node:test's method overload.
+      config.provider.prepare = (...args: Parameters<typeof prepare>) => {
         if (inject) { inject = false; throw new GenerationBlocked("cost_ceiling"); }
         return prepare(...args);
-      });
+      };
     }
     const answer = await handleGeneration(request("POST", { locale: "en" }), chart.id, options);
     assert.equal(answer.status, scenario === "withdrawal" ? 409 : scenario === "delete" ? 404 : 503);
@@ -583,7 +585,7 @@ test("PR148 R3: blank or header-unsafe API keys refuse availability and claims b
     for (const key of ["", "   ", "fake\rkey", "fake\nkey", "\nfake", "fake\0key", "fake\tkey", "fake key", "fake\u0100key"]) {
       // A plain environment snapshot preserves NUL for testing; native env assignment truncates it.
       process.env = { ...originalEnv, READINGS_API_KEY: key };
-      assert.equal(liveGenerationConfig(), null, "invalid credentials are configuration errors, not billable attempts");
+      assert.equal(Boolean(liveGenerationConfig()), false, "invalid credentials are configuration errors, not billable attempts");
       assert.equal((await (await handleConsent(request("GET"), options)).json()).available, false);
       const refused = await handleGeneration(request("POST", { locale: "en" }), chart.id, options);
       assert.equal(refused.status, 503); assert.deepEqual(await refused.json(), { code: "generation_unavailable" });

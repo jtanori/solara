@@ -105,3 +105,29 @@ for (const reason of ["consent_required", "generation_disabled", "generation_dea
     await assert.rejects(() => ledger.admit({ section: "overview", phase: "primary", model: "fixture-1", reservedMicros: 165000 }), /attempt_already_admitted/);
   });
 }
+
+for (const mode of ["measured", "unknown_model", "transport_error"] as const) {
+  for (const elapsed of [12.6, -1]) {
+    test(`PR148 R5: ${mode} settlement rounds/clamps monotonic delta ${elapsed}, independently of wall time`, async t => {
+      const ledger = memoryExecution(); let settled: AttemptSettlement | undefined;
+      let wallClock = 100_000; let monotonic = 100;
+      t.mock.method(Date, "now", () => wallClock);
+      t.mock.method(performance, "now", () => monotonic);
+      const result = await dispatchAttempt({
+        ...ledger,
+        async settle(id, receipt) { settled = receipt; return ledger.settle(id, receipt); },
+      }, {
+        name: "synthetic-clock-test",
+        async complete() {
+          wallClock -= 60_000; monotonic += elapsed;
+          if (mode === "transport_error") throw new Error("synthetic lost receipt");
+          return { output: {}, usage: { inputTokens: 100, outputTokens: 100 }, model: mode === "unknown_model" ? "unpriced" : "fixture-1", latencyMs: 0 };
+        },
+      }, { section: "overview", locale: "en", digest, prompt: "synthetic", jsonSchema: {}, model: "fixture-1", maxOutputTokens: 2000 }, "primary");
+      assert.equal(settled?.basis, mode === "measured" ? "measured" : "unknown");
+      assert.equal(settled?.latencyMs, elapsed < 0 ? 0 : 13);
+      assert.equal(result.ledgerFailed, undefined);
+      assert.ok((settled?.costMicros ?? 0) > 0);
+    });
+  }
+}
