@@ -2,11 +2,16 @@
 
 **Scope:** step 1 / #105, lifetime-free portion of #104/#108, #128 and #129.
 **Branch/base:** `arena/83b33a0a-solara` / `2c0c64b202fdbf7a9e8f7d91aadc8b950866f14e`.
-**State:** implementation remains disabled. This records the **author pre-commit
-working-tree self-review**, not independent verification, a posted PR review or an
-issue closure. The operator subsequently authorized commit and push only; PR creation,
-hosted changes and activation remain outside that authorization. Bind this evidence
-to the implementation SHA when a PR is separately authorized.
+**Historical record:** the results below belong to the initial implementation
+`4c384e6d7f6da9b8465a424011cbe6f92ce8d558` and its **author pre-commit working-tree
+self-review**, not independent verification. PR creation was subsequently authorized:
+[PR #148](https://github.com/jtanori/solara/pull/148) is now open. Its posted
+[SHA-pinned review](https://github.com/jtanori/solara/pull/148#pullrequestreview-5929578969)
+identified seven defects that this initial 480-test pass did not detect. See the
+[repair evidence](reading-generation-review-fixes.md) for their fixes and fresh
+519-test / 54-mutation validation. Do not use the historical results below as proof
+of the repaired head. Generation, hosted changes and live-provider activation
+remain disabled/unapproved.
 
 ## Executed validation
 
@@ -234,10 +239,10 @@ bundled; the unrelated #140 branch was neither used nor modified.
   latency/output quality; provider/privacy/retention contracts; hosted cancellation.
   These are explicit rollout/activation boundaries, not claims of passed checks.
 
-No known unaddressed runtime blocker was found in this author pass. That is not
-an independent or posted review verdict. Validation preceded commit/push, which the
-operator subsequently authorized. No PR, GitHub issue update, merge, hosted change,
-credential setup, or production promotion was performed as part of this validation.
-A later authorized PR should be `deploy:required`, target staging, cite this
-report at its actual implementation SHA, and keep generation disabled. Do not
-close #104/#108 wholesale or present this as activation approval.
+This historical author pass found no further runtime blocker, but the subsequent
+posted review did find seven defects; its findings and the repair evidence linked
+above supersede that assessment. No PR, issue update, merge, hosted change,
+credential setup or promotion was performed **as part of the initial validation**.
+PR #148 was opened later with `deploy:required`, targeting staging. Neither the
+historical self-review nor the repair report is an independent review verdict or
+activation approval. Do not close #104/#108 wholesale; keep generation disabled.

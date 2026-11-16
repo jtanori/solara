@@ -3,8 +3,9 @@
 **This is a runbook, not permission to deploy or enable generation.** Step 1 is
 implemented on the current working branch; hosted operations, credentials and
 live-provider evaluation require separate authorization. See the
-[approved plan](../plan-reading-generation-safety.md) and
-[local evidence/self-review](../reading-generation-safety-verification.md).
+[approved plan](../plan-reading-generation-safety.md),
+[PR #148 repair evidence](../reading-generation-review-fixes.md), and
+[historical initial evidence](../reading-generation-safety-verification.md).
 
 ## Contract and current limits
 
@@ -16,12 +17,17 @@ live-provider evaluation require separate authorization. See the
   prose results. A positively unsent attempt can release money, not the allowance.
 - Every primary and repair requires current processor-policy consent, a fenced
   owned run and a durable reservation. Unknown billing retains exposure and halts.
+  HTTP/provider error responses also halt, even with a valid measured receipt:
+  billable work is not necessarily successful output or a repair opportunity.
 - Free ceiling: **5 MXN**; generic paid-pipeline tests use 10 MXN, but this slice
   supplies no paid-generation endpoint or paid-volume policy. Existing Premium
   access remains; subscribers may explicitly choose an unused free offer.
 - Attempts: at most four free calls, 2,000 output tokens each; full verified
   billable-input contract reserved. 15-second maximum attempt timeout includes
   the body; 40-second dispatch budget, 45-second durable run, 60-second route.
+- Hourly throttles: generation 10/user and 20/IP, consent changes 20/user, chart
+  deletion 30/user. Status is 60/user/minute. Chart deletion has a separate bucket
+  and cannot spend consent-withdrawal quota.
 - Live service uses per-run memory and owned documents, **not** `generation_cache`.
   Account deletion cascades new consent/run/attempt state. Reading deletion keeps
   a consumed tombstone. Legacy shared cache and existing audit retention remain
@@ -40,9 +46,9 @@ live-provider evaluation require separate authorization. See the
 | `READINGS_API_BASE_URL` | Canonical HTTPS endpoint base; no credentials/query/fragment; redirects refused. Endpoint changes invalidate prior consent. |
 | `READINGS_CHEAP_MODEL` | Explicit live model ID for free sections. |
 | `READINGS_STRONG_MODEL` | Later paid synthesis configuration; no paid admission in this slice. |
-| `READINGS_MODEL_PRICES` | Explicit MXN per million input/output tokens, requested model and every served alias; aliases must currently have equal rates. No fixture defaults for live work. |
+| `READINGS_MODEL_PRICES` | Explicit positive MXN per million input/output tokens, requested model and every served alias; aliases must currently have equal rates. The full input-cap + 2,000-output-token quote must be representable and ≤5 MXN before availability/claim. No fixture defaults for live work. |
 | `READINGS_REQUEST_TIMEOUT_MS` | Integer 1–15000; unset defaults to 15000. |
-| `READINGS_API_KEY` | **Last stage only**, directly in the approved environment's secret manager. Never in chat, Git, local customer data, or a command transcript. |
+| `READINGS_API_KEY` | Nonblank visible ASCII without internal whitespace; surrounding spaces are trimmed, controls including CR/LF/NUL are rejected. **Last stage only**, directly in the approved environment's secret manager. Never in chat, Git, local customer data, or a command transcript. |
 
 An input cap is a verified processor billing contract, **not** `characters / 4`.
 Validate schema compatibility, full input framing/billing, prices/FX, model aliases
@@ -139,6 +145,12 @@ FROM evidence;
 | `indeterminate` | Outstanding/unknown dispatch or accounting failure. Keep the reservation and used marker, investigate; do not retry. |
 | `free_reading_deleted` | Canonical reading was deleted after consumption; do not allocate another offer. |
 
+After a claim, a wholly pre-permit generation failure returns an explicit error
+(409 for missing consent, 404 for a deleted chart, otherwise a stable 503 code),
+not a successful `unused` response. Finalization still clears the unused
+claim's owner; GET can report `unused` and an explicit later request can recover
+the same offer. This does not refund or replay a consumed permit.
+
 Read-only aggregate diagnostics (amounts are **micro-MXN**, not provider invoices):
 
 ```sql
@@ -149,8 +161,12 @@ FROM reading_generation_attempts GROUP BY state;
 ```
 
 `reserved` has no receipt, `unknown` retains estimated exposure, `measured` stores
-validated usage/cost, and `not_dispatched` is positively unsent. Real overruns are
-recorded, not clamped. Report unknown/reserved separately from measured spend.
+validated usage/cost for a served model admitted by that attempt's requested-model
+contract, and `not_dispatched` is positively unsent. Its diagnostic code preserves
+the actual permission/configuration/deadline failure rather than labelling every
+failure cancellation. Latency is rounded nonnegative monotonic elapsed time;
+wall-clock corrections cannot invalidate a receipt. Real overruns are recorded,
+not clamped. Report unknown/reserved separately from measured spend.
 Use existing redacted logs and stable codes; never log prompts, keys or provider
 bodies. Manual invoice reconciliation/credited retries need an explicitly reviewed
 future policy, not ad-hoc updates that clear `consumed_at`, delete attempts or raise
