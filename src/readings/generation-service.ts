@@ -40,23 +40,31 @@ export async function generateFreeReading(
   requestSignal?.addEventListener("abort", cancel, { once: true });
   if (requestSignal?.aborted) controller.abort();
   const current = () => enabled() && getConfig()?.fingerprint === config.fingerprint;
+  let document: Awaited<ReturnType<typeof generateReadingDocument>> | null = null;
+  let outcome: GenerationView;
   try {
     const execution = store.execution(run, config, controller.signal, current);
-    const document = await generateReadingDocument({
+    document = await generateReadingDocument({
       readingId: run.readingId!, documentId: randomUUID(), locale: run.locale, tier: "free",
       digest: chartDigest(calculateSolarReturnChart(claimed.input).facts),
       // Deliberately NOT DbSectionCache: shared rows lack deletion provenance.
       cache: new MemorySectionCache(), provider: config.provider, execution, contentVersion,
     });
-    return await store.finish(run, document, () => current() && !controller.signal.aborted);
+    outcome = await store.finish(run, document, () => current() && !controller.signal.aborted);
   } catch {
     log.error("readings.run_failed", { userId, runId: run.id });
     // Attempt reservations survive. Never start a new run or retry HTTP here.
-    try { return await store.finish(run, null, () => false); }
+    try { outcome = await store.finish(run, null, () => false); }
     catch { throw new GenerationBlocked("generation_indeterminate"); }
   } finally {
     clearTimeout(timer);
     requestSignal?.removeEventListener("abort", cancel);
     controller.abort();
   }
+  // Releasing a wholly pre-permit claim is not a successful generation. Throw
+  // outside the catch so the fallback finalizer cannot swallow this HTTP error.
+  if (outcome.status === "unused") {
+    throw new GenerationBlocked(document?.accounting?.halt ?? document?.sections.find(section => section.failureReason)?.failureReason ?? "generation_unavailable");
+  }
+  return outcome;
 }

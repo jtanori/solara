@@ -12,6 +12,7 @@ import { defaultDeleteUser } from "../src/app/api/profile/route";
 import { calculateSolarReturn } from "../src/lib/solar";
 import { handleChartSave } from "../src/readings/chart-save";
 import { DbSectionCache } from "../src/readings/db-cache";
+import { GenerationBlocked } from "../src/readings/execution";
 import { GenerationStore } from "../src/readings/generation-store";
 import { handleConsent, handleGeneration, handleReadingDelete, type ReadingHttpDeps } from "../src/readings/http";
 import { liveGenerationConfig, processorProfile } from "../src/readings/policy";
@@ -526,3 +527,49 @@ test("PR148 R1: a measured provider error during repair preserves both receipts 
   assert.equal(saved.attempts.length, 2); assert.ok(saved.attempts.every(attempt => attempt.state === "measured" && attempt.costMicros === 7500));
   assert.equal(saved.attempts.find(attempt => attempt.phase === "repair")?.code, "provider_error");
 });
+
+
+for (const scenario of ["withdrawal", "disable", "delete", "preparation", "exception"] as const) {
+  test(`PR148 R2: post-claim ${scenario} returns an error and keeps the same unused offer recoverable`, gated, async t => {
+    const { user, chart } = await account(); await grant(user.id); let calls = 0;
+    const http: typeof fetch = async () => { calls++; return response(); };
+    const config = liveGenerationConfig(http)!;
+    const options = { ...deps(user, http), config: () => config };
+    let inject = true;
+    const original = store.claim.bind(store);
+    t.mock.method(store, "claim", async (...args: Parameters<typeof original>) => {
+      const claimed = await original(...args);
+      if (claimed.kind === "claimed" && inject && scenario !== "preparation") {
+        inject = false;
+        if (scenario === "withdrawal") await store.withdraw(user.id, "en");
+        if (scenario === "disable") process.env.READINGS_GENERATION_ENABLED = "false";
+        if (scenario === "delete") await store.deleteReading(user.id, chart.id);
+        if (scenario === "exception") claimed.input = { ...claimed.input, birthDate: "PRIVATE_INVALID_INPUT" };
+      }
+      return claimed;
+    });
+    if (scenario === "preparation") {
+      const prepare = config.provider.prepare!.bind(config.provider);
+      t.mock.method(config.provider, "prepare", (...args: Parameters<typeof prepare>) => {
+        if (inject) { inject = false; throw new GenerationBlocked("cost_ceiling"); }
+        return prepare(...args);
+      });
+    }
+    const answer = await handleGeneration(request("POST", { locale: "en" }), chart.id, options);
+    assert.equal(answer.status, scenario === "withdrawal" ? 409 : scenario === "delete" ? 404 : 503);
+    assert.deepEqual(await answer.json(), { code: scenario === "withdrawal" ? "consent_required" : scenario === "delete" ? "not_found" : scenario === "disable" ? "generation_disabled" : scenario === "preparation" ? "cost_ceiling" : "generation_unavailable" });
+    const saved = await ledger(user.id);
+    assert.equal(calls, 0); assert.equal(saved.attempts.length, 0); assert.equal(saved.run.consumedAt, null); assert.equal(saved.run.owner, null);
+    let retryId = chart.id;
+    if (scenario === "withdrawal") await store.grant(user.id, processorProfile()!, 2, "en");
+    if (scenario === "disable") process.env.READINGS_GENERATION_ENABLED = "true";
+    if (scenario === "delete") {
+      const [replacement] = await db.insert(readings).values({ userId: user.id, year: input.year, input, result }).returning();
+      retryId = replacement.id;
+    }
+    assert.equal((await (await handleGeneration(request("GET"), retryId, options)).json()).status, "unused");
+    const retried = await handleGeneration(request("POST", { locale: "es" }), retryId, options);
+    assert.equal(retried.status, 200); assert.equal((await retried.json()).status, "completed"); assert.equal(calls, 2);
+    const recovered = await ledger(user.id); assert.equal(recovered.run.id, saved.run.id); assert.equal(recovered.run.locale, "en");
+  });
+}
