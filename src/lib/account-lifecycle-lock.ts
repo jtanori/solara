@@ -22,10 +22,11 @@ import { log } from "@/lib/log";
  * across provider I/O during the cutover, uses the separate coordination pool so
  * it cannot starve the lease queries.
  *
- * Compatibility: during the cutover, `LIFECYCLE_ADVISORY_COMPAT` defaults on and
- * the lease holder also takes the old one-argument advisory lock. That excludes
- * pre-lease instances that still use `pg_advisory_xact_lock(hashtext(...))`.
- * Set it to `0` after those instances are drained.
+ * Compatibility is opt-in for a controlled old/new overlap: setting
+ * `LIFECYCLE_ADVISORY_COMPAT=1` makes the lease holder also take the old
+ * one-argument advisory lock, excluding pre-lease instances that still use
+ * `pg_advisory_xact_lock(hashtext(...))`. It is off by default; a normal
+ * deployment drains pre-lease instances instead.
  */
 
 const LOCK_WAIT_MS = 5_000;
@@ -132,13 +133,23 @@ function isLockTimeout(error: unknown): boolean {
   return code === "55P03";
 }
 
+/**
+ * Default pool assignment, exported so the production wiring is testable
+ * without injecting both pools around it.
+ */
+export function lifecyclePools(deps: LifecycleLockDeps = {}): { lease: Pool; compat: Pool } {
+  return {
+    lease: deps.pool ?? appPool,
+    compat: deps.compatPool ?? coordinationPool,
+  };
+}
+
 export async function withAccountLifecycleLock<T>(
   userId: string,
   fn: LifecycleCallback<T>,
   deps: LifecycleLockDeps = {},
 ): Promise<T> {
-  const pool = deps.pool ?? appPool;
-  const compatPool = deps.compatPool ?? coordinationPool;
+  const { lease: pool, compat: compatPool } = lifecyclePools(deps);
   const database = deps.db ?? appDb;
   const owner = deps.owner ?? randomUUID();
   const waitMs = deps.waitMs ?? LOCK_WAIT_MS;
@@ -147,7 +158,7 @@ export async function withAccountLifecycleLock<T>(
   const ttlMs = deps.ttlMs ?? LEASE_TTL_MS;
   const heartbeatMs = deps.heartbeatMs ?? LEASE_HEARTBEAT_MS;
   const now = deps.now ?? Date.now;
-  const advisoryCompat = deps.advisoryCompat ?? process.env.LIFECYCLE_ADVISORY_COMPAT !== "0";
+  const advisoryCompat = deps.advisoryCompat ?? process.env.LIFECYCLE_ADVISORY_COMPAT === "1";
 
   let compatClient: PoolClient | undefined;
   let acquired = false;

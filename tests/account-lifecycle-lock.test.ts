@@ -7,6 +7,7 @@ import {
   CoordinationPoolUnavailable,
   LifecycleLeaseLost,
   LifecycleLeaseTimeout,
+  lifecyclePools,
   type LifecycleLease,
   withAccountLifecycleLock,
 } from "../src/lib/account-lifecycle-lock";
@@ -362,6 +363,102 @@ test("lease: compatibility does not starve the lease-query pool", gated, async (
   } finally {
     await Promise.all(userIds.map(clearLease));
     await compatPool.end();
+  }
+});
+
+test("lease: default pools are app for leases and coordination for compatibility", gated, async () => {
+  assertLocalDisposableDatabase();
+  const { coordinationPool, pool: appPool } = await import("../src/db");
+  const pools = lifecyclePools();
+  assert.equal(pools.lease, appPool, "lease queries default to the app pool");
+  assert.equal(pools.compat, coordinationPool, "compatibility defaults to the coordination pool");
+});
+
+test("lease: compatibility is opt-in, not the default", gated, async () => {
+  assertLocalDisposableDatabase();
+  const userId = randomUUID();
+  const previous = process.env.LIFECYCLE_ADVISORY_COMPAT;
+  delete process.env.LIFECYCLE_ADVISORY_COMPAT;
+
+  try {
+    await withAccountLifecycleLock(userId, async () => {
+      assert.equal(await probeOldAdvisoryLock(userId), true, "no old advisory lock is taken by default");
+    }, { pool, waitMs: 1_000 });
+  } finally {
+    if (previous === undefined) delete process.env.LIFECYCLE_ADVISORY_COMPAT;
+    else process.env.LIFECYCLE_ADVISORY_COMPAT = previous;
+    await clearLease(userId);
+  }
+});
+
+test("lease: default compatibility uses the coordination pool", gated, async () => {
+  assertLocalDisposableDatabase();
+  const userId = randomUUID();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let started!: () => void;
+  const startedPromise = new Promise<void>(resolve => { started = resolve; });
+
+  try {
+    const held = withAccountLifecycleLock(userId, async () => {
+      started();
+      await gate;
+    }, { advisoryCompat: true, waitMs: 1_000 });
+
+    await startedPromise;
+    const { rows } = await probePool.query<{ count: number }>(
+      `select count(*)::int as count
+       from pg_stat_activity
+       where application_name = 'solara-coordination'
+         and state = 'idle in transaction'`,
+    );
+    assert.ok((rows[0]?.count ?? 0) >= 1, "compatibility transaction is on the coordination pool");
+
+    release();
+    await held;
+  } finally {
+    release();
+    await clearLease(userId);
+  }
+});
+
+test("lease: six default holders do not hit a compatibility pool cap", gated, async () => {
+  assertLocalDisposableDatabase();
+  const userIds = Array.from({ length: 6 }, () => randomUUID());
+  const previous = process.env.LIFECYCLE_ADVISORY_COMPAT;
+  delete process.env.LIFECYCLE_ADVISORY_COMPAT;
+
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let started = 0;
+  let allStarted!: () => void;
+  const allStartedPromise = new Promise<void>(resolve => { allStarted = resolve; });
+  const promises: Promise<unknown>[] = [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    for (const userId of userIds) {
+      promises.push(withAccountLifecycleLock(userId, async () => {
+        started += 1;
+        if (started === userIds.length) allStarted();
+        await gate;
+      }, {}));
+    }
+
+    await Promise.race([
+      allStartedPromise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("default lifecycle concurrency stalled")), 5_000);
+      }),
+    ]);
+    assert.equal(started, userIds.length, "all six default holders acquired");
+  } finally {
+    if (timer) clearTimeout(timer);
+    release();
+    await Promise.allSettled(promises);
+    if (previous === undefined) delete process.env.LIFECYCLE_ADVISORY_COMPAT;
+    else process.env.LIFECYCLE_ADVISORY_COMPAT = previous;
+    await Promise.all(userIds.map(clearLease));
   }
 });
 

@@ -268,15 +268,18 @@ two-argument lock, so a cutover gap existed between old and new instances.
   `owner`, `expires_at`, `created_at`, `updated_at`; index on `expires_at`. No foreign key.
 - Acquire atomically with `INSERT ... ON CONFLICT DO UPDATE ... WHERE expires_at <= now()`.
   TTL 60s, heartbeat 15s, acquire wait 5s.
-- The callback runs on the app pool. Lease heartbeat/acquire/release use the small coordination pool;
-  no transaction spans Stripe I/O.
+- The callback and lease acquire/heartbeat/release use the app pool; lease queries are short autocommit
+  statements. No app-pool transaction spans Stripe I/O.
 - The final checkout/deletion transaction locks the lease row `FOR UPDATE`, then the user row, and
   fails with 503 if the owner or expiry no longer matches.
 - Deletion expiry is capped at 100 sessions and 20s. After the deadline, remaining calls are
   aborted and the route waits for the in-flight call before releasing the lease. A failed or lost
   lease deletes nothing.
-- `LIFECYCLE_ADVISORY_COMPAT` defaults on during cutover. It holds the old one-argument advisory lock
-  while the lease is held; set it to `0` after pre-lease instances drain.
+- `LIFECYCLE_ADVISORY_COMPAT` is off by default. Setting it to `1` holds the old one-argument
+  advisory lock on the coordination pool while the lease is held, for a controlled old/new overlap.
+  That compatibility transaction does span provider I/O, consumes one coordination connection per
+  concurrent lifecycle operation, and should be enabled only for the cutover window. Normal
+  deployments drain pre-lease instances instead.
 - `0005` is additive. After it is applied, old code's `/api/ready` returns 503 because its manifest
   lacks the migration. Rollback is forward-fix or restore, not promotion of a pre-`0005` deployment.
   Preflight the preview DB before `deploy.sh` when preview readiness needs the new schema.
@@ -284,6 +287,8 @@ two-argument lock, so a cutover gap existed between old and new instances.
 ### Consequences
 - Lease state is visible across PgBouncer sessions and instances.
 - Crash recovery is automatic after TTL; a cleanup script removes expired rows.
-- The compatibility window temporarily pins one coordination connection across provider I/O.
+- If the opt-in compatibility window is used, it pins one coordination connection per concurrent
+  lifecycle operation across provider I/O. Its capacity is bounded by `DB_COORDINATION_POOL_MAX`;
+  the default path does not use that connection.
 - A migration that old code does not know makes readiness-based automatic rollback unavailable;
   operators must forward-fix.

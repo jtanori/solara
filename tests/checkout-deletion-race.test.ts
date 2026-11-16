@@ -687,7 +687,12 @@ test("pool: a stalled checkout holds coordination, not an app-pool connection (#
   let lockCalls = 0;
   const lifecycleLock: typeof withAccountLifecycleLock = (userId, fn, deps) => {
     lockCalls += 1;
-    return withAccountLifecycleLock(userId, fn, { ...deps, pool: lockPool, compatPool: lockPool });
+    return withAccountLifecycleLock(userId, fn, {
+      ...deps,
+      pool: lockPool,
+      compatPool: lockPool,
+      advisoryCompat: true,
+    });
   };
 
   let providerStarted!: () => void;

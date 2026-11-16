@@ -138,8 +138,9 @@ Ordered so each step's evidence exists before the next depends on it.
   `503`. That is expected readiness skew, not a rollback signal.
 - **Rollback:** after `0005`, old code does not know the migration and cannot pass `/api/ready`.
   Recovery is forward-fix; a tested restore is the last resort. Do not promote a pre-`0005`
-  deployment. `LIFECYCLE_ADVISORY_COMPAT` is on during cutover and must be set to `0` after old
-  instances drain.
+  deployment. `LIFECYCLE_ADVISORY_COMPAT` is off by default; normal rollout drains old instances.
+  If overlap cannot be avoided, enable it only for the cutover window, size
+  `DB_COORDINATION_POOL_MAX` for the expected concurrency, and set it back to `0`.
 
 ## 6. Known limits after this PR
 
@@ -152,10 +153,11 @@ Ordered so each step's evidence exists before the next depends on it.
 - The `tests/billing-state.test.ts` helpers remain the unit-level proof; E2 is the route-level proof.
   Both are needed — the first would pass a mutation the second catches.
 - Coordination uses `account_lifecycle_leases` (TTL 60s, heartbeat 15s, acquire wait 5s) on the app
-  pool; those queries are short and autocommit. During cutover, compatibility additionally holds one
-  coordination connection for up to the Stripe transport timeout; with
-  `DB_COORDINATION_POOL_MAX=3`, a burst of compatibility holders returns 503 rather than consuming
-  the app pool. Lease queries use the app pool and are not starved by those holders.
+  pool; those queries are short and autocommit. Compatibility is off by default. If explicitly
+  enabled for a controlled overlap, it additionally holds one coordination connection for up to the
+  Stripe transport timeout; with `DB_COORDINATION_POOL_MAX=3`, a burst of compatibility holders
+  returns 503 rather than consuming the app pool. Lease queries use the app pool and are not starved
+  by those holders.
 - An ambiguous `sessions.create` timeout can leave a server-side session after the lock is released.
   Deletion expires it if still open; the webhook cancels a paid subscription but does not refund the
   initial charge.
@@ -296,9 +298,11 @@ A failed/lost lease fails closed with 503 and deletes nothing. The final delete 
 `resource_missing` code or an explicit already-expired 400; a bare 404 is unverifiable and blocks
 deletion.
 
-**Compatibility.** `LIFECYCLE_ADVISORY_COMPAT` defaults on. While enabled, the lease holder also takes
-the old one-argument `pg_advisory_xact_lock(hashtext('account-deletion:<userId>'))` so pre-lease
-instances are excluded. Set it to `0` after they drain.
+**Compatibility.** `LIFECYCLE_ADVISORY_COMPAT` is off by default. While explicitly enabled for a
+controlled overlap, the lease holder also takes the old one-argument
+`pg_advisory_xact_lock(hashtext('account-deletion:<userId>'))` so pre-lease instances are excluded.
+The coordination transaction spans provider I/O and consumes one connection per concurrent
+operation; size `DB_COORDINATION_POOL_MAX` for that window and set the flag back to `0`.
 
 **Deploy.** Preflight the preview DB with `db-remote --pr <n> --env staging` before `deploy.sh`; the
 new preview needs `0005` before preview readiness can pass. After `0005`, old code's `/api/ready`
@@ -321,6 +325,12 @@ pre-`0005` deployment.
 | Bare 404 treated as a missing checkout session | bare-404 test **fail 1 (200, expected 503)** |
 | `RELEASE_SQL` drops the owner predicate | release-takeover test **fail 1 (new owner row deleted)** |
 | Lease cleanup uses `new Date()` instead of DB `now()` | cleanup clock-skew test **fail 1 (future row deleted)** |
+| `LIFECYCLE_ADVISORY_COMPAT` defaults on | compatibility-is-opt-in test **fail 1** |
+| Compatibility pool default changes from coordination to app | default-compatibility test **fail 1** |
+| Lease pool default changes from app to coordination | default-pools test **fail 1** |
 
-**Verification (v3.3).** Full suite **442 pass / 0 fail / 0 skipped**; `db:check` is **13/13 tables,
+The six-holder default test also fails if compatibility is enabled by default: with a three-connection
+compatibility pool, the fourth holder stalls and the default concurrency assertion times out.
+
+**Verification (v3.3).** Full suite **446 pass / 0 fail / 0 skipped**; `db:check` is **13/13 tables,
 19/19 columns, 4/4 indexes**; typecheck, lint, build and manifest check clean.
