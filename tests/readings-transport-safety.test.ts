@@ -111,3 +111,20 @@ test("processor swap changes consent/cache identity; invalid or incomplete profi
     resetContentVersionCacheForTests();
   }
 });
+
+for (const status of [200, 500]) {
+  for (const elapsed of [12.6, -1]) {
+    test(`PR148 R5: HTTP ${status} latency rounds/clamps the monotonic delta ${elapsed}, not wall time`, async t => {
+      let wallClock = 100_000; let monotonic = 100;
+      t.mock.method(Date, "now", () => wallClock);
+      t.mock.method(performance, "now", () => monotonic);
+      const provider = createChatAdapter({ baseUrl: "https://processor.invalid/v1", apiKey: "synthetic",
+        fetchImpl: async () => { wallClock -= 60_000; monotonic += elapsed; return Response.json(responseBody, { status }); },
+      });
+      const completion = await provider.complete(request);
+      assert.equal(completion.latencyMs, elapsed < 0 ? 0 : 13);
+      assert.deepEqual(completion.usage, { inputTokens: 2, outputTokens: 3 });
+      assert.equal(Boolean(completion.providerError), status !== 200);
+    });
+  }
+}

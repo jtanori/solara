@@ -6,6 +6,7 @@ import { chartDigest } from "../src/lib/chart";
 import { calculateSolarReturnChart } from "../src/lib/solar";
 import { generateReadingDocument, MemorySectionCache } from "../src/readings/generate";
 import type { ChartInput } from "../src/lib/types";
+import { dispatchAttempt, GenerationBlocked, type AttemptSettlement } from "../src/readings/execution";
 import type { CompletionRequest } from "../src/readings/provider";
 
 const input: ChartInput = {
@@ -72,5 +73,35 @@ for (const tier of ["free", "paid"] as const) {
     } finally {
       if (previous === undefined) delete process.env.READINGS_GENERATION_ENABLED; else process.env.READINGS_GENERATION_ENABLED = previous;
     }
+  });
+}
+
+
+for (const reason of ["consent_required", "generation_disabled", "generation_deadline", "generation_owner_lost", "permit_missing", "unexpected", "aborted"] as const) {
+  test(`PR148 R5: unsent permit failure preserves ${reason} without releasing the offer`, async () => {
+    const ledger = memoryExecution(); const controller = new AbortController(); let calls = 0;
+    let settled: AttemptSettlement | undefined;
+    const provider = createChatAdapter({
+      baseUrl: "https://example.invalid/v1", apiKey: "synthetic", inputTokenLimits: { "fixture-1": 3000 },
+      fetchImpl: async () => { calls++; throw new Error("must never send"); },
+    });
+    const execution = {
+      ...ledger, signal: controller.signal,
+      async assertPermit() {
+        if (reason === "aborted") { controller.abort(); return; }
+        if (reason === "unexpected") throw new Error("PRIVATE_PERMIT_ERROR");
+        controller.abort(); // A precise authorization failure wins over concurrent cancellation.
+        throw new GenerationBlocked(reason);
+      },
+      async settle(id: string, result: AttemptSettlement) { settled = result; return ledger.settle(id, result); },
+    };
+    const result = await dispatchAttempt(execution, provider, {
+      section: "overview", locale: "en", digest, prompt: "synthetic", jsonSchema: {}, model: "fixture-1", maxOutputTokens: 2000,
+    }, "primary");
+    const code = reason === "unexpected" ? "generation_unavailable" : reason === "aborted" ? "generation_cancelled" : reason;
+    assert.deepEqual(settled, { basis: "not_dispatched", costMicros: 0, model: null, usage: null, latencyMs: 0, code });
+    assert.deepEqual(result, { measuredMicros: 0, uncertainMicros: 0, failure: code, halt: code });
+    assert.equal(calls, 0);
+    await assert.rejects(() => ledger.admit({ section: "overview", phase: "primary", model: "fixture-1", reservedMicros: 165000 }), /attempt_already_admitted/);
   });
 }

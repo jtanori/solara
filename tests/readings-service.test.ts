@@ -432,7 +432,7 @@ test("finalization rechecks configuration after handing off to the lifecycle bou
   assert.equal((await ledger(user.id)).attempts.length, 2);
 });
 
-test("withdrawal between committed permit and send consumes offer but releases positively unsent money", gated, async t => {
+test("PR148 R5: withdrawal between committed permit and send consumes offer but releases positively unsent money", gated, async t => {
   const { user, chart } = await account(); await grant(user.id); let calls = 0;
   const original = store.execution.bind(store);
   t.mock.method(store, "execution", (...args: Parameters<typeof original>) => {
@@ -444,6 +444,7 @@ test("withdrawal between committed permit and send consumes offer but releases p
   assert.equal(state.status, "failed"); assert.equal(calls, 0);
   const saved = await ledger(user.id); assert.ok(saved.run.consumedAt); assert.equal(saved.attempts.length, 1);
   assert.equal(saved.attempts[0].state, "not_dispatched"); assert.equal(saved.attempts[0].costMicros, 0);
+  assert.equal(saved.attempts[0].code, "consent_required");
   await store.grant(user.id, processorProfile()!, 2, "en");
   await handleGeneration(request("POST", { locale: "en" }), chart.id, options);
   assert.equal(calls, 0, "releasing money never resets the allowance");
@@ -660,3 +661,25 @@ test("PR148 R4: exhausted consent quota does not consume the chart-deletion buck
     assert.equal((await db.select().from(readings).where(eq(readings.id, chart.id))).length, 0);
   } finally { for (const key of keys) await db.delete(rateLimits).where(eq(rateLimits.key, key)); }
 });
+
+for (const mode of ["measured", "unknown_model", "transport_error"] as const) {
+  test(`PR148 R5: backward wall-clock steps do not strand ${mode} settlement`, gated, async t => {
+    const { user, chart } = await account(); await grant(user.id); let calls = 0;
+    let wallClock = Date.now();
+    t.mock.method(Date, "now", () => wallClock);
+    const options = deps(user, async () => {
+      calls++; wallClock -= 60_000;
+      if (mode === "transport_error") throw new Error("synthetic lost response");
+      return mode === "unknown_model" ? response({ model: "not-admitted" }) : response();
+    });
+    const state = await (await handleGeneration(request("POST", { locale: "en" }), chart.id, options)).json();
+    assert.equal(state.status, mode === "measured" ? "completed" : "indeterminate");
+    assert.equal(calls, mode === "measured" ? 2 : 1);
+    const saved = await ledger(user.id);
+    for (const row of saved.attempts) {
+      assert.equal(row.state, mode === "measured" ? "measured" : "unknown");
+      assert.equal(row.costMicros, mode === "measured" ? 7500 : row.reservedMicros);
+      assert.ok(Number.isSafeInteger(row.latencyMs) && row.latencyMs! >= 0);
+    }
+  });
+}

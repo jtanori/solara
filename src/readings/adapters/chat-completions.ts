@@ -140,7 +140,9 @@ export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider 
   async function send(body: string, signal?: AbortSignal): Promise<Completion> {
     const controller = new AbortController();
     const cancel = () => controller.abort();
-    const started = Date.now();
+    // Elapsed transport time is independent of wall-clock synchronization.
+    const started = performance.now();
+    const elapsedMs = () => Math.max(0, Math.round(performance.now() - started));
     const timer = setTimeout(cancel, timeoutMs);
     signal?.addEventListener("abort", cancel, { once: true });
     if (signal?.aborted) controller.abort();
@@ -158,10 +160,10 @@ export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider 
       if (!response.ok) {
         // A non-success status is not evidence of zero billing. Keep a valid
         // receipt if supplied, but do not repair or continue an unhealthy provider.
-        try { return { ...toCompletion(parsed, Date.now() - started), output: null, providerError: true }; }
+        try { return { ...toCompletion(parsed, elapsedMs()), output: null, providerError: true }; }
         catch { throw new ChatAdapterError(`provider returned HTTP ${response.status}`, { status: response.status }); }
       }
-      return toCompletion(parsed, Date.now() - started);
+      return toCompletion(parsed, elapsedMs());
     } catch (error) {
       if (controller.signal.aborted) throw new ChatAdapterError(`provider timed out or was aborted after at most ${timeoutMs}ms`);
       if (error instanceof ChatAdapterError) throw error;

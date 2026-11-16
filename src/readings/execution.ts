@@ -100,14 +100,17 @@ export async function dispatchAttempt(
 
   let completion: Completion | undefined;
   let settlement: AttemptSettlement;
-  const started = Date.now();
+  // A wall-clock correction must not invalidate an otherwise honest receipt.
+  const started = performance.now();
+  const elapsedMs = () => Math.max(0, Math.round(performance.now() - started));
   try {
     // Positive local proof that send was never invoked. A committed permit still
     // consumes the offer, but its monetary reservation can be released honestly.
     await execution.assertPermit(id);
     execution.signal?.throwIfAborted();
-  } catch {
-    settlement = { basis: "not_dispatched", costMicros: 0, model: null, usage: null, latencyMs: 0, code: "generation_cancelled" };
+  } catch (error) {
+    const code = error instanceof GenerationBlocked ? error.code : execution.signal?.aborted ? "generation_cancelled" : "generation_unavailable";
+    settlement = { basis: "not_dispatched", costMicros: 0, model: null, usage: null, latencyMs: 0, code };
     try { await execution.settle(id, settlement); }
     catch { return { ...empty, failure: "accounting_unavailable", halt: "accounting_unavailable", ledgerFailed: true }; }
     return { ...empty, failure: settlement.code, halt: settlement.code };
@@ -122,12 +125,12 @@ export async function dispatchAttempt(
       : !validReceipt ? "pricing_unavailable"
         : completion.providerError ? "provider_error" : "measured";
     settlement = validReceipt
-      ? { basis: "measured", costMicros: measured!, model: completion.model, usage: completion.usage, latencyMs: Date.now() - started, code }
-      : { basis: "unknown", costMicros: quote, model: null, usage: null, latencyMs: Date.now() - started, code };
+      ? { basis: "measured", costMicros: measured!, model: completion.model, usage: completion.usage, latencyMs: elapsedMs(), code }
+      : { basis: "unknown", costMicros: quote, model: null, usage: null, latencyMs: elapsedMs(), code };
   } catch {
     // The adapter might have incurred a charge. Neither a thrown error, HTTP
     // status, timeout nor abort proves zero billing. #129: stop, never continue free.
-    settlement = { basis: "unknown", costMicros: quote, model: null, usage: null, latencyMs: Date.now() - started, code: "provider_error" };
+    settlement = { basis: "unknown", costMicros: quote, model: null, usage: null, latencyMs: elapsedMs(), code: "provider_error" };
   }
 
   const amounts = {
