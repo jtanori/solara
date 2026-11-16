@@ -80,6 +80,7 @@ INSERT INTO reading_generation_runs (user_id, reading_id, document_id, locale, s
 SELECT DISTINCT ON (r.user_id) r.user_id, r.id, d.id, d.locale, 'legacy', d.created_at, d.content_version, now()
 FROM reading_documents d JOIN readings r ON r.id = d.reading_id
 WHERE d.tier = 'free'
+  AND d.locale IN ('en', 'es')
   AND jsonb_typeof(d.document->'models') = 'object'
   AND d.document->'models' <> '{}'::jsonb
   -- A nonempty object alone is not genuine provenance (e.g. {"overview":""}

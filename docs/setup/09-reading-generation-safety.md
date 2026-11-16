@@ -67,10 +67,12 @@ receipts do not establish invoice accuracy, model quality or real latency.
    evidence. Halt rollout if provenance cannot be decided under the approved rule.
 4. Migration `0006` adds three tables; it adopts the earliest qualifying surviving
    free document per user (creation time, then document ID), preserves other docs,
-   and invents no historical consent/prices/usage. Empty/non-string model IDs,
-   fixture-prefixed IDs (case-insensitive), or sections without matching model
-   provenance do not qualify. No prior applied/hosted migration was edited: `0006`
-   is the new unpublished migration in this change.
+   and invents no historical consent/prices/usage. Locales other than exact `en`
+   or `es`, empty/non-string model IDs, fixture-prefixed IDs (case-insensitive), or
+   sections without matching model provenance do not qualify. Unsupported-locale
+   documents stay unchanged for classification; an earlier such document cannot
+   outrank a later qualifying document. No prior applied/hosted migration was
+   edited: `0006` is the new unpublished migration in this change.
 5. Use the existing exact-SHA staging preflight (`db-remote.ts --pr <number> --env
    staging`) and migration/deploy flow only after authorization. Check seven
    journal entries, no unexpected/pending hashes, **16 tables / 62 required
@@ -90,7 +92,8 @@ receipts do not establish invoice accuracy, model quality or real latency.
 ```sql
 WITH evidence AS (
   SELECT r.user_id,
-    (jsonb_typeof(d.document->'models') = 'object'
+    (d.locale IN ('en', 'es')
+      AND jsonb_typeof(d.document->'models') = 'object'
       AND d.document->'models' <> '{}'::jsonb
       AND NOT EXISTS (
         SELECT 1 FROM jsonb_each(CASE

@@ -16,7 +16,7 @@ import type { ReadingDocument } from "../src/readings/types";
 
 const gated = { skip: process.env.RUN_INTEGRATION_TESTS !== "1" ? "requires disposable local PostgreSQL" : false };
 
-test("migration: current-schema upgrade, approved legacy adoption, idempotence, FK erasure and actual readiness drift", gated, async () => {
+test("migration: current-schema upgrade, PR148 R7 legacy locales, idempotence, FK erasure and actual readiness drift", gated, async () => {
   const baseUrl = new URL(process.env.DATABASE_URL!);
   assert.ok(["localhost", "127.0.0.1"].includes(baseUrl.hostname), "never rehearse against hosted data");
   const databaseName = `reading_upgrade_${randomUUID().replaceAll("-", "")}`;
@@ -62,15 +62,39 @@ test("migration: current-schema upgrade, approved legacy adoption, idempotence, 
     await document(mixedCaseFixture.chart.id, "Fixture-1", "en", new Date("2026-01-01T00:00:00Z"));
     await document(deleted.chart.id, "legacy-real-model", "en", new Date("2026-01-01T00:00:00Z"));
     await database.delete(readings).where(eq(readings.id, deleted.chart.id));
+    const unsupported = [];
+    const unsupportedDocuments: Array<{ id: string; locale: string }> = [];
+    async function unsupportedDocument(readingId: string, locale: string) {
+      const id = await document(readingId, "legacy-real-model", "en", new Date("2025-12-31T00:00:00Z"));
+      // The legacy SQL column has no CHECK; seed historical data the TS enum cannot express.
+      await upgraded!.query("UPDATE reading_documents SET locale=$2, document=jsonb_set(document, '{locale}', to_jsonb($2::text)) WHERE id=$1", [id, locale]);
+      unsupportedDocuments.push({ id, locale });
+    }
+    for (const locale of ["fr", "es-MX", ""]) {
+      const account = await create(); unsupported.push(account);
+      await unsupportedDocument(account.chart.id, locale);
+    }
+    // An earlier invalid-locale document must not outrank the first valid canonical document.
+    await unsupportedDocument(real.chart.id, "pt");
+    const runbook = await readFile("docs/setup/09-reading-generation-safety.md", "utf8");
+    const classificationSql = /```sql\n(WITH evidence AS [\s\S]*?)\n```/.exec(runbook)?.[1];
+    assert.ok(classificationSql, "execute the published pre-migration aggregate, not a copied predicate");
+    const classification = await upgraded.query(classificationSql);
 
-    await migrate(database, { migrationsFolder: "drizzle" });
+    await assert.doesNotReject(() => migrate(database, { migrationsFolder: "drizzle" }), "unsupported legacy locales must not abort the upgrade");
+    assert.deepEqual(Object.fromEntries(Object.entries(classification.rows[0]).map(([key, value]) => [key, Number(value)])), {
+      surviving_free_documents: 10, qualifying_documents: 2, fixture_or_mixed_documents: 2,
+      ambiguous_documents: 6, qualifying_accounts: 1, accounts_without_qualifying_evidence: 9,
+    }, "operator classification and actual adoption must agree");
     const adopted = await database.select().from(runs);
     assert.equal(adopted.length, 1); assert.equal(adopted[0].userId, real.user.id); assert.equal(adopted[0].documentId, canonical); assert.equal(adopted[0].locale, "es");
     assert.equal(adopted[0].status, "legacy"); assert.ok(adopted[0].consumedAt);
     assert.equal(adopted[0].settings, null, "no historical receipt or pricing snapshot invented");
     assert.equal((await database.select().from(consents)).length, 0, "migration never grants consent");
-    for (const account of [fixture, chartOnly, deleted, emptyModel, malformedModel, mixedCaseFixture]) assert.equal(adopted.some(run => run.userId === account.user.id), false, "approved cutover exception");
-    assert.equal((await database.select().from(readingDocuments)).length, 6, "legacy documents are preserved");
+    for (const account of [fixture, chartOnly, deleted, emptyModel, malformedModel, mixedCaseFixture, ...unsupported]) assert.equal(adopted.some(run => run.userId === account.user.id), false, "approved cutover exception");
+    const preserved = await database.select().from(readingDocuments);
+    assert.equal(preserved.length, 10, "legacy documents are preserved");
+    for (const invalid of unsupportedDocuments) assert.equal(preserved.find(doc => doc.id === invalid.id)?.locale, invalid.locale, "unsupported locales are left unchanged for classification");
 
     await migrate(database, { migrationsFolder: "drizzle" });
     const safetySql = await readFile("drizzle/0006_reading_generation_safety.sql", "utf8");

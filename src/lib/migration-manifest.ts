@@ -30,6 +30,6 @@ export const EXPECTED_MIGRATIONS: MigrationManifestEntry[] = [
   },
   {
     "tag": "0006_reading_generation_safety",
-    "hash": "c5cf7c961f7898b6a141677339861ed6eb6bf5519dded9376be462a4e5fd940c"
+    "hash": "7052c0d61022ad92a58d62053f2c9f965cf2f006c4f1fda107061781eb1c8525"
   }
 ];
