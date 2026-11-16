@@ -1,5 +1,11 @@
 # Reading features — plan amendment
 
+**Historical source analysis, not the current rollout contract.** The
+[approved safety plan](../plan-reading-generation-safety.md) supersedes the old
+implicit-free dispatch and failure-accounting guidance. The adapter and block
+renderer now exist; page/PDF integration of generated prose and paid generation
+remain later slices. Safety verification is local/synthetic, not a live evaluation.
+
 Companion to `reading-features-current-implementation.md` (the verbatim source dump).
 This file is the analysis: what the current code already does, where the 7-step plan
 contradicts it, and the amended sequence.
@@ -235,10 +241,14 @@ Implements `ReadingProvider`: `complete(request): Promise<Completion>`.
   validation + the single repair.
 - Return `output` as **parsed JSON** where possible; return the raw string on a parse
   failure so `validateSectionOutput` produces the real error.
-- Return `usage` from the vendor's own token counts; never estimate, because
-  `validUsage` + `costMxn` are the ceiling ledger's only inputs. If the vendor omits
-  usage, throw — the pipeline's `provider_error` path is the honest outcome.
-- Register in `PROVIDERS` (`provider.ts:266`). Do not touch the interface.
+- A receipt comes from validated vendor usage; an estimate is never labelled a receipt.
+  Missing/unpriceable usage or a thrown transport error retains the precommitted
+  reservation and halts the run. It must not become zero spend plus another dispatch.
+  Primary and repair both use `prepare → admit → assert → send → settle`; failure
+  exposure survives even when no document can be saved. The interface now includes
+  an immutable prepared payload and a verified full billable-input bound.
+- Register transport factories in `PROVIDERS`; account generation uses the validated
+  named-processor profile and durable service, never a fixture fallback.
 - Price it in `READINGS_MODEL_PRICES` with real MXN per million, covering **both**
   `READINGS_CHEAP_MODEL` and `READINGS_STRONG_MODEL`.
 - Tests: a fake HTTP layer asserting prompt passthrough, JSON parse, usage mapping, and

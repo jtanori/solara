@@ -34,7 +34,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { Client } from "pg";
 import {
-  findMissingColumns,
+  findMissingColumns, REQUIRED_COLUMN_TABLES,
   REQUIRED_COLUMNS,
   REQUIRED_INDEXES,
   REQUIRED_TABLES,
@@ -280,8 +280,8 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
       select table_name, column_name, is_nullable, data_type, column_default
       from information_schema.columns
       where table_schema = 'public'
-        and table_name in ('users', 'rate_limits', 'email_tokens', 'account_lifecycle_leases')
-    `);
+        and table_name = any($1::text[])
+    `, [REQUIRED_COLUMN_TABLES]);
     const missingColumns = findMissingColumns(columns.rows);
 
     const indexes = await client.query<{ indexname: string }>(

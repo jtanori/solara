@@ -85,9 +85,12 @@ export type SectionValidation =
 export function validateSectionOutput(key: SectionKey, data: unknown): SectionValidation {
   const result = sectionSchema(key).safeParse(data);
   if (result.success) return { ok: true, value: result.data };
-  const issues = result.error.issues.map(issue => {
-    const path = issue.path.length ? `/${issue.path.join("/")}` : "";
-    return `${path}: ${issue.message} (${issue.code})`;
+  const allowedPaths = new Set(["blocks", "kind", "text", "title", "items", "entries", "key", "value", "rows", "a", "b", "type", "orb", "closingQuestion"]);
+  const issues = result.error.issues.slice(0, 12).map(issue => {
+    // Zod messages/unknown keys can echo provider-controlled text. Repairs and
+    // public failures use only known schema paths and stable validator codes.
+    const path = issue.path.filter(part => typeof part === "number" || allowedPaths.has(String(part))).join("/");
+    return `/${path}: ${issue.code}`;
   });
   return { ok: false, error: `schema validation failed for section "${key}":\n${issues.join("\n")}` };
 }

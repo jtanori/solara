@@ -1,16 +1,17 @@
+import { memoryExecution } from "./helpers/reading-execution";
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { eq } from "drizzle-orm";
-import { db } from "../src/db";
-import { readings, readingDocuments, users } from "../src/db/schema";
+import { eq, inArray, like } from "drizzle-orm";
+import { db, pool, coordinationPool } from "../src/db";
+import { readings, readingDocuments, users, generationCache } from "../src/db/schema";
 import { calculateSolarReturnChart } from "../src/lib/solar";
 import { chartDigest } from "../src/lib/chart";
 import { createFixtureProvider } from "../src/readings/provider";
 import { DbSectionCache } from "../src/readings/db-cache";
 import { computeContentVersion } from "../src/readings/content-version";
-import { generateReadingDocument, digestHashOf } from "../src/readings/generate";
+import { generateReadingDocument, digestHashOf, type SectionCacheKey, type CachedSection } from "../src/readings/generate";
 import { persistableDocument } from "../src/readings/document";
 import type { ChartInput } from "../src/lib/types";
 import type { Locale } from "../src/lib/i18n";
@@ -32,16 +33,27 @@ const input: ChartInput = {
 };
 
 const digest = chartDigest(calculateSolarReturnChart(input).facts);
+const namespace = `test-${randomUUID()}:`;
+const createdUsers: string[] = [];
+class IsolatedDbCache extends DbSectionCache {
+  override get(key: SectionCacheKey) { return super.get({ ...key, digestHash: namespace + key.digestHash }); }
+  override put(key: SectionCacheKey, value: CachedSection) { return super.put({ ...key, digestHash: namespace + key.digestHash }, value); }
+}
 
 before(() => {
+  assert.ok(["localhost", "127.0.0.1"].includes(new URL(process.env.DATABASE_URL!).hostname), "disposable local database only");
   process.env.READINGS_GENERATION_ENABLED = "true";
 });
-after(() => {
+after(async () => {
   delete process.env.READINGS_GENERATION_ENABLED;
+  try {
+    await db.delete(generationCache).where(like(generationCache.digestHash, `${namespace}%`));
+    if (createdUsers.length) await db.delete(users).where(inArray(users.id, createdUsers));
+  } finally { await Promise.all([pool.end(), coordinationPool.end()]); }
 });
 
 test("DbSectionCache: roundtrip, key dimensions, and insert-only freeze against a live database", async () => {
-  const cache = new DbSectionCache();
+  const cache = new IsolatedDbCache();
   const key = {
     digestHash: `test-${digestHashOf(digest)}`,
     section: "overview" as const,
@@ -73,6 +85,7 @@ test("reading_documents: the (reading, locale, contentVersion) slot keeps its fi
     .insert(users)
     .values({ name: "Db Reading Docs", email: `dbdocs-${Date.now()}@example.com`, passwordHash: "not-a-real-hash" })
     .returning({ id: users.id });
+  createdUsers.push(user.id);
   const { result } = calculateSolarReturnChart(input);
   const [reading] = await db
     .insert(readings)
@@ -80,11 +93,12 @@ test("reading_documents: the (reading, locale, contentVersion) slot keeps its fi
     .returning({ id: readings.id });
 
   const document = await generateReadingDocument({
+        execution: memoryExecution("free"),
     readingId: reading.id,
     locale: "en",
     tier: "free",
     digest,
-    cache: new DbSectionCache(),
+    cache: new IsolatedDbCache(),
     provider: createFixtureProvider(),
   });
   assert.ok(persistableDocument(document), "the fixture document is persistable");

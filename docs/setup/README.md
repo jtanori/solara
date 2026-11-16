@@ -10,6 +10,7 @@ These guides cover the current application in three separate environments. The c
 6. [Solar-return calculation and house systems](06-astrology-and-houses.md)
 7. [Platform validation checklist](07-platform-validation.md)
 8. [Auth and security hardening](08-auth-security-hardening.md)
+9. [Reading generation safety — disabled rollout and recovery](09-reading-generation-safety.md)
 7. [Platform validation checklist — pre-launch gate](07-platform-validation.md) *(owners + evidence)*
 
 ## Recommended environment separation

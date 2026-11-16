@@ -12,6 +12,9 @@ export const REQUIRED_TABLES = [
   "public.generation_cache",
   "public.deleted_customers",
   "public.account_lifecycle_leases",
+  "public.reading_generation_consents",
+  "public.reading_generation_runs",
+  "public.reading_generation_attempts",
 ] as const;
 
 export const REQUIRED_INDEXES = [
@@ -19,6 +22,11 @@ export const REQUIRED_INDEXES = [
   "email_tokens_user_idx",
   "reading_documents_reading_locale_version_key",
   "account_lifecycle_leases_expires_idx",
+  "reading_runs_lifetime_user_key",
+  "reading_runs_reading_idx",
+  "reading_runs_document_idx",
+  "reading_attempts_slot_key",
+  "reading_attempts_outstanding_key",
 ] as const;
 
 export type RequiredColumn = {
@@ -58,6 +66,18 @@ export const REQUIRED_COLUMNS: RequiredColumn[] = [
   { table: "account_lifecycle_leases", column: "created_at", nullable: false, dataType: "timestamp with time zone" },
   { table: "account_lifecycle_leases", column: "updated_at", nullable: false, dataType: "timestamp with time zone" },
 ];
+
+// Include every column used by the consent/attempt boundary, not just table presence.
+for (const [table, names] of Object.entries({
+  reading_generation_consents: ["user_id", "receipt_id", "revision", "processor_id", "policy_version", "policy_hash", "locale", "granted_at", "withdrawn_at"],
+  reading_generation_runs: ["id", "user_id", "kind", "reading_id", "document_id", "locale", "status", "owner", "deadline", "consumed_at", "consent_revision", "policy_hash", "config_hash", "content_version", "settings", "ceiling_micros", "failure_code", "created_at", "finished_at"],
+  reading_generation_attempts: ["id", "run_id", "owner", "section", "phase", "state", "requested_model", "reported_model", "reserved_micros", "cost_micros", "usage", "latency_ms", "code", "created_at", "settled_at"],
+})) {
+  for (const column of names) REQUIRED_COLUMNS.push({ table, column });
+}
+
+/** Shared by hosted readiness and the migration CLI; no second hard-coded list. */
+export const REQUIRED_COLUMN_TABLES = [...new Set(REQUIRED_COLUMNS.map(spec => spec.table))];
 
 export function findMissingColumns(rows: ColumnRow[]): string[] {
   const byName = new Map(rows.map(row => [`${row.table_name}.${row.column_name}`, row]));

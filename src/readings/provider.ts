@@ -34,9 +34,18 @@ export type Completion = {
   latencyMs: number;
 };
 
+export type PreparedCompletion = {
+  /** Bound on the entire billable input and the exact output cap sent. */
+  upperUsage: ProviderUsage;
+  send(signal?: AbortSignal): Promise<Completion>;
+};
+
 export interface ReadingProvider {
   readonly name: string;
-  complete(request: CompletionRequest): Promise<Completion>;
+  /** Transport only. Application callers must use the guarded generation service. */
+  complete(request: CompletionRequest, signal?: AbortSignal): Promise<Completion>;
+  /** Mandatory for durable/live execution; optional only for explicit simulations. */
+  prepare?(request: CompletionRequest): PreparedCompletion;
 }
 
 export function approxTokens(text: string): number {
@@ -50,11 +59,11 @@ export function approxTokens(text: string): number {
  * (NaN > x is false), silently disabling both ceilings; negative counts would
  * let one attempt offset another's spend.
  */
-export function validUsage(usage: ProviderUsage): boolean {
-  return (
-    Number.isFinite(usage.inputTokens) && Number.isFinite(usage.outputTokens) &&
-    usage.inputTokens >= 0 && usage.outputTokens >= 0
-  );
+export function validUsage(usage: unknown): usage is ProviderUsage {
+  if (!usage || typeof usage !== "object") return false;
+  const { inputTokens, outputTokens } = usage as ProviderUsage;
+  return Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens) &&
+    inputTokens >= 0 && outputTokens >= 0 && Number.isSafeInteger(inputTokens + outputTokens);
 }
 
 // ------------------------------------------------------------------ fixture

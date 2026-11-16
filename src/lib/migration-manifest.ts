@@ -27,5 +27,9 @@ export const EXPECTED_MIGRATIONS: MigrationManifestEntry[] = [
   {
     "tag": "0005_account_lifecycle_leases",
     "hash": "ccb7a3569e0132e2637f2c9bbda33a953139b1199955733e01188748c324fc01"
+  },
+  {
+    "tag": "0006_reading_generation_safety",
+    "hash": "c5cf7c961f7898b6a141677339861ed6eb6bf5519dded9376be462a4e5fd940c"
   }
 ];

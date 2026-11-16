@@ -1,4 +1,6 @@
-import { boolean, doublePrecision, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import type { GenerationSettings } from "@/readings/execution";
+import { bigint, check, boolean, doublePrecision, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { ChartInput, ChartResult, Role } from "@/lib/types";
 import type { ReadingDocument } from "@/readings/types";
 import type { ProviderUsage } from "@/readings/provider";
@@ -72,6 +74,80 @@ export const generationCache = pgTable("generation_cache", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, table => [
   primaryKey({ columns: [table.digestHash, table.section, table.locale, table.contentVersion] }),
+]);
+
+// ------------------------------------------------------------------ generation safety (#105/#108/#129)
+export const readingGenerationConsents = pgTable("reading_generation_consents", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  receiptId: uuid("receipt_id").notNull().defaultRandom(),
+  revision: integer("revision").notNull().default(0),
+  processorId: text("processor_id"),
+  policyVersion: text("policy_version"),
+  policyHash: text("policy_hash"),
+  locale: text("locale").$type<"en" | "es">().notNull(),
+  grantedAt: timestamp("granted_at", { withTimezone: true }),
+  withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
+}, table => [
+  check("reading_consents_revision_check", sql`${table.revision} >= 0`),
+  check("reading_consents_locale_check", sql`${table.locale} in ('en', 'es')`),
+  check("reading_consents_grant_check", sql`${table.grantedAt} is null or (${table.policyHash} is not null and ${table.processorId} is not null and ${table.policyVersion} is not null)`),
+]);
+
+export const readingGenerationRuns = pgTable("reading_generation_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().default("lifetime_free"),
+  readingId: uuid("reading_id").references(() => readings.id, { onDelete: "set null" }),
+  documentId: uuid("document_id").references(() => readingDocuments.id, { onDelete: "set null" }),
+  locale: text("locale").$type<"en" | "es">().notNull(),
+  status: text("status").$type<"reserved" | "running" | "completed" | "partial" | "failed" | "indeterminate" | "legacy">().notNull(),
+  owner: uuid("owner"),
+  deadline: timestamp("deadline", { withTimezone: true }),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  consentRevision: integer("consent_revision"),
+  policyHash: text("policy_hash"),
+  configHash: text("config_hash"),
+  contentVersion: text("content_version").notNull(),
+  settings: jsonb("settings").$type<GenerationSettings>(),
+  ceilingMicros: integer("ceiling_micros").notNull().default(5_000_000),
+  failureCode: text("failure_code"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, table => [
+  uniqueIndex("reading_runs_lifetime_user_key").on(table.userId).where(sql`${table.kind} = 'lifetime_free'`),
+  index("reading_runs_reading_idx").on(table.readingId),
+  index("reading_runs_document_idx").on(table.documentId),
+  check("reading_runs_kind_check", sql`${table.kind} = 'lifetime_free'`),
+  check("reading_runs_locale_check", sql`${table.locale} in ('en', 'es')`),
+  check("reading_runs_ceiling_check", sql`${table.ceilingMicros} = 5000000`),
+  check("reading_runs_status_check", sql`${table.status} in ('reserved','running','completed','partial','failed','indeterminate','legacy')`),
+  check("reading_runs_consumed_check", sql`${table.status} = 'reserved' or ${table.consumedAt} is not null`),
+]);
+
+export const readingGenerationAttempts = pgTable("reading_generation_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  runId: uuid("run_id").notNull().references(() => readingGenerationRuns.id, { onDelete: "cascade" }),
+  owner: uuid("owner").notNull(),
+  section: text("section").$type<"overview" | "sun">().notNull(),
+  phase: text("phase").$type<"primary" | "repair">().notNull(),
+  state: text("state").$type<"reserved" | "measured" | "unknown" | "not_dispatched">().notNull().default("reserved"),
+  requestedModel: text("requested_model").notNull(),
+  reportedModel: text("reported_model"),
+  reservedMicros: bigint("reserved_micros", { mode: "number" }).notNull(),
+  costMicros: bigint("cost_micros", { mode: "number" }),
+  usage: jsonb("usage").$type<ProviderUsage>(),
+  latencyMs: integer("latency_ms"),
+  code: text("code"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  settledAt: timestamp("settled_at", { withTimezone: true }),
+}, table => [
+  uniqueIndex("reading_attempts_slot_key").on(table.runId, table.section, table.phase),
+  uniqueIndex("reading_attempts_outstanding_key").on(table.runId).where(sql`${table.state} = 'reserved'`),
+  check("reading_attempts_section_check", sql`${table.section} in ('overview','sun')`),
+  check("reading_attempts_phase_check", sql`${table.phase} in ('primary','repair')`),
+  check("reading_attempts_state_check", sql`${table.state} in ('reserved','measured','unknown','not_dispatched')`),
+  check("reading_attempts_money_check", sql`${table.reservedMicros} between 0 and 5000000 and (${table.costMicros} is null or ${table.costMicros} between 0 and 9007199254740991)`),
+  check("reading_attempts_settlement_check", sql`(${table.state} = 'reserved' and ${table.costMicros} is null and ${table.settledAt} is null) or (${table.state} <> 'reserved' and ${table.costMicros} is not null and ${table.settledAt} is not null)`),
 ]);
 
 export const knowledge = pgTable("knowledge", {

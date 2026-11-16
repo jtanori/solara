@@ -78,4 +78,11 @@ export type ReadingDocument = {
    */
   costMxn: number;
   wastedCostMxn: number;
+  /** New documents label uncertain exposure explicitly. Absent on legacy rows. */
+  accounting?: {
+    measuredMxn: number;
+    uncertainMxn: number;
+    settled: boolean;
+    halt: string | null;
+  };
 };

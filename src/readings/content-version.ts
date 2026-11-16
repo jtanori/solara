@@ -19,7 +19,7 @@ import { MAX_OUTPUT_TOKENS_PER_SECTION, modelForTier, SECTION_MODEL_TIER, TIER_C
 
 const PROMPTS_DIR = path.join(process.cwd(), "src", "readings", "prompts");
 
-const POLICY_REVISION = "2";
+const POLICY_REVISION = "3";
 
 /**
  * Pure core: version from prompt file contents (name → bytes), per-section
@@ -55,6 +55,9 @@ export function contentVersionFromSources(
 export function policyJson(): string {
   return JSON.stringify({
     revision: POLICY_REVISION,
+    processor: process.env.READINGS_PROVIDER ?? null,
+    processorProfile: process.env.READINGS_PROCESSOR_PROFILE ?? null,
+    endpoint: process.env.READINGS_API_BASE_URL ?? null,
     sectionModelTier: SECTION_MODEL_TIER,
     models: { cheap: modelForTier("cheap"), strong: modelForTier("strong") },
     limits: { maxOutputTokensPerSection: MAX_OUTPUT_TOKENS_PER_SECTION, tierCeilingMxn: TIER_CEILING_MXN },
