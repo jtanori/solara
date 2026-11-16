@@ -117,10 +117,11 @@ export async function dispatchAttempt(
     completion = await prepared.send(execution.signal);
     const measured = validUsage(completion.usage)
       ? costMicros(execution.settings.prices, completion.model, completion.usage) : null;
+    const validReceipt = measured !== null && execution.admitsModel(request.model, completion.model);
     const code = !validUsage(completion.usage) ? "usage_invalid"
-      : measured === null || !execution.admitsModel(request.model, completion.model) ? "pricing_unavailable"
-        : "measured";
-    settlement = code === "measured"
+      : !validReceipt ? "pricing_unavailable"
+        : completion.providerError ? "provider_error" : "measured";
+    settlement = validReceipt
       ? { basis: "measured", costMicros: measured!, model: completion.model, usage: completion.usage, latencyMs: Date.now() - started, code }
       : { basis: "unknown", costMicros: quote, model: null, usage: null, latencyMs: Date.now() - started, code };
   } catch {
@@ -148,5 +149,6 @@ export async function dispatchAttempt(
     // Retain the actual receipt; never clamp it to make the reservation look correct.
     return { ...amounts, failure: "usage_bound_exceeded", halt: "usage_bound_exceeded" };
   }
+  if (completion?.providerError) return { ...amounts, failure: "provider_error", halt: "provider_error" };
   return { ...amounts, completion };
 }

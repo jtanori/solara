@@ -32,6 +32,8 @@ export type Completion = {
   usage: ProviderUsage;
   model: string;
   latencyMs: number;
+  /** A transport/error-envelope failure may still carry a valid billable receipt. */
+  providerError?: boolean;
 };
 
 export type PreparedCompletion = {

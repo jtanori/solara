@@ -48,3 +48,29 @@ test("adapter never enlarges the output cap admitted by the pipeline", () => {
   };
   assert.equal(buildChatBody(request).max_tokens, request.maxOutputTokens);
 });
+
+for (const tier of ["free", "paid"] as const) {
+  test(`PR148 R1: a measured provider error halts the ${tier} pipeline without losing its receipt`, async () => {
+    const previous = process.env.READINGS_GENERATION_ENABLED;
+    process.env.READINGS_GENERATION_ENABLED = "true"; let calls = 0;
+    try {
+      const provider = createChatAdapter({
+        baseUrl: "https://example.invalid/v1", apiKey: "synthetic-key", inputTokenLimits: { "fixture-1": 3000 },
+        fetchImpl: async () => {
+          calls++;
+          return Response.json({ model: "fixture-1", usage: { prompt_tokens: 100, completion_tokens: 100 }, error: { message: "PRIVATE_PROVIDER_ERROR" } });
+        },
+      });
+      const document = await generateReadingDocument({
+        execution: memoryExecution(tier), readingId: "regression", locale: "en", tier, digest, cache: new MemorySectionCache(), provider,
+      });
+      assert.equal(calls, 1);
+      assert.equal(document.accounting?.measuredMxn, 0.0075); assert.equal(document.accounting?.uncertainMxn, 0);
+      assert.equal(document.wastedCostMxn, 0.0075); assert.equal(document.accounting?.halt, "provider_error");
+      assert.equal(document.sections[0].failureReason, "provider_error");
+      assert.equal(JSON.stringify(document).includes("PRIVATE_PROVIDER_ERROR"), false);
+    } finally {
+      if (previous === undefined) delete process.env.READINGS_GENERATION_ENABLED; else process.env.READINGS_GENERATION_ENABLED = previous;
+    }
+  });
+}

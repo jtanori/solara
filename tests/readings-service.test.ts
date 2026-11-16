@@ -492,3 +492,37 @@ test("real adapter transport failures never persist or log private payloads", ga
     }
   }
 });
+
+for (const mode of ["HTTP 500", "HTTP 429", "error envelope"] as const) {
+  test(`PR148 R1: ${mode} with a valid receipt settles once and halts`, gated, async () => {
+    const { user, chart } = await account(); await grant(user.id); let calls = 0;
+    const options = deps(user, async () => {
+      calls++;
+      return new Response(await response(mode === "error envelope" ? { error: { message: "PRIVATE_PROVIDER_ERROR" } } : {}).text(), {
+        status: mode === "HTTP 500" ? 500 : mode === "HTTP 429" ? 429 : 200,
+      });
+    });
+    const state = await (await handleGeneration(request("POST", { locale: "en" }), chart.id, options)).json();
+    assert.equal(state.status, "failed"); assert.equal(calls, 1, "provider failure is not a schema-repair opportunity");
+    const saved = await ledger(user.id); assert.equal(saved.attempts.length, 1);
+    assert.equal(saved.attempts[0].state, "measured"); assert.equal(saved.attempts[0].code, "provider_error");
+    assert.equal(saved.attempts[0].costMicros, 7500); assert.ok(saved.run.consumedAt);
+    assert.deepEqual(saved.attempts[0].usage, { inputTokens: 100, outputTokens: 100 });
+    assert.equal((await db.select().from(readingDocuments).where(eq(readingDocuments.readingId, chart.id))).length, 0);
+    assert.equal(JSON.stringify({ state, saved }).includes("PRIVATE_PROVIDER_ERROR"), false);
+    assert.deepEqual(await (await handleGeneration(request("POST", { locale: "es" }), chart.id, options)).json(), state);
+    assert.equal(calls, 1, "the measured failure cannot replay on another locale");
+  });
+}
+
+test("PR148 R1: a measured provider error during repair preserves both receipts and stops before sun", gated, async () => {
+  const { user, chart } = await account(); await grant(user.id); let calls = 0;
+  const options = deps(user, async () => ++calls === 1
+    ? response({ choices: [{ message: { content: "{}" } }] })
+    : new Response(await response().text(), { status: 429 }));
+  const state = await (await handleGeneration(request("POST", { locale: "en" }), chart.id, options)).json();
+  assert.equal(state.status, "failed"); assert.equal(calls, 2);
+  const saved = await ledger(user.id);
+  assert.equal(saved.attempts.length, 2); assert.ok(saved.attempts.every(attempt => attempt.state === "measured" && attempt.costMicros === 7500));
+  assert.equal(saved.attempts.find(attempt => attempt.phase === "repair")?.code, "provider_error");
+});

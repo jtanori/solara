@@ -73,12 +73,14 @@ export function toCompletion(body: ChatResponseBody, latencyMs: number, _request
       (body.usage?.total_tokens !== undefined && body.usage.total_tokens !== input + output)) {
     throw new ChatAdapterError("provider returned no usable token usage");
   }
-  const text = body.error ? null : contentText(body.choices?.[0]?.message?.content);
+  const providerError = body.error !== undefined && body.error !== null;
+  const text = providerError ? null : contentText(body.choices?.[0]?.message?.content);
   return {
     output: text === null ? null : parseCompletionContent(text).output,
     usage: { inputTokens: input, outputTokens: output },
     model: typeof body.model === "string" && /^[a-zA-Z0-9._:/-]{1,128}$/.test(body.model) ? body.model : "",
     latencyMs,
+    ...(providerError ? { providerError: true } : {}),
   };
 }
 
@@ -155,8 +157,8 @@ export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider 
       catch { throw new ChatAdapterError("provider returned a non-JSON response", { status: response.status }); }
       if (!response.ok) {
         // A non-success status is not evidence of zero billing. Keep a valid
-        // receipt if supplied, but never publish its content as successful prose.
-        try { return { ...toCompletion(parsed, Date.now() - started), output: null }; }
+        // receipt if supplied, but do not repair or continue an unhealthy provider.
+        try { return { ...toCompletion(parsed, Date.now() - started), output: null, providerError: true }; }
         catch { throw new ChatAdapterError(`provider returned HTTP ${response.status}`, { status: response.status }); }
       }
       return toCompletion(parsed, Date.now() - started);
