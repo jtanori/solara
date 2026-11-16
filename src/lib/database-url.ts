@@ -26,3 +26,9 @@ export function poolMax(env: Record<string, string | undefined>): number {
   if (!Number.isFinite(parsed) || parsed < 1) return 5;
   return Math.min(parsed, 20);
 }
+
+export function coordinationPoolMax(env: Record<string, string | undefined>): number {
+  const parsed = Number.parseInt(env.DB_COORDINATION_POOL_MAX ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return 3;
+  return Math.min(parsed, 10);
+}

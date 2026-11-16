@@ -246,3 +246,49 @@ does not stop a reader trusting it.
 - Offline planning requires one command beforehand, which is the intended trade.
 - CI does not check the snapshot, because it is not in the tree; nothing can go stale silently.
 - ADR 002's text is retained unchanged (append-only); its status now points here.
+
+---
+
+## ADR 010 — Account lifecycle lease, not a session advisory lock
+
+**Date:** 2026-11-15
+**Status:** Accepted
+**Issues:** #142, #144
+
+### Context
+Checkout and account deletion must be mutually exclusive per user. The v3.2 implementation used a
+`pg_try_advisory_lock` held for the lifetime of a coordination connection. Neon's pooled application
+URL runs in transaction mode, where acquire and work can land on different server sessions; a
+session-level lock is therefore not a durable coordination primitive. The old one-argument
+`pg_advisory_xact_lock(hashtext(...))` is transaction-scoped but does not conflict with the new
+two-argument lock, so a cutover gap existed between old and new instances.
+
+### Decision
+- Coordination uses one `account_lifecycle_leases` row per user: `user_id` primary key, random
+  `owner`, `expires_at`, `created_at`, `updated_at`; index on `expires_at`. No foreign key.
+- Acquire atomically with `INSERT ... ON CONFLICT DO UPDATE ... WHERE expires_at <= now()`.
+  TTL 60s, heartbeat 15s, acquire wait 5s.
+- The callback and lease acquire/heartbeat/release use the app pool; lease queries are short autocommit
+  statements. No app-pool transaction spans Stripe I/O.
+- The final checkout/deletion transaction locks the lease row `FOR UPDATE`, then the user row, and
+  fails with 503 if the owner or expiry no longer matches.
+- Deletion expiry is capped at 100 sessions and 20s. After the deadline, remaining calls are
+  aborted and the route waits for the in-flight call before releasing the lease. A failed or lost
+  lease deletes nothing.
+- `LIFECYCLE_ADVISORY_COMPAT` is off by default. Setting it to `1` holds the old one-argument
+  advisory lock on the coordination pool while the lease is held, for a controlled old/new overlap.
+  That compatibility transaction does span provider I/O, consumes one coordination connection per
+  concurrent lifecycle operation, and should be enabled only for the cutover window. Normal
+  deployments drain pre-lease instances instead.
+- `0005` is additive. After it is applied, old code's `/api/ready` returns 503 because its manifest
+  lacks the migration. Rollback is forward-fix or restore, not promotion of a pre-`0005` deployment.
+  Preflight the preview DB before `deploy.sh` when preview readiness needs the new schema.
+
+### Consequences
+- Lease state is visible across PgBouncer sessions and instances.
+- Crash recovery is automatic after TTL; a cleanup script removes expired rows.
+- If the opt-in compatibility window is used, it pins one coordination connection per concurrent
+  lifecycle operation across provider I/O. Its capacity is bounded by `DB_COORDINATION_POOL_MAX`;
+  the default path does not use that connection.
+- A migration that old code does not know makes readiness-based automatic rollback unavailable;
+  operators must forward-fix.

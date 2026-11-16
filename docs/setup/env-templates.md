@@ -32,6 +32,8 @@ node scripts/check-setup.mjs production --strict
 **Important:**
 
 - `DATABASE_URL` in Vercel is always the **pooled** Neon URL (`-pooler.` + `?sslmode=verify-full`). Keep the **direct** (non-pooler) URL only in your secure migration shell, never in Vercel.
+- Set `DB_POOL_MAX` and `DB_COORDINATION_POOL_MAX` in **both Preview and Production** when overriding defaults. Their sum is per process/instance, not a global cap; account for Vercel concurrency and the Neon plan limit.
+- `LIFECYCLE_ADVISORY_COMPAT` is an opt-in cutover flag, not a secret; normal deployments keep `0` and drain pre-lease instances. Set it to `1` only for a controlled old/new overlap. It pins one coordination connection per concurrent lifecycle operation across provider I/O, so size `DB_COORDINATION_POOL_MAX` for that window and set the flag back to `0` afterward.
 - `NEXT_PUBLIC_*` vars are baked into the build — redeploy after changing them.
 - Never set `ALLOW_LOCAL_SEED*` or `LOCAL_SEED_PASSWORD` in Vercel — the app refuses them when `VERCEL` is set.
 - Hosted environments require `MAIL_TRANSPORT=resend|postmark`, `MAIL_FROM`, and the matching provider key. Never use `MAIL_TRANSPORT=outbox` in Vercel.

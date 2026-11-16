@@ -1,7 +1,7 @@
-import type Stripe from "stripe";
-import { eq, sql } from "drizzle-orm";
+import Stripe from "stripe";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLogs, stripeEvents, subscriptions, users } from "@/db/schema";
+import { auditLogs, deletedCustomers, stripeEvents, subscriptions, users } from "@/db/schema";
 import { subscriptionIdFrom } from "@/lib/stripe-events";
 import { isPremiumPrice } from "@/lib/billing";
 import { processStripeEventWith, type StripeEventOutcome, type SyncPorts } from "@/lib/stripe-sync-core";
@@ -22,6 +22,21 @@ import { processStripeEventWith, type StripeEventOutcome, type SyncPorts } from 
  * `webhook:*` action, and returns 200 — retrying it for three days cannot fix it
  * and only hides it.
  */
+/**
+ * The `solara_user_id` Stripe holds for a customer, if any.
+ *
+ * Used to prove that a subscription's customer is the same account whose deletion
+ * was recorded — not merely another subscription sitting on that customer. A
+ * non-2xx response yields `undefined`, which fails closed: no proof, no cancel.
+ */
+async function subscriptionCustomerUserId(stripe: Stripe, customerId: string): Promise<string | undefined> {
+  const customer = await stripe.customers.retrieve(customerId);
+  if (customer.deleted) return undefined;
+  const userId = customer.metadata?.solara_user_id;
+  return typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId) ? userId : undefined;
+}
+
+
 export async function processStripeEvent(event: Stripe.Event, stripe: Stripe): Promise<StripeEventOutcome> {
   const subscriptionId = subscriptionIdFrom(event);
 
@@ -91,6 +106,73 @@ export async function processStripeEvent(event: Stripe.Event, stripe: Stripe): P
         },
 
         priceGrantsAccess: priceId => isPremiumPrice(priceId),
+
+        /*
+         * Only cancel on durable proof of deletion. `deleteAccountWithAudit`
+         * writes `account:delete` with `actor_id` = the deleted user and
+         * `target` = the same id; the delete then nulls `actor_id` via
+         * `ON DELETE SET NULL`, so the surviving row is identifiable by
+         * `target` alone. That row is the evidence an account was deleted.
+         *
+         * `target` is a text column, so this compares as text — it also cannot
+         * use the user id to look the user up, which is the point: the user is
+         * gone.
+         */
+        /*
+         * "An account was deleted" is not on its own a reason to cancel *this*
+         * subscription. The subscription must also be ours, and the identity it
+         * carries must be the identity that was deleted.
+         *
+         * `priceGrantsAccess` is the same test the grant path already applies, so
+         * it is what makes a subscription a Solara premium subscription rather
+         * than something else on a shared Stripe account.
+         */
+        priceIdentifiesSubscription: subscription => ports.priceGrantsAccess(subscription.priceId),
+
+        wasAccountDeleted: async ({ metadataUserId, subscription, customerId }) => {
+          /*
+           * Proof has to be about *this* subscription's owner, and it has to be
+           * one fact rather than two coincidences.
+           *
+           * Case 1 — the subscription names a user. That id must be an account we
+           * deleted AND must be the user this customer belonged to. Checking only
+           * the deletion row is not enough: a Solara-priced subscription with a
+           * stale `solara_user_id` naming some other deleted account would pass,
+           * while the customer actually belongs to someone else.
+           */
+          if (metadataUserId) {
+            const [association] = await tx
+              .select({ userId: deletedCustomers.userId })
+              .from(deletedCustomers)
+              .where(eq(deletedCustomers.stripeCustomerId, customerId))
+              .limit(1);
+            return Boolean(association && association.userId === metadataUserId);
+          }
+
+          /*
+           * Case 2 — no user id on the subscription. The customer's own
+           * `solara_user_id` is the only identity available, and it must match a
+           * recorded association for this customer. Two independent deletion rows
+           * used to be accepted here; they do not prove the rows came from the
+           * same deletion, which is precisely the gap this table closes.
+           */
+          const customerUserId = await subscriptionCustomerUserId(stripe, customerId);
+          if (!customerUserId) return false;
+          const [association] = await tx
+            .select({ userId: deletedCustomers.userId })
+            .from(deletedCustomers)
+            .where(eq(deletedCustomers.stripeCustomerId, customerId))
+            .limit(1);
+          return Boolean(association && association.userId === customerUserId);
+        },
+
+        /*
+         * Cancelling is the only thing that stops the charge. A transient failure
+         * throws, which rolls back the claim and makes Stripe redeliver.
+         */
+        cancelOrphanedSubscription: async subscriptionId => {
+          await stripe.subscriptions.cancel(subscriptionId);
+        },
       };
 
       return processStripeEventWith(event, subscriptionId, ports);

@@ -10,12 +10,15 @@ export const REQUIRED_TABLES = [
   "public.email_tokens",
   "public.reading_documents",
   "public.generation_cache",
+  "public.deleted_customers",
+  "public.account_lifecycle_leases",
 ] as const;
 
 export const REQUIRED_INDEXES = [
   "rate_limits_expires_idx",
   "email_tokens_user_idx",
   "reading_documents_reading_locale_version_key",
+  "account_lifecycle_leases_expires_idx",
 ] as const;
 
 export type RequiredColumn = {
@@ -49,6 +52,11 @@ export const REQUIRED_COLUMNS: RequiredColumn[] = [
   { table: "email_tokens", column: "expires_at" },
   { table: "email_tokens", column: "used_at" },
   { table: "email_tokens", column: "created_at" },
+  { table: "account_lifecycle_leases", column: "user_id", nullable: false, dataType: "uuid" },
+  { table: "account_lifecycle_leases", column: "owner", nullable: false, dataType: "uuid" },
+  { table: "account_lifecycle_leases", column: "expires_at", nullable: false, dataType: "timestamp with time zone" },
+  { table: "account_lifecycle_leases", column: "created_at", nullable: false, dataType: "timestamp with time zone" },
+  { table: "account_lifecycle_leases", column: "updated_at", nullable: false, dataType: "timestamp with time zone" },
 ];
 
 export function findMissingColumns(rows: ColumnRow[]): string[] {

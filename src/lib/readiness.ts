@@ -27,10 +27,10 @@ const READINESS_STATEMENT_TIMEOUT_MS = 1_000;
 
 let readinessPool: Pool | undefined;
 
-export async function withDeadline<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
+export async function withDeadline<T>(promise: Promise<T>, deadlineMs: number, message = "readiness_timeout"): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("readiness_timeout")), deadlineMs);
+    timer = setTimeout(() => reject(new Error(message)), deadlineMs);
   });
   try {
     return await Promise.race([promise, timeout]);
@@ -80,7 +80,7 @@ export async function probeReadiness(pool: Pool): Promise<ReadinessSnapshot> {
       select table_name, column_name, is_nullable, data_type, column_default
       from information_schema.columns
       where table_schema = 'public'
-        and table_name in ('users', 'rate_limits', 'email_tokens')
+        and table_name in ('users', 'rate_limits', 'email_tokens', 'account_lifecycle_leases')
     `);
     const missingColumns = findMissingColumns(columns.rows);
 

@@ -88,7 +88,7 @@ After this, a test PR `feature → staging → main` is already proven by #23/`#
 3. For **each** project → **Dashboard → Connection Strings**:
    - Copy **Pooled** URL (contains `-pooler.` + `?sslmode=require`) → this is `DATABASE_URL` for the app.
    - Copy **Direct** URL (no pooler) → this is `DATABASE_URL` for `db-run` migrations.
-   - Confirm **Pooling mode = Transaction** — required for `pg_advisory_xact_lock` used by Drizzle. Docs: <https://neon.com/docs/connect/connection-pooling>
+   - Confirm **Pooling mode = Transaction** for the pooled application URL. Lifecycle coordination uses a database lease row, not a session lock, so it is pooler-safe. Docs: <https://neon.com/docs/connect/connection-pooling>
 
 > Never copy prod data to staging. Keep both `*_DIRECT` URLs out of Git — only paste into Vercel env vars or a secure shell for migrations.
 

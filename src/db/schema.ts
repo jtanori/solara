@@ -108,6 +108,45 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/*
+ * The Stripe customer a deleted account owned, recorded at deletion time.
+ *
+ * Why a row and not two `audit_logs` rows: a deletion writes
+ * `account:delete` with `target` = the deleted user and a second row with
+ * `target` = the Stripe customer id. Read separately, two such rows do not
+ * prove they belong to the *same* deletion — two independent deletions, or a
+ * customer id reused for another account, produce rows that look identical. The
+ * webhook then cannot tell "this customer belonged to that deleted user" from
+ * "this customer was deleted at some point and so was that user".
+ *
+ * This table states the association explicitly, in one row.
+ *
+ * Deliberately not a foreign key to `users`: the user is gone. `userId` is the
+ * id that was deleted, kept as text for exactly that reason.
+ */
+export const deletedCustomers = pgTable("deleted_customers", {
+  /** One row per customer: a customer belongs to at most one account. */
+  stripeCustomerId: text("stripe_customer_id").primaryKey(),
+  /** The user id that owned this customer and was deleted. */
+  userId: uuid("user_id").notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
+ * Per-user account lifecycle lease.
+ *
+ * Deliberately no foreign key to `users`: a lease row can outlive the user it
+ * guarded, and deletion itself runs under the lease. The row is taken over
+ * atomically once `expires_at` passes and removed by its owner on release.
+ */
+export const accountLifecycleLeases = pgTable("account_lifecycle_leases", {
+  userId: uuid("user_id").primaryKey(),
+  owner: uuid("owner").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => [index("account_lifecycle_leases_expires_idx").on(table.expiresAt)]);
+
 export const emailTokens = pgTable("email_tokens", {
   tokenHash: text("token_hash").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
