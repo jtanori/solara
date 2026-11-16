@@ -625,3 +625,38 @@ test("PR148 R3: inherited served-model properties are not a configured alias lis
   assert.ok(processorProfile());
   assert.doesNotThrow(() => { assert.equal(liveGenerationConfig(), null); });
 });
+
+test("PR148 R4: exhausted chart-deletion quota cannot block consent withdrawal", gated, async t => {
+  const { user, chart } = await account(); await grant(user.id); let calls = 0;
+  const options = { ...deps(user, async () => { calls++; return response(); }), throttle: undefined };
+  const deletionKey = keyFor("readings:delete:user", user.id);
+  const consentKey = keyFor("readings:consent:user", user.id);
+  const warnings: Array<{ kind: string }> = [];
+  t.mock.method(console, "warn", (line: string) => { warnings.push(JSON.parse(line)); });
+  const otherCharts = await db.insert(readings).values(Array.from({ length: 29 }, () => ({ userId: user.id, year: input.year, input, result }))).returning({ id: readings.id });
+  try {
+    for (const saved of [chart, ...otherCharts]) assert.equal((await handleReadingDelete(request("DELETE"), saved.id, options)).status, 200);
+    const limited = await handleReadingDelete(request("DELETE"), chart.id, options);
+    assert.equal(limited.status, 429); assert.ok(Number(limited.headers.get("Retry-After")) > 0); assert.match(limited.headers.get("Cache-Control")!, /no-store/);
+    assert.deepEqual(warnings.map(warning => warning.kind), ["readings_delete_user"]);
+    assert.equal((await db.select().from(rateLimits).where(eq(rateLimits.key, consentKey))).length, 0, "chart cleanup must not spend consent quota");
+    const [bucket] = await db.select().from(rateLimits).where(eq(rateLimits.key, deletionKey));
+    assert.equal(bucket.expiresAt.getTime() - bucket.windowStart.getTime(), 60 * 60 * 1000);
+    const withdrawn = await handleConsent(request("DELETE"), options);
+    assert.equal(withdrawn.status, 200); assert.deepEqual(await withdrawn.json(), { revision: 2, active: false });
+    assert.ok((await store.consent(user.id))?.withdrawnAt);
+    assert.equal(calls, 0); assert.equal((await ledger(user.id)).run, undefined);
+  } finally { for (const key of [deletionKey, consentKey]) await db.delete(rateLimits).where(eq(rateLimits.key, key)); }
+});
+
+test("PR148 R4: exhausted consent quota does not consume the chart-deletion bucket", gated, async () => {
+  const { user, chart } = await account(); await grant(user.id);
+  const options = { ...deps(user, async () => response()), throttle: undefined };
+  const keys = [keyFor("readings:delete:user", user.id), keyFor("readings:consent:user", user.id)];
+  try {
+    for (let i = 0; i < AUTH_RATE_LIMITS.readingsConsentUser.limit; i++) assert.equal((await handleConsent(request("DELETE"), options)).status, 200);
+    assert.equal((await handleConsent(request("DELETE"), options)).status, 429);
+    assert.equal((await handleReadingDelete(request("DELETE"), chart.id, options)).status, 200);
+    assert.equal((await db.select().from(readings).where(eq(readings.id, chart.id))).length, 0);
+  } finally { for (const key of keys) await db.delete(rateLimits).where(eq(rateLimits.key, key)); }
+});

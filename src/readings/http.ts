@@ -14,10 +14,11 @@ import type { Locale } from "@/lib/i18n";
 const uuid = z.string().uuid();
 const generationBody = z.strictObject({ locale: z.enum(["en", "es"]) });
 const grantBody = z.strictObject({ accepted: z.literal(true), policyHash: z.string().regex(/^[a-f0-9]{64}$/), expectedRevision: z.number().int().min(0).max(1_000_000_000) });
+type ReadingRateAction = "generate" | "consent" | "delete" | "status";
 export type ReadingHttpDeps = GenerationServiceDeps & {
   user?: () => Promise<{ id: string; emailVerifiedAt: Date | null } | null>;
   locale?: Locale;
-  throttle?: (request: Request, userId: string, action: "generate" | "consent" | "status", locale: Locale) => Promise<Response | null>;
+  throttle?: (request: Request, userId: string, action: ReadingRateAction, locale: Locale) => Promise<Response | null>;
 };
 const headers = { "Cache-Control": "private, no-store" };
 function json(value: unknown, status = 200) { return NextResponse.json(value, { status, headers }); }
@@ -26,14 +27,17 @@ function result(value: GenerationView) {
   if (value.status === "in_progress") response.headers.set("Retry-After", "3");
   return response;
 }
-async function defaultThrottle(request: Request, userId: string, action: "generate" | "consent" | "status", locale: Locale) {
-  const policy = action === "generate" ? AUTH_RATE_LIMITS.readingsGenerateUser : action === "consent" ? AUTH_RATE_LIMITS.readingsConsentUser : AUTH_RATE_LIMITS.readingsStatusUser;
+async function defaultThrottle(request: Request, userId: string, action: ReadingRateAction, locale: Locale) {
+  const policy = action === "generate" ? AUTH_RATE_LIMITS.readingsGenerateUser
+    : action === "consent" ? AUTH_RATE_LIMITS.readingsConsentUser
+      : action === "delete" ? AUTH_RATE_LIMITS.readingsDeleteUser
+        : AUTH_RATE_LIMITS.readingsStatusUser;
   const budgets: Parameters<typeof consumeBudgets>[0] = [{ key: keyFor(`readings:${action}:user`, userId), policy, kind: `readings_${action}_user` }];
   if (action === "generate") budgets.push({ key: keyFor("readings:generate:ip", clientIp(request)), policy: AUTH_RATE_LIMITS.readingsGenerateIp, kind: "readings_generate_ip" });
   const gate = await consumeBudgets(budgets, requestMeta(request));
   return gate.allowed ? null : rateLimitedResponse(locale, gate.retryAfterSeconds);
 }
-async function identity(request: Request, deps: ReadingHttpDeps, action: "generate" | "consent" | "status") {
+async function identity(request: Request, deps: ReadingHttpDeps, action: ReadingRateAction) {
   const user = await (deps.user ?? currentUser)();
   if (!user?.emailVerifiedAt) return { response: json({ code: "unauthorized" }, 401) };
   const locale = deps.locale ?? await getLocale();
@@ -118,7 +122,7 @@ export async function handleGeneration(request: Request, readingId: string, deps
 
 export async function handleReadingDelete(request: Request, readingId: string, deps: ReadingHttpDeps = {}) {
   try {
-    const identified = await identity(request, deps, "consent");
+    const identified = await identity(request, deps, "delete");
     if (identified.response) return identified.response;
     if (!uuid.safeParse(readingId).success) throw new GenerationBlocked("invalid_chart");
     await (deps.store ?? new GenerationStore()).deleteReading(identified.user.id, readingId);

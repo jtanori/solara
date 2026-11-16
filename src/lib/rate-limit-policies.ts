@@ -58,6 +58,7 @@ export const AUTH_RATE_LIMITS = {
   readingsGenerateUser: { limit: 10, windowSeconds: 60 * 60 },
   readingsGenerateIp: { limit: 20, windowSeconds: 60 * 60 },
   readingsConsentUser: { limit: 20, windowSeconds: 60 * 60 },
+  readingsDeleteUser: { limit: 30, windowSeconds: 60 * 60 },
   readingsStatusUser: { limit: 60, windowSeconds: 60 },
   billingCheckoutUser: { limit: 10, windowSeconds: 60 },
   billingPortalUser: { limit: 10, windowSeconds: 60 },
