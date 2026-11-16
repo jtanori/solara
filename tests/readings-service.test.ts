@@ -683,3 +683,43 @@ for (const mode of ["measured", "unknown_model", "transport_error"] as const) {
     }
   });
 }
+
+test("PR148 R6: direct settlement rejects a priced but unadmitted served model without releasing exposure", gated, async () => {
+  const { user, chart } = await account(); await grant(user.id);
+  process.env.READINGS_STRONG_MODEL = "strong-model";
+  process.env.READINGS_PROCESSOR_PROFILE = JSON.stringify({ ...profile, servedModels: { "test-model": ["test-model", "test-alias"], "strong-model": ["strong-model"] } });
+  process.env.READINGS_MODEL_PRICES = JSON.stringify({
+    "test-model": { inputMxnPerMillion: 15, outputMxnPerMillion: 60 },
+    "test-alias": { inputMxnPerMillion: 15, outputMxnPerMillion: 60 },
+    "strong-model": { inputMxnPerMillion: 30, outputMxnPerMillion: 90 },
+  });
+  const config = liveGenerationConfig(async () => response())!;
+  const claim = await store.claim(user.id, chart.id, "en", config, "synthetic-version");
+  assert.equal(claim.kind, "claimed"); if (claim.kind !== "claimed") return;
+  const execution = store.execution(claim.run, config, new AbortController().signal, () => true);
+  const id = await execution.admit({ section: "overview", phase: "primary", model: "test-model", reservedMicros: 210000 });
+  const receipt = { basis: "measured" as const, costMicros: 12000, usage: { inputTokens: 100, outputTokens: 100 }, model: "strong-model", latencyMs: 1, code: "measured" };
+  assert.equal(execution.admitsModel("strong-model", "strong-model"), true, "priced and admitted for a DIFFERENT request is insufficient");
+  assert.equal(execution.admitsModel("test-model", "strong-model"), false);
+  await assert.rejects(() => execution.settle(id, receipt), error => error instanceof GenerationBlocked && error.code === "accounting_invalid");
+  const before = await ledger(user.id);
+  assert.equal(before.attempts[0].state, "reserved"); assert.equal(before.attempts[0].reservedMicros, 210000);
+  assert.equal(before.attempts[0].costMicros, null); assert.equal(before.attempts[0].reportedModel, null); assert.ok(before.run.consumedAt);
+  await assert.rejects(() => execution.admit({ section: "sun", phase: "primary", model: "test-model", reservedMicros: 210000 }), /generation_indeterminate/);
+  assert.equal(await execution.settle(id, { ...receipt, model: "test-alias", costMicros: 7500 }), 7500, "the explicitly admitted alias may settle the same permit");
+  assert.equal(await execution.settle(id, receipt), 7500, "a conflicting duplicate cannot rewrite the first valid receipt");
+  const after = await ledger(user.id);
+  assert.equal(after.attempts[0].state, "measured"); assert.equal(after.attempts[0].reportedModel, "test-alias"); assert.equal(after.attempts[0].costMicros, 7500);
+});
+
+test("PR148 R6: durable served-model admission ignores inherited properties", gated, async () => {
+  const { user, chart } = await account(); await grant(user.id);
+  const config = liveGenerationConfig(async () => response())!;
+  const claim = await store.claim(user.id, chart.id, "en", config, "synthetic-version");
+  assert.equal(claim.kind, "claimed"); if (claim.kind !== "claimed") return;
+  Object.setPrototypeOf(config.profile.servedModels, { inherited: ["test-model"] });
+  const execution = store.execution(claim.run, config, new AbortController().signal, () => true);
+  assert.doesNotThrow(() => { assert.equal(execution.admitsModel("constructor", "test-model"), false); });
+  assert.equal(execution.admitsModel("inherited", "test-model"), false);
+  assert.equal(execution.admitsModel("test-model", "test-model"), true);
+});

@@ -154,9 +154,11 @@ export class GenerationStore {
       if (!["reserved", "running"].includes(current.status)) throw new GenerationBlocked("generation_indeterminate");
       return current;
     };
+    const admitsModel = (requested: string, reported: string) =>
+      Object.hasOwn(config.profile.servedModels, requested) && config.profile.servedModels[requested].includes(reported);
     return {
       kind: "durable", settings: run.settings, ceilingMicros: run.ceilingMicros, signal,
-      admitsModel: (requested, reported) => config.profile.servedModels[requested]?.includes(reported) === true,
+      admitsModel,
       admit: permit => this.scope(run.userId, async tx => {
         const current = await authorized(tx);
         if (!["overview", "sun"].includes(permit.section) || permit.model !== current.settings?.models.cheap) throw new GenerationBlocked("generation_unauthorized");
@@ -186,7 +188,7 @@ export class GenerationStore {
         const row = ledger.find(row => row.id === id && row.owner === owner);
         if (!row) throw new GenerationBlocked("permit_missing");
         if (row.state !== "reserved") return exposure(ledger);
-        this.validateSettlement(result, row.reservedMicros, current);
+        this.validateSettlement(result, row.reservedMicros, current, row.requestedModel, admitsModel);
         const [saved] = await tx.update(attempts).set({
           state: result.basis, costMicros: result.costMicros, usage: result.usage, reportedModel: result.model,
           latencyMs: Math.min(result.latencyMs, 2_147_483_647), code: result.code, settledAt: sql`clock_timestamp()`,
@@ -197,11 +199,19 @@ export class GenerationStore {
     };
   }
 
-  private validateSettlement(result: AttemptSettlement, reserved: number, run: Run) {
+  private validateSettlement(
+    result: AttemptSettlement,
+    reserved: number,
+    run: Run,
+    requestedModel: string,
+    admitsModel: GenerationExecution["admitsModel"],
+  ) {
     if (!Number.isSafeInteger(result.costMicros) || result.costMicros < 0 || !Number.isSafeInteger(result.latencyMs) || result.latencyMs < 0) throw new GenerationBlocked("accounting_invalid");
     if (result.basis === "unknown" && (result.costMicros !== reserved || result.model || result.usage)) throw new GenerationBlocked("accounting_invalid");
     if (result.basis === "not_dispatched" && (result.costMicros !== 0 || result.model || result.usage)) throw new GenerationBlocked("accounting_invalid");
-    if (result.basis === "measured" && (!run.settings || !result.model || !validUsage(result.usage) || costMicros(run.settings.prices, result.model, result.usage) !== result.costMicros)) throw new GenerationBlocked("accounting_invalid");
+    // Pricing alone is insufficient: the receipt must belong to this permit's
+    // requested-model contract, even when a caller bypasses dispatchAttempt.
+    if (result.basis === "measured" && (!run.settings || !result.model || !admitsModel(requestedModel, result.model) || !validUsage(result.usage) || costMicros(run.settings.prices, result.model, result.usage) !== result.costMicros)) throw new GenerationBlocked("accounting_invalid");
   }
 
   async finish(run: Run, document: ReadingDocument | null, configurationCurrent: () => boolean): Promise<GenerationView> {
