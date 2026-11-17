@@ -4,6 +4,10 @@ Historical epic proposal. The later [approved generation-safety plan](plan-readi
 supersedes implicit generation, free monthly quotas, shared live cache reuse, and
 anonymity/accounting claims below. Live-provider costs/quality remain unverified;
 this document's illustrative estimates are not an activation decision.
+The current [saved free-reading page/PDF delivery design](plan-free-reading-page-pdf.md)
+resolves the #104/#106 read-selection, rendering, compatibility and verification details;
+use it rather than the historical integration assumptions below. Implementation is
+operator-approved; hosted rollout prerequisites and separate activation approval remain.
 Follows `docs/audit/readings-engine-assessment.md` (PR #98) and the four answers given on
 2026-11-08:
 
