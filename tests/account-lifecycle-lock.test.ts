@@ -48,6 +48,15 @@ async function clearLease(userId: string) {
   await pool.query("delete from account_lifecycle_leases where user_id = $1::uuid", [userId]);
 }
 
+async function assertEventually(check: () => boolean | Promise<boolean>, message: string) {
+  const deadline = performance.now() + 5_000;
+  for (;;) {
+    if (await check()) return;
+    assert.ok(performance.now() < deadline, message);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
+
 async function leaseOwner(userId: string): Promise<string | null> {
   const { rows } = await probePool.query<{ owner: string }>(
     "select owner from account_lifecycle_leases where user_id = $1::uuid",
@@ -191,44 +200,81 @@ test("lease: an expired lease is taken over and the old owner is fenced", gated,
   }
 });
 
-test("lease: heartbeat keeps the lease alive past its initial TTL", gated, async () => {
+test("lease: heartbeat renews expiry and excludes waiters until release", gated, async () => {
   assertLocalDisposableDatabase();
   const userId = randomUUID();
-  let firstStarted!: () => void;
-  const started = new Promise<void>(resolve => { firstStarted = resolve; });
-  let release!: () => void;
-  const gate = new Promise<void>(resolve => { release = resolve; });
 
   try {
-    const first = withAccountLifecycleLock(userId, async () => {
-      firstStarted();
-      await gate;
-      return "held";
-    }, { pool, waitMs: 1_000, ttlMs: 150, heartbeatMs: 40, advisoryCompat: false });
+    await withAccountLifecycleLock(userId, async (database, lease) => {
+      // Keep the production TTL: a busy runner can legitimately miss a 150ms
+      // test lease. Observe committed renewal, not survival after a fixed sleep.
+      // Two distinct extensions also exercise heartbeat rescheduling.
+      for (let renewal = 0; renewal < 2; renewal++) {
+        const before = await probePool.query<{ expiry: string }>(
+          "select expires_at::text as expiry from account_lifecycle_leases where user_id = $1::uuid",
+          [userId],
+        );
+        assert.equal(before.rows.length, 1);
+        await assertEventually(async () => {
+          const { rows } = await probePool.query<{ owner: string; live: boolean; extended: boolean }>(
+            `select owner, expires_at > now() as live, expires_at > $2::timestamptz as extended
+             from account_lifecycle_leases where user_id = $1::uuid`,
+            [userId, before.rows[0].expiry],
+          );
+          assert.equal(rows[0]?.owner, lease.owner, "renewal retains the same owner");
+          assert.equal(rows[0]?.live, true, "the renewing lease remains live");
+          return rows[0]?.extended === true;
+        }, `heartbeat ${renewal + 1} must commit a later expiry`);
+      }
 
-    await started;
-    await new Promise(resolve => setTimeout(resolve, 350));
+      assert.equal(lease.isLost(), false);
+      await lease.assertHeld(database);
+      await assert.rejects(
+        withAccountLifecycleLock(userId, async () => "second", { pool, waitMs: 120, advisoryCompat: false }),
+        (error: unknown) => error instanceof LifecycleLeaseTimeout,
+      );
+    }, { pool, waitMs: 1_000, heartbeatMs: 40, advisoryCompat: false });
 
-    const { rows } = await probePool.query<{ owner: string; live: boolean }>(
-      "select owner, expires_at > now() as live from account_lifecycle_leases where user_id = $1::uuid",
-      [userId],
-    );
-    assert.equal(rows.length, 1, "the lease still exists");
-    assert.equal(rows[0]?.live, true, "heartbeat extended the lease");
-
-    await assert.rejects(
-      withAccountLifecycleLock(userId, async () => "second", { pool, waitMs: 120, advisoryCompat: false }),
-      (error: unknown) => error instanceof LifecycleLeaseTimeout,
-    );
-
-    release();
-    assert.equal(await first, "held");
     assert.equal(await leaseOwner(userId), null, "the lease was released after the heartbeat stopped");
   } finally {
-    release();
     await clearLease(userId);
   }
 });
+
+for (const invalidation of ["expired", "replaced"] as const) {
+  test(`lease: heartbeat fails closed when the lease is ${invalidation}`, gated, async () => {
+    assertLocalDisposableDatabase();
+    const userId = randomUUID();
+    const replacementOwner = invalidation === "replaced" ? randomUUID() : null;
+
+    try {
+      await withAccountLifecycleLock(userId, async (database, lease) => {
+        // Change persisted state before the next heartbeat rather than racing
+        // the runner against a sub-second TTL. The real SQL must reject it.
+        const change = replacementOwner ? "owner = $3::uuid" : "expires_at = now() - interval '1 second'";
+        const invalidated = await probePool.query<{ owner: string; expiry: string }>(
+          `update account_lifecycle_leases set ${change}
+           where user_id = $1::uuid and owner = $2::uuid
+           returning owner, expires_at::text as expiry`,
+          replacementOwner ? [userId, lease.owner, replacementOwner] : [userId, lease.owner],
+        );
+        assert.equal(invalidated.rows.length, 1);
+        await assertEventually(() => lease.isLost(), `heartbeat must reject a lease that is ${invalidation}`);
+
+        const after = await probePool.query<{ owner: string; expiry: string }>(
+          "select owner, expires_at::text as expiry from account_lifecycle_leases where user_id = $1::uuid",
+          [userId],
+        );
+        assert.deepEqual(after.rows, invalidated.rows, "a late heartbeat cannot revive or rewrite the lease");
+        await assert.rejects(lease.assertHeld(database), (error: unknown) => error instanceof LifecycleLeaseLost);
+      }, { pool, waitMs: 1_000, heartbeatMs: 40, advisoryCompat: false });
+
+      assert.equal(await leaseOwner(userId), replacementOwner, "release deletes only the original owner's row");
+    } finally {
+      await clearLease(userId);
+    }
+  });
+}
 
 test("lease: a lease that stops heartbeating is taken over", gated, async () => {
   assertLocalDisposableDatabase();
