@@ -619,7 +619,9 @@ test("rich paid worst-case preflight includes two extra primaries and repairs, w
   process.env.READINGS_MODEL_PRICES = JSON.stringify(Object.fromEntries(Object.entries(prices).map(([model, price]) => [model, { inputMxnPerMillion: price.inputMxnPerMillion * 2, outputMxnPerMillion: price.outputMxnPerMillion * 2 }])));
   const f = fake(); assert.ok(f.config());
   process.env.READINGS_PAID_PROFILE = PAID_RICH_PROFILE;
-  assert.equal(f.config(), null, "22 worst-case calls exceed 10 MXN while 18 still fit"); assert.ok(liveGenerationConfig(f.transport));
+  // Compare a primitive: Node's test reporter cannot serialize a failed
+  // assertion's config object (provider functions) without losing ERR_ASSERTION.
+  assert.equal(f.config() === null, true, "22 worst-case calls exceed 10 MXN while 18 still fit"); assert.ok(liveGenerationConfig(f.transport));
   process.env.READINGS_PAID_PROFILE = "unknown-profile";
   assert.equal(f.config(), null); assert.ok(liveGenerationConfig(f.transport));
 });

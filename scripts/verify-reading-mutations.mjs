@@ -75,7 +75,7 @@ const presentationMutations = [
   mutation("table-title-overflow", [change(component, "if (!inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines)", "if (false && !inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines)")], pdf, "oversized repeated table headings"),
   { ...mutation("chart-selector-propagation", [change("src/app/reading/[id]/page.tsx", "selector={selector}", 'selector={{ kind: "auto" }}')], []), builtBrowser: true },
   { ...mutation("premium-plans-promise", [change("src/app/pricing/page.tsx", "Full AI interpretations are not available yet; a subscription does not unlock them.", "Premium unlocks all nine generated topics now.")], []), builtBrowser: true },
-  { ...mutation("raw-client-rsc-prop", [change("src/app/reading/[id]/page.tsx", "controls={<ReadingGenerationControls key=", 'controls={<ReadingGenerationControls {...{ rawDocument: { models: { overview: "fixture-only" } } }} key=')], []), builtBrowser: true },
+  { ...mutation("raw-client-rsc-prop", [change("src/app/reading/[id]/page.tsx", "<ReadingGenerationControls key=", '<ReadingGenerationControls {...{ rawDocument: { models: { overview: "fixture-only" } } }} key=')], []), builtBrowser: true },
 ];
 const paidTests = ["tests/paid-readings.test.ts"], annualTests = ["tests/annual-facts.test.ts"], evaluationTests = ["tests/paid-evaluation.test.ts"];
 const paidStore = "src/readings/paid-store.ts", paidWorker = "src/readings/paid-worker.ts", paidPolicy = "src/readings/paid-policy.ts", annual = "src/lib/annual-facts.ts";
