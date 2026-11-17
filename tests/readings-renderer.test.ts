@@ -6,7 +6,7 @@ import { LockedSectionCard, ReadingBlockView, ReadingContentView, ReadingSection
 import { ReadingPageView } from "../src/components/reading-page-view";
 import { readStoredDocument } from "../src/readings/stored-document";
 import { chartNotes } from "../src/readings/chart-presentation";
-import { readingPreviews, PREVIEW_COPY } from "../src/readings/presentation-copy";
+import { readingPreviews, PREVIEW_COPY, NOTICE_COPY } from "../src/readings/presentation-copy";
 import type { DisplaySection, ReadingChart, ReadingPresentation } from "../src/readings/presentation";
 import type { ReadingBlock } from "../src/readings/types";
 import { calculateSolarReturn } from "../src/lib/solar";
@@ -92,18 +92,46 @@ for (const locale of ["en", "es"] as const) test(`HTML: nine truthful static pre
 test("page: PDF identity stays pinned across UI locale/plan, explicit chart edition remains separate", () => {
   const content = saved("es");
   const view: ReadingPresentation = { chart, content, generation: null, availability: "ready" };
-  const html = render(h(ReadingPageView, { view, locale: "en" }));
+  const html = render(h(ReadingPageView, { view, locale: "en", selector: { kind: "auto" } }));
   assert.ok(html.includes(`/api/readings/${chart.id}/pdf?document=${content.id}`));
   assert.ok(html.includes(`/reading/${chart.id}?edition=chart`));
   assert.ok(html.includes("The saved interpretation is in Español."));
   assert.ok(html.includes("Decorative wheel, not a plot"));
   for (const leak of ["birthDate", "birthPlace", "-115.4747", "32.6393", "fixture-only", "Download full PDF", "YOUR PREMIUM READING"]) assert.equal(html.includes(leak), false, leak);
   const notes = chartNotes(chart, { sun: "SUN_NOTE", moon: "MOON_NOTE", ascendant: "ASC_NOTE", house: "HOUSE_NOTE" }, "en", true);
-  const legacy = render(h(ReadingPageView, { view: { ...view, content: notes, availability: "chart_only" }, locale: "en" }));
+  const legacy = render(h(ReadingPageView, { view: { ...view, content: notes, availability: "chart_only" }, locale: "en", selector: { kind: "chart" } }));
   for (const included of ["SUN_NOTE", "MOON_NOTE", "ASC_NOTE", "HOUSE_NOTE", "not a generated interpretation", "pdf?edition=chart"]) assert.ok(legacy.includes(included), included);
   assert.equal(legacy.includes("Generated Premium"), false);
   assert.equal(html.includes("SUN_NOTE"), false);
 });
+
+for (const locale of ["en", "es"] as const) {
+  test(`page: explicit chart edition omits AI controls and keeps canonical navigation in ${locale}`, () => {
+    // Match the intentional snapshot-independent explicit-chart result. Even an
+    // apparently unused chart must not mount the supplied client controls here.
+    const view: ReadingPresentation = { chart, content: chartNotes(chart, { sun: "ILLUSTRATIVE_NOTE", moon: "", ascendant: "", house: "" }, locale, false), generation: null, availability: "chart_only" };
+    const controls = h("section", { "aria-label": "AI consent" }, h("button", {}, "GENERATION_CONTROLS_SENTINEL"));
+    const html = render(h(ReadingPageView, { view, locale, selector: { kind: "chart" }, controls }));
+    assert.equal(html.includes("GENERATION_CONTROLS_SENTINEL"), false, "explicit chart edition must not mount AI controls");
+    assert.equal(html.includes('aria-label="AI consent"'), false);
+    assert.ok(html.includes(`href="/reading/${chart.id}"`), "the canonical page remains reachable without generation");
+    assert.ok(html.includes(`href="/api/readings/${chart.id}/pdf?edition=chart"`));
+    assert.ok(html.includes("ILLUSTRATIVE_NOTE"));
+    const canonical = render(h(ReadingPageView, { view, locale, selector: { kind: "auto" }, controls }));
+    assert.ok(canonical.includes("GENERATION_CONTROLS_SENTINEL"), "ordinary unused-chart controls are not removed globally");
+  });
+
+  test(`HTML: complete legacy reading keeps the question notice without partial labels in ${locale}`, () => {
+    const raw = frozenReading(locale);
+    for (const section of raw.sections) delete section.closingQuestion;
+    const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw), { legacy: true });
+    assert.ok(decoded.ok);
+    const html = render(h(ReadingPageView, { view: { chart, content: decoded.value, generation: null, availability: "ready" }, locale, selector: { kind: "auto" } }));
+    assert.ok(html.includes(NOTICE_COPY.legacy_question_missing[locale]));
+    assert.equal(html.includes(NOTICE_COPY.partial[locale]), false, "legacy-only notice must not produce the partial banner");
+    assert.equal(html.includes(locale === "es" ? "Interpretación parcial guardada" : "Saved partial interpretation"), false);
+  });
+}
 
 for (const locale of ["en", "es"] as const) test(`HTML: all eleven synthetic paid sections render in ${locale}, without a production paid selector`, () => {
   const content = saved(locale, "paid"); const html = render(h(ReadingContentView, { content }));

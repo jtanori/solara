@@ -9,7 +9,7 @@ import { currentUser } from "@/lib/auth";
 import { getLocale } from "@/lib/i18n-server";
 import { isReadingId, readingSelector } from "@/readings/chart-presentation";
 import { loadReadingPresentation } from "@/readings/reading-view";
-import { ReadingViewError, type ReadingPresentation } from "@/readings/presentation";
+import { ReadingViewError, type ReadingPresentation, type ReadingSelector } from "@/readings/presentation";
 
 export const dynamic = "force-dynamic";
 export default async function ReadingPage({ params, searchParams }: {
@@ -21,6 +21,7 @@ export default async function ReadingPage({ params, searchParams }: {
   if (!user?.emailVerifiedAt) redirect(`/account?next=${encodeURIComponent(`/reading/${id}`)}`);
   const es = locale === "es";
   let view: ReadingPresentation | null = null;
+  let selector: ReadingSelector = { kind: "auto" };
   let errorCode: string | null = null;
   try {
     const urlParams = new URLSearchParams();
@@ -28,16 +29,17 @@ export default async function ReadingPage({ params, searchParams }: {
       if (Array.isArray(value)) value.forEach(item => urlParams.append(key, item));
       else if (value !== undefined) urlParams.append(key, value);
     }
-    view = await loadReadingPresentation(user, id, locale, readingSelector(urlParams));
+    selector = readingSelector(urlParams);
+    view = await loadReadingPresentation(user, id, locale, selector);
   } catch (error) {
     if (error instanceof ReadingViewError && error.code === "not_found") notFound();
     errorCode = error instanceof ReadingViewError ? error.code : "service_unavailable";
   }
-  return <><SiteHeader />{view ? <ReadingPageView view={view} locale={locale}
+  return <><SiteHeader />{view ? <ReadingPageView view={view} locale={locale} selector={selector}
     controls={<ReadingGenerationControls key={`${id}-${locale}`} readingId={id} locale={locale}
       initialGeneration={view.generation} displayedDocumentId={view.content.kind === "saved-reading" ? view.content.id : null}
       allowGeneration={view.availability === "chart_only" || view.availability === "ready"}
-      refreshOnPublication={!query.document && query.edition !== "chart"} />}
+      refreshOnPublication={selector.kind === "auto"} />}
     deleteControl={<DeleteReading id={id} locale={locale} />}
   /> : <main className="app-page"><section className="panel app-wrap" role="status">
     <h1>{errorCode === "invalid_selection" ? (es ? "Selección de lectura no válida" : "Invalid reading selection") : (es ? "Lectura no disponible" : "Reading unavailable")}</h1>

@@ -77,6 +77,24 @@ test("PDF HTTP: canonical saved locale/version, frozen text and pinned filenames
   const wrong = await handleReadingPdf(request(owner.chart.id, `document=${history.id}`), owner.chart.id, deps(owner)); assert.equal(wrong.status, 404);
 });
 
+for (const locale of ["en", "es"] as const) test(`PDF HTTP: legacy filenames follow actual completeness, not historical questions in ${locale}`, async () => {
+  for (const edition of ["free", "partial-sun"] as const) {
+    const owner = await account(locale, edition);
+    for (const section of owner.document.sections) delete section.closingQuestion;
+    await db.update(readingDocuments).set({ document: owner.document }).where(eq(readingDocuments.id, owner.document.id));
+    await db.update(runs).set({ status: "legacy" }).where(eq(runs.userId, owner.viewer.id));
+    const before = await readingLedgerSnapshot(owner.viewer.id);
+    const response = await handleReadingPdf(request(owner.chart.id, `document=${owner.document.id}`), owner.chart.id, { ...deps(owner), locale: locale === "en" ? "es" : "en" });
+    assert.equal(response.status, 200); privateHeaders(response);
+    const partial = edition === "partial-sun";
+    assert.equal(response.headers.get("Content-Disposition"), `attachment; filename="solara-2026-${locale}-${partial ? "partial-reading" : "reading"}.pdf"`);
+    const { content } = await response.json();
+    assert.equal(content.partial, partial);
+    assert.ok(content.sections[0].notices.includes("legacy_question_missing"));
+    assert.equal(await readingLedgerSnapshot(owner.viewer.id), before);
+  }
+});
+
 test("PDF HTTP: explicit chart edition keeps legacy subscription notes and does not switch after publication", async () => {
   const owner = await account("en", "none");
   const read = async (paid: boolean) => handleReadingPdf(request(owner.chart.id, "edition=chart"), owner.chart.id, { ...deps(owner), user: async () => ({ ...owner.viewer, plan: paid ? "paid" : "free" }) });
@@ -91,18 +109,25 @@ test("PDF HTTP: corrupt/oversize canonical content is 409 when pinned, never a d
     const document = { ...owner.document, ...(change === "identity" ? { locale: "es" as const } : change === "paid" ? { tier: "paid" as const } : { extra: "x".repeat(READING_LIMITS.documentBytes) }) };
     await db.update(readingDocuments).set({ document }).where(eq(readingDocuments.id, owner.document.id));
     const pinned = await handleReadingPdf(request(owner.chart.id, `document=${owner.document.id}`), owner.chart.id, deps(owner)); assert.equal(pinned.status, 409); privateHeaders(pinned);
+    assert.equal(pinned.headers.get("Retry-After"), null, "permanent view errors must not invite a retry either");
     const chart = await handleReadingPdf(request(owner.chart.id, "edition=chart"), owner.chart.id, deps(owner)); assert.equal(chart.status, 200);
   }
 });
 
 test("PDF HTTP: missing document store is 503, explicit independent chart mode still works", async () => {
   const owner = await account();
-  class MissingStore extends ReadingViewStore { override async snapshot(): ReturnType<ReadingViewStore["snapshot"]> { throw Error("PRIVATE_DATABASE_SENTINEL"); } }
+  let snapshots = 0;
+  class MissingStore extends ReadingViewStore { override async snapshot(): ReturnType<ReadingViewStore["snapshot"]> { snapshots++; throw Error("PRIVATE_DATABASE_SENTINEL"); } }
   for (const query of ["", `document=${owner.document.id}`]) {
     const response = await handleReadingPdf(request(owner.chart.id, query), owner.chart.id, { ...deps(owner), store: new MissingStore() });
     assert.equal(response.status, 503); privateHeaders(response); assert.equal((await response.text()).includes("PRIVATE_"), false);
+    assert.equal(response.headers.get("Retry-After"), "3");
   }
-  assert.equal((await handleReadingPdf(request(owner.chart.id, "edition=chart"), owner.chart.id, { ...deps(owner), store: new MissingStore() })).status, 200);
+  const chart = await handleReadingPdf(request(owner.chart.id, "edition=chart"), owner.chart.id, { ...deps(owner), store: new MissingStore() });
+  assert.equal(chart.status, 200); privateHeaders(chart);
+  assert.equal(chart.headers.get("Retry-After"), null);
+  assert.equal(snapshots, 2, "explicit chart PDF never depends on unavailable generation tables");
+  assert.equal((await chart.json()).content.kind, "chart-notes");
 });
 
 test("PDF HTTP: deletion/replacement during render discards the bytes and never recreates content", async () => {
@@ -123,7 +148,8 @@ test("PDF HTTP: safe render/DB errors, private headers and no raw error logs", a
     for (const code of ["pdf_capacity", "pdf_timeout", "pdf_memory_limit", "pdf_aborted", "pdf_input_limit", "pdf_output_limit", "pdf_page_limit", "pdf_glyphs", "unexpected"] as const) {
       const response = await handleReadingPdf(request(owner.chart.id), owner.chart.id, { ...deps(owner), renderer: { render: async () => { throw code === "unexpected" ? Error("PRIVATE_ERROR_SENTINEL") : new ReadingPdfError(code as PdfFailureCode); } } });
       assert.equal(response.status, ["pdf_input_limit", "pdf_output_limit", "pdf_page_limit", "pdf_glyphs"].includes(code) ? 409 : 503); privateHeaders(response);
-      assert.equal((await response.text()).includes("PRIVATE_"), false);
+      assert.equal(response.headers.get("Retry-After"), response.status === 503 ? "3" : null, `${code}: only transient PDF failures invite a retry`);
+      assert.deepEqual(await response.json(), { code: code === "unexpected" ? "pdf_unavailable" : code });
     }
     assert.equal(captured.join().includes("PRIVATE_"), false);
   } finally { console.warn = warn; }

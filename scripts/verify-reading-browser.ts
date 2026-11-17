@@ -8,7 +8,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { eq } from "drizzle-orm";
 import { db, pool, coordinationPool } from "../src/db";
-import { readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, subscriptions } from "../src/db/schema";
+import { readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, subscriptions } from "../src/db/schema";
+import { AVAILABILITY_COPY } from "../src/readings/presentation-copy";
 import { createSession } from "../src/lib/auth";
 import { launchReadingTestBrowser } from "../tests/helpers/browser";
 import { syntheticReadingAccount, readingLedgerSnapshot } from "../tests/helpers/reading-account";
@@ -41,9 +42,14 @@ async function main() {
     // blocked; no deployment protection or browser web security is bypassed.
     await context.route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort("blockedbyclient"));
     const page = await context.newPage();
+    const aiReads: string[] = [];
     page.on("pageerror", error => browserErrors.push(error.message));
-    page.on("request", req => { if (["POST", "PUT"].includes(req.method()) && new URL(req.url()).pathname.startsWith("/api/readings/")) mutations.push(new URL(req.url()).pathname); });
-    return { context, page };
+    page.on("request", req => {
+      const path = new URL(req.url()).pathname;
+      if (["POST", "PUT"].includes(req.method()) && path.startsWith("/api/readings/")) mutations.push(path);
+      if (req.method() === "GET" && (path === "/api/readings/consent" || /^\/api\/readings\/[^/]+\/generation$/.test(path))) aiReads.push(path);
+    });
+    return { context, page, aiReads };
   }
   try {
     await new Promise<void>((resolveReady, reject) => {
@@ -120,6 +126,7 @@ async function main() {
         await page.locator('select[name="language"]').selectOption(uiLocale);
         await page.getByRole("heading", { name: uiLocale === "es" ? "Tu interpretación con IA" : "Your AI interpretation", exact: true }).waitFor();
         await page.locator(`a[href="/reading/${owner.chart.id}?edition=chart"]`).click(); await page.locator('article[data-edition="chart-notes"]').waitFor();
+        assert.equal(await page.locator('section[aria-label="AI consent"], section[aria-label="Consentimiento para IA"]').count(), 0, "explicit chart edition must not mount AI controls");
         assert.equal(await page.locator("[data-section]").count(), paid ? 4 : 1);
         assert.ok((await page.locator("body").innerText()).includes(uiLocale === "es" ? "no son una interpretación generada" : "not a generated interpretation"));
         const notesPdf = await inspectPdf(await (await ctx.request.get(`${origin}/api/readings/${owner.chart.id}/pdf?edition=chart`)).body());
@@ -146,6 +153,43 @@ async function main() {
     assert.equal((await anonymous.context.request.get(`${origin}/api/readings/${first.chart.id}/pdf`)).status(), 401); await anonymous.context.close();
     const foreign = await context(other, "en"); assert.equal((await foreign.page.goto(`${origin}/reading/${first.chart.id}`))?.status(), 404);
     assert.equal((await foreign.context.request.get(`${origin}/api/readings/${first.chart.id}/pdf?document=${first.document.id}`)).status(), 404); await foreign.context.close(); cases.push("unauthenticated+foreign-owner");
+
+    for (const locale of ["en", "es"] as const) for (const scenario of ["history_unavailable", "other_chart"] as const) {
+      const owner = await account(locale);
+      let chartId = owner.chart.id;
+      if (scenario === "history_unavailable") await db.delete(runs).where(eq(runs.userId, owner.viewer.id));
+      else {
+        const [otherChart] = await db.insert(readings).values({ userId: owner.viewer.id, year: owner.chart.year, input: owner.chart.input, result: owner.chart.result }).returning({ id: readings.id });
+        chartId = otherChart.id;
+      }
+      const before = await readingLedgerSnapshot(owner.viewer.id);
+      const visit = await context(owner, locale);
+      try {
+        assert.equal((await visit.page.goto(`${origin}/reading/${chartId}?edition=chart`))?.status(), 200);
+        await visit.page.locator('article[data-edition="chart-notes"]').waitFor();
+        await visit.page.waitForLoadState("networkidle");
+        assert.equal(await visit.page.locator('section[aria-label="AI consent"], section[aria-label="Consentimiento para IA"]').count(), 0, `${scenario}: explicit chart edition must not mount AI controls`);
+        assert.deepEqual(visit.aiReads, [], "explicit chart page must not start consent/status fetches or polling");
+        assert.equal(await visit.page.getByRole("button", { name: /Generate my free|Generar mi interpretación/ }).count(), 0);
+        const pdfResponse = await visit.context.request.get(`${origin}/api/readings/${chartId}/pdf?edition=chart`);
+        assert.equal(pdfResponse.status(), 200);
+        assert.ok(pdfResponse.headers()["content-disposition"].endsWith("-chart-notes.pdf\""));
+        await visit.page.screenshot({ path: `.venv/reading-browser/chart-readonly-${scenario}-${locale}.png`, fullPage: true });
+        await visit.page.locator(`a[href="/reading/${chartId}"]`).click();
+        await visit.page.getByText(AVAILABILITY_COPY[scenario][locale], { exact: true }).waitFor();
+        if (scenario === "history_unavailable") {
+          assert.equal(await visit.page.getByRole("button", { name: /Generate my free|Generar mi interpretación/ }).count(), 0, "canonical history suppression remains in force");
+        } else {
+          const original = visit.page.getByRole("link", { name: locale === "es" ? "Ir a la carta original →" : "Go to the original chart →", exact: true });
+          await original.waitFor();
+          assert.equal(await original.getAttribute("href"), `/reading/${owner.chart.id}`);
+          await original.click();
+          await visit.page.locator(`article[data-document-id="${owner.document.id}"]`).waitFor();
+        }
+        assert.equal(await readingLedgerSnapshot(owner.viewer.id), before, "edition/canonical/original-chart navigation and PDFs do not write the generation ledger");
+        cases.push(`chart-readonly-${scenario}-${locale}/canonical-navigation+download`);
+      } finally { await visit.context.close(); }
+    }
 
     const pending = await account("en", "none");
     await db.insert(runs).values({ userId: pending.viewer.id, readingId: pending.chart.id, locale: "en", status: "running", owner: randomUUID(), consumedAt: new Date(), deadline: new Date(Date.now() + 60000), contentVersion: pending.document.contentVersion });

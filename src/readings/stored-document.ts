@@ -122,7 +122,9 @@ export function readStoredDocument(
   }
   if (!usable) return { ok: false, code: "document_unavailable" };
   const missing = !seen.has("overview") || !seen.has("sun");
-  const partial = missing || sections.some(section => section.status === "failed" || section.notices.length > 0);
+  // Older complete documents predate closing questions; disclose that history
+  // without mislabeling intact saved content as a partial generation.
+  const partial = missing || sections.some(section => section.status === "failed" || section.notices.some(notice => notice !== "legacy_question_missing"));
   return { ok: true, value: {
     kind: "saved-reading", id: document.id, readingId: document.readingId, locale: document.locale,
     contentVersion: document.contentVersion, chartVersion: document.chartVersion, generatedAt: document.generatedAt,

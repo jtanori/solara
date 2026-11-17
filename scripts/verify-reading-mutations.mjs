@@ -40,6 +40,9 @@ const mutations = [
   mutation("paid-provider-dispatch", [change("src/readings/generate.ts", "const wanted = sectionsForTier(args.tier)", 'const wanted = sectionsForTier("paid")')], ["tests/readings-pipeline.test.ts"], "document: free tier shape"),
   mutation("subscription-selects-paid", [change(view, 'document.tier === "free";', '(document.tier === "free" || user.plan === "paid");'), change(view, '{ legacy: run.status === "legacy" }', '{ legacy: run.status === "legacy", allowPaid: user.plan === "paid" }')], foundation),
   mutation("pdf-link-unpinned", [change("src/components/reading-page-view.tsx", 'pdf?${readingEditionQuery(content)}', "pdf")], html, "PDF identity stays pinned"),
+  mutation("explicit-chart-controls", [change("src/components/reading-page-view.tsx", 'selector.kind !== "chart" && controls', "controls")], html, "explicit chart edition omits"),
+  mutation("permanent-pdf-retry-after", [change(handler, "return failure(code, status, status === 503);", "return failure(code, status, true);")], http, "safe render/DB errors"),
+  mutation("legacy-question-partial", [change(decoder, 'section.notices.some(notice => notice !== "legacy_question_missing")', "section.notices.length > 0")], ["tests/readings-presentation.test.ts"], "legacy-only notices"),
   mutation("pdf-question-dropped", [change(component, "if (section.closingQuestion) narrative.push", "if (false && section.closingQuestion) narrative.push")], pdf, "PDF: frozen free-en"),
   mutation("pdf-sections-reversed", [change(component, "content.sections.forEach(renderSection)", "[...content.sections].reverse().forEach(renderSection)")], pdf, "PDF: frozen free-en"),
   mutation("pdf-rows-reversed", [change(component, "const rows = block.rows.flatMap", "const rows = [...block.rows].reverse().flatMap")], pdf, "PDF: long prose"),
@@ -70,6 +73,7 @@ const mutations = [
   mutation("table-heading-orphan", [change(component, "if (index === 0) narrative.splice(beforeHeading);", "")], pdf, "leading long tables"),
   mutation("section-heading-overflow", [change(component, "if (headingHeight > PDF_FIXED_LAYOUT_LIMITS.sectionHeadingPt)", "if (false && headingHeight > PDF_FIXED_LAYOUT_LIMITS.sectionHeadingPt)")], pdf, "multiline section titles"),
   mutation("table-title-overflow", [change(component, "if (!inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines)", "if (false && !inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines)")], pdf, "oversized repeated table headings"),
+  { ...mutation("chart-selector-propagation", [change("src/app/reading/[id]/page.tsx", "selector={selector}", 'selector={{ kind: "auto" }}')], []), builtBrowser: true },
   { ...mutation("premium-plans-promise", [change("src/app/pricing/page.tsx", "Full AI interpretations are not available yet; a subscription does not unlock them.", "Premium unlocks all nine generated topics now.")], []), builtBrowser: true },
   { ...mutation("raw-client-rsc-prop", [change("src/app/reading/[id]/page.tsx", "controls={<ReadingGenerationControls key=", 'controls={<ReadingGenerationControls {...{ rawDocument: { models: { overview: "fixture-only" } } }} key=')], []), builtBrowser: true },
 ];

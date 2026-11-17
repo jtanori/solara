@@ -77,6 +77,8 @@ export async function loadReadingPresentation(
   let chartRow: Awaited<ReturnType<ReadingViewStore["chart"]>> = null;
   let availability: ReadingAvailability = "chart_only";
   try {
+    // Explicit notes/PDF access is independent of generation tables. The page
+    // must use this selector to omit AI controls, never infer an unused offer.
     if (selector.kind === "chart") chartRow = await store.chart(user.id, readingId);
     else {
       try {

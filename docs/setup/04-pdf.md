@@ -15,7 +15,14 @@ It uses the same bounded SELECT-only projection as `/reading/<reading-id>`:
 - `?edition=chart` pins the saved-chart / **illustrative notes** edition. Its notes
   are mutable editorial material; active verified subscriptions retain the
   existing Moon/Ascendant/house notes. Subscription does **not** select a paid AI
-  document. The page keeps these editions separate.
+  document. The page keeps these editions separate. The explicit chart page
+  mounts no AI consent/generation/status controls and starts none of their GETs;
+  its plain link returns to the canonical `/reading/<id>` page. That page applies
+  orphan-history suppression and verified original-chart navigation. Chart/PDF
+  reads remain independent of unavailable generation tables.
+- Complete adopted legacy documents without historical closing questions keep
+  their section-level notice, not a partial banner/filename. Actual failed,
+  missing, unsupported or malformed content remains marked partial.
 - Saved documents and their PDFs retain their saved language, date and versions.
   The interface language only controls navigation/status and illustrative notes.
   Editing a note cannot change a saved document’s prose.
@@ -33,7 +40,10 @@ only validated year, saved locale and edition, never names/provider metadata.
 The independent download quota remains **20/account/hour**. Errors are stable
 codes: 401 unauthenticated/unverified, 400 invalid selectors, 404 inaccessible,
 409 unsafe/unrepresentable selected content, 429 quota, 503 availability/capacity/
-timeout. A missing document store is not an unused offer. Explicit chart mode
+timeout. Deterministic 409 rejections omit `Retry-After`; transient failures may
+advertise a 3-second delay, while 429 retains its quota-derived delay. Repeating a
+409 download without changing the unsupported input cannot repair it.
+A missing document store is not an unused offer. Explicit chart mode
 can still work independently. Ownership/canonical identity is rechecked after
 rendering; already-delivered bytes cannot be recalled after deletion.
 
@@ -46,6 +56,17 @@ PDFKit builtin metrics/private import map and ICC asset. `next.config.ts` traces
 runtime tsx/dev dependency is needed. No remote fonts/images or arbitrary links
 are rendered. The pinned Noto Sans Latin WOFFs and SIL license live in
 `src/readings/fonts/`; unsupported glyphs fail safely instead of becoming boxes.
+
+**Font coverage limitation (PR #149 review, optional follow-up):** the vendored
+Latin subset supports ordinary en/es text, not every Latin Extended or non-Latin
+character. Coverage checks include chart names and geocoded place names, not
+just the reading's language: metadata such as `Łódź`, `Praha (Česko)` or
+`İstanbul` can cause `409 pdf_glyphs` in both saved-reading and chart-note PDFs.
+The saved HTML remains available; if the direct download opens an error response,
+return to the reading page to read it there. No automatic transliteration,
+character dropping, remote font fetch or regenerated reading is used as a fallback.
+Adding licensed Latin Extended font coverage and an in-page download-error/HTML
+fallback UI remain optional follow-up work, not delivered by this repair.
 
 `.vercelignore` excludes `tests/` and the local reading browser, benchmark and
 mutation runners that depend on those fixtures. It must retain `build-pdf.mjs`

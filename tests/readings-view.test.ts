@@ -137,6 +137,37 @@ test("reader: explicit chart edition survives publication and alone retains lega
   assert.equal(await state(viewer.id), before);
 });
 
+test("reader: explicit chart selection stays snapshot-independent across published, other-chart and orphan history", async () => {
+  const owner = await account();
+  const [other] = await db.insert(readings).values({ userId: owner.viewer.id, year: 2026, input: readingChartInput, result }).returning();
+  let snapshots = 0;
+  class NoSnapshotStore extends ReadingViewStore {
+    override async snapshot(): ReturnType<ReadingViewStore["snapshot"]> { snapshots++; throw Error("chart edition must not read generation state"); }
+  }
+  const inspectChart = async (id: string) => {
+    const before = await state(owner.viewer.id);
+    for (const locale of ["en", "es"] as const) {
+      const view = await loadReadingPresentation(owner.viewer, id, locale, { kind: "chart" }, { ...deps, store: new NoSnapshotStore() });
+      assert.equal(view.availability, "chart_only");
+      assert.equal(view.generation, null, "the page must use the selector, not a missing snapshot, to omit AI controls");
+      assert.equal(view.content.kind, "chart-notes");
+      assert.equal(view.chart.id, id);
+      assert.equal(view.content.locale, locale);
+    }
+    assert.equal(await state(owner.viewer.id), before);
+  };
+  assert.equal((await loadReadingPresentation(owner.viewer, owner.chart.id, "en", { kind: "auto" }, deps)).availability, "ready");
+  await inspectChart(owner.chart.id);
+  const canonicalOther = await loadReadingPresentation(owner.viewer, other.id, "en", { kind: "auto" }, deps);
+  assert.equal(canonicalOther.availability, "other_chart");
+  assert.equal(canonicalOther.generation?.readingId, owner.chart.id, "the canonical page retains verified original-chart navigation");
+  await inspectChart(other.id);
+  await db.delete(runs).where(eq(runs.userId, owner.viewer.id));
+  assert.equal((await loadReadingPresentation(owner.viewer, owner.chart.id, "en", { kind: "auto" }, deps)).availability, "history_unavailable");
+  await inspectChart(owner.chart.id);
+  assert.equal(snapshots, 0);
+});
+
 test("reader: adopted legacy remains readable without current provider/consent/accounting; partial content is honest", async () => {
   const { viewer, chart, document } = await account("es", "partial-sun");
   delete document.accounting;

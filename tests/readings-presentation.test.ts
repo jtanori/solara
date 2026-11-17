@@ -144,8 +144,37 @@ test("presentation: absent legacy questions/subtitles are not invented; missing 
   assert.equal(legacy.sections[0].closingQuestion, undefined);
   assert.deepEqual(legacy.sections[0].notices, ["legacy_question_missing"]);
   assert.ok(legacy.sections[0].blocks.length);
+  assert.equal(legacy.partial, false, "an informational legacy question notice does not mean incomplete content");
+  assert.deepEqual(legacy.notices, []);
   document.sections = [document.sections[1]];
   assert.deepEqual(valid(document).notices, ["partial", "missing_sections"]);
+});
+
+for (const locale of ["en", "es"] as const) test(`presentation ${locale}: legacy-only notices preserve completeness but degraded sections remain partial`, () => {
+  const raw = frozenReading(locale);
+  for (const section of raw.sections) delete section.closingQuestion;
+  const before = structuredClone(raw);
+  const complete = valid(raw, { legacy: true });
+  assert.equal(complete.partial, false);
+  assert.deepEqual(complete.notices, []);
+  for (const section of complete.sections) {
+    assert.deepEqual(section.notices, ["legacy_question_missing"]);
+    assert.equal(section.closingQuestion, undefined);
+    assert.ok(section.blocks.length);
+  }
+  assert.deepEqual(raw, before, "presentation must not rewrite or invent historical content");
+  const changes: ((document: ReadingDocument) => void)[] = [
+    document => { document.sections[1].status = "failed"; },
+    document => { document.sections[1].blocks.push({ kind: "future", text: "UNSUPPORTED" } as never); },
+    document => { document.sections[1].blocks = [{ kind: "prose", text: "" }]; },
+    document => { document.sections = [document.sections[0]]; },
+  ];
+  for (const change of changes) {
+    const degraded = structuredClone(raw); change(degraded);
+    const content = valid(degraded, { legacy: true });
+    assert.equal(content.partial, true, "failed, omitted, malformed or missing content must still be partial");
+    assert.ok(content.notices.includes("partial"));
+  }
 });
 
 test("presentation: failed facts are allowlisted, not arbitrary JSON or forged chart truth", () => {

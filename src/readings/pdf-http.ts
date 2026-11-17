@@ -64,6 +64,7 @@ export async function handleReadingPdf(request: Request, readingId: string, deps
     }
     const code = error instanceof ReadingPdfError ? error.code : "pdf_unavailable";
     log.warn("readings.pdf_unavailable", { ...requestMeta(request), code });
-    return failure(code, ["pdf_input_limit", "pdf_output_limit", "pdf_page_limit", "pdf_glyphs"].includes(code) ? 409 : 503, true);
+    const status = ["pdf_input_limit", "pdf_output_limit", "pdf_page_limit", "pdf_glyphs"].includes(code) ? 409 : 503;
+    return failure(code, status, status === 503);
   }
 }

@@ -4,12 +4,12 @@ import { ArrowLeft, Download, LockKeyhole } from "lucide-react";
 import { AstroWheel } from "@/components/astro-wheel";
 import { ReadingContentView } from "@/components/reading-sections";
 import { localeName, type Locale } from "@/lib/i18n";
-import { readingEditionQuery, type ReadingPresentation } from "@/readings/presentation";
+import { readingEditionQuery, type ReadingPresentation, type ReadingSelector } from "@/readings/presentation";
 import { AVAILABILITY_COPY, editionTitle } from "@/readings/presentation-copy";
 import { chartDetails, chartDisclaimer, chartPlacements, returnDate } from "@/readings/presentation-format";
 
 /** Server-only markup. Only small control props cross a client boundary. */
-export function ReadingPageView({ view, locale, controls, deleteControl }: { view: ReadingPresentation; locale: Locale; controls?: ReactNode; deleteControl?: ReactNode }) {
+export function ReadingPageView({ view, locale, selector, controls, deleteControl }: { view: ReadingPresentation; locale: Locale; selector: ReadingSelector; controls?: ReactNode; deleteControl?: ReactNode }) {
   const { chart, content, availability } = view;
   const es = locale === "es";
   const saved = content.kind === "saved-reading";
@@ -31,7 +31,9 @@ export function ReadingPageView({ view, locale, controls, deleteControl }: { vie
     <div className="chart-body"><div className="dashboard-main" style={{ minWidth: 0 }}>
       {availability !== "ready" && availability !== "chart_only" && <p className="notice" role="status">{AVAILABILITY_COPY[availability][locale]}</p>}
       {saved && content.locale !== locale && <p className="notice">{es ? `La interpretación guardada está en ${localeName(content.locale)}. Cambiar el idioma de la interfaz no la traduce ni vuelve a generarla.` : `The saved interpretation is in ${localeName(content.locale)}. Changing the interface language does not translate or regenerate it.`}</p>}
-      {controls}
+      {/* Explicit notes bypass the generation store for availability, not to
+          infer a fresh offer. Use canonical navigation above for all AI controls. */}
+      {selector.kind !== "chart" && controls}
       <ReadingContentView content={content} />
       {!saved && <p className="small muted">{es ? "Una suscripción puede incluir notas ilustrativas adicionales; no concede una interpretación completa generada con IA." : "A subscription may include additional illustrative notes; it does not grant a full AI-generated interpretation."} <Link href="/pricing" className="plain-link">{es ? "Funciones actuales" : "Current features"}</Link></p>}
     </div><section className="panel" style={{ minWidth: 0 }} aria-labelledby="chart-details-title">

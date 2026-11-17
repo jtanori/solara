@@ -71,6 +71,23 @@ for (const locale of ["en", "es"] as const) for (const edition of ["free", "part
   });
 }
 
+for (const locale of ["en", "es"] as const) test(`PDF: complete legacy content keeps the historical notice without partial metadata in ${locale}`, async () => {
+  const raw = frozenReading(locale);
+  for (const section of raw.sections) delete section.closingQuestion;
+  const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw), { legacy: true });
+  assert.ok(decoded.ok);
+  const input = { ...pdfFixture(locale), content: decoded.value };
+  const pdf = await inspectPdf((await renderer.render(input)).buffer);
+  assert.ok(pdf.text.includes(normalizePdfText(NOTICE_COPY.legacy_question_missing[locale])));
+  assert.equal(pdf.text.includes(normalizePdfText(NOTICE_COPY.partial[locale])), false, "legacy-only notice must not produce a partial PDF banner");
+  assert.equal(pdf.metadata.Title, `${locale === "es" ? "Interpretación guardada" : "Saved interpretation"} 2026 | Solara`);
+  assert.equal(pdf.metadata.Language, locale);
+  for (const section of raw.sections) {
+    assert.ok(pdf.text.includes(section.title));
+    for (const text of section.blocks.flatMap(blockText)) assert.ok(pdf.text.includes(normalizePdfText(text)));
+  }
+});
+
 test("PDF: repeated rendering stays semantically/visually stable, long legacy notes stay illustrative", async () => {
   const input = pdfFixture("es"); const a = await inspectPdf((await renderer.render(input)).buffer, true); const b = await inspectPdf((await renderer.render(input)).buffer, true);
   assert.equal(a.text, b.text); assert.deepEqual(a.pages.map(page => page.visual), b.pages.map(page => page.visual));
