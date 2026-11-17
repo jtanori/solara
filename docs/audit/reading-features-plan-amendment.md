@@ -5,6 +5,10 @@
 implicit-free dispatch and failure-accounting guidance. The adapter and block
 renderer now exist; page/PDF integration of generated prose and paid generation
 remain later slices. Safety verification is local/synthetic, not a live evaluation.
+For #104/#106, use the current [saved free-reading page/PDF delivery design](../plan-free-reading-page-pdf.md).
+In particular, the UI-locale/newest-version lookup, raw failure display and Premium-flag
+PDF suggestions below are historical, not the contract to implement. Paid generation
+remains separate. The operator approved the new design for implementation, not activation.
 
 Companion to `reading-features-current-implementation.md` (the verbatim source dump).
 This file is the analysis: what the current code already does, where the 7-step plan

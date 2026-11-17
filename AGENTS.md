@@ -14,6 +14,7 @@ solara/
 │   ├── app/                    # Next.js App Router (/, /blueprint, /setup, /usage-guide, /verify-email, /api/*)
 │   ├── components/             # UI, site-header/footer, usage-guide.tsx, verify-email-*
 │   ├── lib/                    # passwords, rate-limit, mail, email-verification, request-security, security-headers, billing
+│   ├── readings/               # guarded generation; canonical saved-document projection, local PDF fonts and isolated renderer
 │   ├── proxy.ts                # central origin guard + CSP nonce
 │   └── db/                     # Drizzle schema, pg client
 ├── drizzle/                    # versioned migrations + meta (never push to prod)
@@ -26,6 +27,9 @@ solara/
 │   ├── cleanup-rate-limits.ts  # delete expired rate-limit rows (npm run rate-limits:cleanup)
 │   ├── cleanup-account-leases.ts # delete expired account lifecycle leases (npm run account-leases:cleanup)
 │   ├── local/seed-users.ts     # local-only guarded seed: 9 accounts + subscriptions (ALLOW_LOCAL_SEED)
+│   ├── build-pdf.mjs / check-pdf-package.mjs # isolated worker build and production trace guard (setup/04-pdf.md)
+│   ├── verify-reading-browser.ts / verify-reading-mutations.mjs # synthetic generation-off presentation checks
+│   ├── benchmark-reading-pdf.ts # isolated synthetic resource samples; not hosted qualification
 │   └── verify-gating-production.ts # prod-mode gating verifier: 404 + role scoping + payload leak checks
 ├── docs/
 │   ├── decisions.md            # ADRs 001-010 (006 identity, 007 auth hardening, 008 migrations/deploy, 009 backlog, 010 lifecycle lease)

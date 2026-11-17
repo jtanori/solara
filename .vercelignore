@@ -2,6 +2,11 @@
 scripts/local
 scripts/report-rate-limits.ts
 scripts/cleanup-rate-limits.ts
+# These local-only reading tools depend on the excluded tests/ tree.
+# Keep build-pdf.mjs and the runtime worker/fonts in the deployment input.
+scripts/benchmark-reading-pdf.ts
+scripts/verify-reading-browser.ts
+scripts/verify-reading-mutations.mjs
 tests
 drizzle/meta
 .mail-outbox

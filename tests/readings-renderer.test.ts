@@ -2,155 +2,140 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { LockedSectionCard, ReadingBlockView, ReadingSectionView } from "../src/components/reading-sections";
-import { LOCKED_CTA } from "../src/readings/copy";
-import type { LockedSection, ReadingBlock, ReadingSection } from "../src/readings/types";
+import { LockedSectionCard, ReadingBlockView, ReadingContentView, ReadingSectionView } from "../src/components/reading-sections";
+import { ReadingPageView } from "../src/components/reading-page-view";
+import { readStoredDocument } from "../src/readings/stored-document";
+import { chartNotes } from "../src/readings/chart-presentation";
+import { readingPreviews, PREVIEW_COPY, NOTICE_COPY } from "../src/readings/presentation-copy";
+import type { DisplaySection, ReadingChart, ReadingPresentation } from "../src/readings/presentation";
+import type { ReadingBlock } from "../src/readings/types";
+import { calculateSolarReturn } from "../src/lib/solar";
+import { documentIdentity, frozenReading, readingChartInput } from "./helpers/reading-fixtures";
 
-/*
- * The renderer's failure mode is silent: a switch over block kinds that do not
- * exist returns null for every real block and the section renders empty. These
- * tests render against the REAL block union, so a vocabulary drift shows up as
- * a missing string rather than a blank page in production.
- */
-
-function render(element: React.ReactElement): string {
-  return renderToStaticMarkup(element);
+const h = React.createElement;
+const render = (element: React.ReactElement) => renderToStaticMarkup(element);
+function section(overrides: Partial<DisplaySection> = {}): DisplaySection {
+  return { key: "overview", tier: "free", title: "The Year in One Breath", subtitle: "Saved subtitle", blocks: [{ kind: "prose", text: "Sun in Leo, third house." }], status: "generated", notices: [], ...overrides };
 }
-
-function block(overrides: Partial<ReadingBlock> & { kind: ReadingBlock["kind"] }): ReadingBlock {
-  return overrides as ReadingBlock;
+function saved(locale: "en" | "es" = "en", edition: Parameters<typeof frozenReading>[1] = "free") {
+  const raw = frozenReading(locale, edition);
+  const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw), { allowPaid: true });
+  assert.ok(decoded.ok);
+  return decoded.value;
 }
+const chart: ReadingChart = { id: frozenReading().readingId!, year: 2026, name: "Synthetic Reading", returnPlace: "New York", timezone: "America/New_York", result: calculateSolarReturn(readingChartInput) };
 
-function section(overrides: Partial<ReadingSection> = {}): ReadingSection {
-  return {
-    key: "overview",
-    tier: "free",
-    title: "The Year in One Breath",
-    subtitle: "What this solar return year is about",
-    blocks: [{ kind: "prose", text: "Sun in Leo, third house." }],
-    facts: {},
-    status: "generated",
-    ...overrides,
-  };
-}
-
-// ------------------------------------------------------------------ all five kinds
-
-test("renderer: every real block kind renders its content", () => {
-  const cases: Array<[ReadingBlock, string]> = [
-    [block({ kind: "prose", text: "The year's keynote sounds here." }), "The year&#x27;s keynote sounds here."],
-    [block({ kind: "callout", title: "Practice", text: "Twenty minutes a week." }), "Twenty minutes a week."],
-    [block({ kind: "list", title: "Practices", items: ["Mind: three lines", "Body: a weekly ritual"] }), "Body: a weekly ritual"],
-    [block({ kind: "keyValue", title: "Your chart", entries: [{ key: "Sun", value: "Leo 12°" }] }), "Leo 12°"],
-    [
-      block({ kind: "aspectTable", title: "Tightest", rows: [{ a: "Sun", b: "Moon", type: "square", orb: 1.2 }] }),
-      "1.2°",
-    ],
+test("HTML: every real block kind renders semantic content, no invented vocabulary", () => {
+  const cases: [ReadingBlock, string][] = [
+    [{ kind: "prose", text: "A saved paragraph." }, "A saved paragraph."],
+    [{ kind: "callout", title: "Practice", text: "Twenty minutes a week." }, "<aside"],
+    [{ kind: "list", title: "Practices", items: ["Mind: three lines", "Body: a weekly ritual"] }, "<li>Body: a weekly ritual</li>"],
+    [{ kind: "keyValue", title: "Your chart", entries: [{ key: "Sun", value: "Leo 12°" }] }, "<dd"],
+    [{ kind: "aspectTable", title: "Tightest", rows: [{ a: "Sun", b: "Moon", type: "square", orb: 1.2 }] }, "1.2°"],
   ];
-
-  for (const [value, expected] of cases) {
-    const html = render(React.createElement(ReadingBlockView, { block: value, locale: "en" }));
-    assert.ok(html.includes(expected), `${value.kind} renders ${JSON.stringify(expected)}, got: ${html.slice(0, 160)}`);
-  }
+  for (const [block, expected] of cases) assert.ok(render(h(ReadingBlockView, { block, locale: "en" })).includes(expected), block.kind);
+  const table = render(h(ReadingBlockView, { block: cases[4][0], locale: "es" }));
+  for (const value of ["display:table-caption", "<caption", 'scope="col"', "Cuerpo", "Con", "Aspecto", "Orbe"]) assert.ok(table.includes(value));
+  for (const kind of ["paragraph", "heading", "bullets", "highlight"]) assert.equal(render(h(ReadingBlockView, { block: { kind, text: "never" } as unknown as ReadingBlock, locale: "en" })), "");
 });
 
-test("renderer: the invented plan vocabulary renders nothing (unknown kinds are absent, not guessed)", () => {
-  for (const kind of ["paragraph", "heading", "bullets", "highlight"]) {
-    const html = render(
-      React.createElement(ReadingBlockView, {
-        block: { kind, text: "should not appear", items: ["nope"] } as unknown as ReadingBlock,
-        locale: "en",
-      }),
-    );
-    assert.equal(html, "", `${kind} must render nothing`);
-  }
+test("HTML: saved titles, optional subtitle absence, questions, order and statuses survive", () => {
+  const html = render(h(ReadingSectionView, { locale: "es", section: section({ subtitle: undefined, closingQuestion: "¿Qué práctica cuidarás?", status: "overridden" }) }));
+  for (const text of ["The Year in One Breath", "¿Qué práctica cuidarás?", 'data-status="overridden"', 'aria-labelledby="reading-section-overview"']) assert.ok(html.includes(text));
+  assert.equal(html.includes("De qué va este año"), false, "no current-copy subtitle substitution");
+  const content = saved("es");
+  const document = render(h(ReadingContentView, { content }));
+  assert.ok(document.includes('lang="es"'));
+  assert.ok(document.includes('data-content-version="synthetic-reading-v1"'));
+  assert.ok(document.indexOf(content.sections[0].title) < document.indexOf(content.sections[1].title));
+  assert.ok(document.includes("¿Dónde quieres invertir tu energía?"));
 });
 
-test("renderer: unknown kind inside a section is skipped without losing its siblings", () => {
-  const html = render(
-    React.createElement(ReadingSectionView, {
-      locale: "en",
-      section: section({
-        blocks: [
-          { kind: "paragraph", text: "from the old plan" } as unknown as ReadingBlock,
-          { kind: "prose", text: "the real sentence" },
-        ],
-      }),
-    }),
-  );
-  assert.equal(html.includes("old plan"), false);
-  assert.ok(html.includes("the real sentence"));
+test("HTML: decoder omits unknown payload, retains valid siblings and discloses incompatibility", () => {
+  const raw = frozenReading();
+  raw.sections[0].blocks.splice(1, 0, { kind: "paragraph", text: "UNKNOWN_PAYLOAD_SENTINEL" } as unknown as ReadingBlock);
+  const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw)); assert.ok(decoded.ok);
+  const html = render(h(ReadingContentView, { content: decoded.value }));
+  assert.equal(html.includes("UNKNOWN_PAYLOAD_SENTINEL"), false);
+  assert.ok(html.includes("Make time for a quiet moment each week."));
+  assert.ok(html.includes("this viewer does not support"));
 });
 
-// ------------------------------------------------------------------ section shape
-
-test("renderer: section uses title, subtitle, blocks, closingQuestion and status", () => {
-  const html = render(
-    React.createElement(ReadingSectionView, {
-      locale: "en",
-      section: section({ closingQuestion: "What would you build there?" }),
-    }),
-  );
-  assert.ok(html.includes("The Year in One Breath"), "title is rendered");
-  assert.ok(html.includes("What this solar return year is about"), "subtitle is rendered");
-  assert.ok(html.includes("What would you build there?"), "closingQuestion is rendered, not a cliffhanger field");
-  assert.ok(html.includes('data-status="generated"'));
+test("HTML: failed content and internals never render; safe facts and truthful notice do", () => {
+  const raw = frozenReading("en", "partial-sun");
+  raw.sections[1].failureReason = "PRIVATE_FAILURE_SENTINEL";
+  raw.sections[1].blocks = [{ kind: "prose", text: "the words will catch up PRIVATE_PROSE_SENTINEL" }];
+  const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw)); assert.ok(decoded.ok);
+  const html = render(h(ReadingContentView, { content: decoded.value }));
+  assert.ok(html.includes("This section was not completed."));
+  assert.ok(html.includes("Saved chart facts"));
+  for (const text of ["PRIVATE_", "will catch up", "fixture-only", "accounting", "failureReason"]) assert.equal(html.includes(text), false, text);
 });
 
-test("renderer: a failed section still shows its fallback blocks and says why", () => {
-  const html = render(
-    React.createElement(ReadingSectionView, {
-      locale: "en",
-      section: section({
-        status: "failed",
-        failureReason: "cost_ceiling: projected 12 MXN would exceed the free ceiling",
-        blocks: [
-          { kind: "prose", text: "This section couldn't be written just now." },
-          { kind: "keyValue", title: "Your chart's facts", entries: [{ key: "sun", value: '{"sign":"leo"}' }] },
-        ],
-      }),
-    }),
-  );
-  assert.ok(html.includes("couldn&#x27;t be written"), "fallback prose is visible");
-  assert.ok(html.includes("Your chart&#x27;s facts"), "chart facts are still shown");
-  assert.ok(html.includes("cost_ceiling"), "the reader is told why, not left guessing");
-  assert.ok(html.includes('data-status="failed"'));
+test("HTML: malicious markup is plain escaped text, not links/scripts", () => {
+  const html = render(h(ReadingSectionView, { locale: "en", section: section({ title: '<img src=x onerror="alert(1)">', blocks: [{ kind: "prose", text: '<script>alert(1)</script> https://example.invalid/private' }] }) }));
+  assert.ok(html.includes("&lt;script&gt;")); assert.ok(html.includes("&lt;img"));
+  assert.equal(html.includes("<script"), false); assert.equal(html.includes("<img"), false); assert.equal(html.includes('href="https:'), false);
 });
 
-test("renderer: localized chrome follows the locale", () => {
-  const es = render(
-    React.createElement(ReadingSectionView, { locale: "es", section: section({ subtitle: undefined, closingQuestion: undefined }) }),
-  );
-  assert.ok(es.includes("De qué va este año de revolución solar"), "Spanish subtitle comes from copy.ts");
-
-  const table = render(
-    React.createElement(ReadingBlockView, {
-      locale: "es",
-      block: { kind: "aspectTable", rows: [{ a: "Sol", b: "Luna", type: "cuadratura", orb: 2 }] },
-    }),
-  );
-  assert.ok(table.includes("Cuerpo") && table.includes("Orbe"), "table headers are translated");
+for (const locale of ["en", "es"] as const) test(`HTML: nine truthful static previews in ${locale}, no immediate unlock purchase`, () => {
+  const content = saved(locale); const html = render(h(ReadingContentView, { content }));
+  assert.equal((html.match(/data-locked=/g) ?? []).length, 9);
+  assert.equal((html.match(/data-availability="planned"/g) ?? []).length, 2);
+  assert.ok(html.includes(PREVIEW_COPY.notice[locale]));
+  assert.equal((html.match(/href="\/pricing"/g) ?? []).length, 1);
+  assert.equal(/blur|Unlock|Desbloquear/.test(html), false);
+  const preview = render(h(LockedSectionCard, { locked: readingPreviews(locale).find(entry => entry.key === "transits")!, locale }));
+  assert.ok(preview.includes(PREVIEW_COPY.planned[locale]));
 });
 
-// ------------------------------------------------------------------ locked cards
-
-test("locked card: uses the pre-written teaser and the CTA that was never rendered", () => {
-  const locked: LockedSection = { key: "moon", title: "The Moon: Emotional Weather", teaser: "The emotional weather you'll live in." };
-  const html = render(React.createElement(LockedSectionCard, { locked, locale: "en" }));
-
-  assert.ok(html.includes("The emotional weather you&#x27;ll live in."));
-  assert.ok(html.includes(LOCKED_CTA.en), "LOCKED_CTA is finally rendered");
-  assert.ok(html.includes('href="/pricing"'));
-  assert.ok(html.includes('data-locked="moon"'));
-  assert.equal(/filter:\s*blur/.test(html), false, "no blur: blurred means absent");
+test("page: PDF identity stays pinned across UI locale/plan, explicit chart edition remains separate", () => {
+  const content = saved("es");
+  const view: ReadingPresentation = { chart, content, generation: null, availability: "ready" };
+  const html = render(h(ReadingPageView, { view, locale: "en", selector: { kind: "auto" } }));
+  assert.ok(html.includes(`/api/readings/${chart.id}/pdf?document=${content.id}`));
+  assert.ok(html.includes(`/reading/${chart.id}?edition=chart`));
+  assert.ok(html.includes("The saved interpretation is in Español."));
+  assert.ok(html.includes("Decorative wheel, not a plot"));
+  for (const leak of ["birthDate", "birthPlace", "-115.4747", "32.6393", "fixture-only", "Download full PDF", "YOUR PREMIUM READING"]) assert.equal(html.includes(leak), false, leak);
+  const notes = chartNotes(chart, { sun: "SUN_NOTE", moon: "MOON_NOTE", ascendant: "ASC_NOTE", house: "HOUSE_NOTE" }, "en", true);
+  const legacy = render(h(ReadingPageView, { view: { ...view, content: notes, availability: "chart_only" }, locale: "en", selector: { kind: "chart" } }));
+  for (const included of ["SUN_NOTE", "MOON_NOTE", "ASC_NOTE", "HOUSE_NOTE", "not a generated interpretation", "pdf?edition=chart"]) assert.ok(legacy.includes(included), included);
+  assert.equal(legacy.includes("Generated Premium"), false);
+  assert.equal(html.includes("SUN_NOTE"), false);
 });
 
-test("locked card: Spanish CTA", () => {
-  const html = render(
-    React.createElement(LockedSectionCard, {
-      locked: { key: "nodes", title: "Los Nodos", teaser: "La dirección de crecimiento, y su precio." },
-      locale: "es",
-    }),
-  );
-  assert.ok(html.includes(LOCKED_CTA.es));
+for (const locale of ["en", "es"] as const) {
+  test(`page: explicit chart edition omits AI controls and keeps canonical navigation in ${locale}`, () => {
+    // Match the intentional snapshot-independent explicit-chart result. Even an
+    // apparently unused chart must not mount the supplied client controls here.
+    const view: ReadingPresentation = { chart, content: chartNotes(chart, { sun: "ILLUSTRATIVE_NOTE", moon: "", ascendant: "", house: "" }, locale, false), generation: null, availability: "chart_only" };
+    const controls = h("section", { "aria-label": "AI consent" }, h("button", {}, "GENERATION_CONTROLS_SENTINEL"));
+    const html = render(h(ReadingPageView, { view, locale, selector: { kind: "chart" }, controls }));
+    assert.equal(html.includes("GENERATION_CONTROLS_SENTINEL"), false, "explicit chart edition must not mount AI controls");
+    assert.equal(html.includes('aria-label="AI consent"'), false);
+    assert.ok(html.includes(`href="/reading/${chart.id}"`), "the canonical page remains reachable without generation");
+    assert.ok(html.includes(`href="/api/readings/${chart.id}/pdf?edition=chart"`));
+    assert.ok(html.includes("ILLUSTRATIVE_NOTE"));
+    const canonical = render(h(ReadingPageView, { view, locale, selector: { kind: "auto" }, controls }));
+    assert.ok(canonical.includes("GENERATION_CONTROLS_SENTINEL"), "ordinary unused-chart controls are not removed globally");
+  });
+
+  test(`HTML: complete legacy reading keeps the question notice without partial labels in ${locale}`, () => {
+    const raw = frozenReading(locale);
+    for (const section of raw.sections) delete section.closingQuestion;
+    const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw), { legacy: true });
+    assert.ok(decoded.ok);
+    const html = render(h(ReadingPageView, { view: { chart, content: decoded.value, generation: null, availability: "ready" }, locale, selector: { kind: "auto" } }));
+    assert.ok(html.includes(NOTICE_COPY.legacy_question_missing[locale]));
+    assert.equal(html.includes(NOTICE_COPY.partial[locale]), false, "legacy-only notice must not produce the partial banner");
+    assert.equal(html.includes(locale === "es" ? "Interpretación parcial guardada" : "Saved partial interpretation"), false);
+  });
+}
+
+for (const locale of ["en", "es"] as const) test(`HTML: all eleven synthetic paid sections render in ${locale}, without a production paid selector`, () => {
+  const content = saved(locale, "paid"); const html = render(h(ReadingContentView, { content }));
+  assert.equal((html.match(/data-section=/g) ?? []).length, 11);
+  assert.equal((html.match(/data-locked=/g) ?? []).length, 0);
+  assert.ok(html.includes('data-section="planetaryYear"')); assert.ok(html.includes('data-section="transits"'));
 });

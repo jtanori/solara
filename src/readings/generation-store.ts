@@ -10,30 +10,17 @@ import { persistableDocument } from "@/readings/document";
 import { validUsage } from "@/readings/provider";
 import type { ReadingDocument } from "@/readings/types";
 import type { Locale } from "@/lib/i18n";
+import { generationView as view, type GenerationView } from "@/readings/generation-view";
+export type { GenerationView } from "@/readings/generation-view";
 
 type Tx = Parameters<Parameters<LifecycleDb["transaction"]>[0]>[0];
 type Run = typeof runs.$inferSelect;
 type TimedRun = Run & { expired: boolean; dispatchExpired: boolean };
-export type GenerationView = {
-  status: "unused" | "in_progress" | "completed" | "partial" | "failed" | "indeterminate" | "free_reading_deleted";
-  readingId: string | null;
-  documentId: string | null;
-  locale: Locale | null;
-};
 const runColumns = {
   ...getTableColumns(runs),
   expired: sql<boolean>`${runs.deadline} is null or ${runs.deadline} <= clock_timestamp()`,
   dispatchExpired: sql<boolean>`${runs.deadline} is null or ${runs.deadline} - interval '5 seconds' <= clock_timestamp()`,
 };
-function view(run?: TimedRun): GenerationView {
-  if (!run) return { status: "unused", readingId: null, documentId: null, locale: null };
-  const status = run.consumedAt && !run.readingId ? "free_reading_deleted"
-    : run.documentId ? run.status === "partial" ? "partial" : "completed"
-      : run.status === "reserved" ? run.expired || !run.owner ? "unused" : "in_progress"
-        : run.status === "running" ? run.expired ? "indeterminate" : "in_progress"
-          : run.status === "indeterminate" ? "indeterminate" : "failed";
-  return { status, readingId: run.readingId, documentId: run.documentId, locale: run.locale };
-}
 function active(consent: typeof consents.$inferSelect | undefined, policy: string, revision?: number) {
   return consent?.grantedAt && !consent.withdrawnAt && consent.policyHash === policy && (revision === undefined || consent.revision === revision);
 }

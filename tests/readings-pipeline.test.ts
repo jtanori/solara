@@ -611,6 +611,7 @@ test("document: free tier shape, ordering, models, cost accounting, locked secti
     assert.deepEqual(document.sections.map(section => section.key), ["overview", "sun"]);
     assert.deepEqual(document.lockedSections.map(section => section.key), ["moon", "ascendant", "aspects", "houses", "planets", "nodes", "guidance"]);
     assert.ok(document.models.overview && document.models.sun);
+    assert.deepEqual(spy.calls.map(call => call.section), ["overview", "sun"], "free generation never dispatches a paid topic");
     assert.equal(spy.calls.length, 2);
     assert.ok(document.costMxn > 0 && document.costMxn <= TIER_CEILING_MXN.free);
     assert.equal(document.wastedCostMxn, 0);
