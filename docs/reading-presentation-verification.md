@@ -1,11 +1,69 @@
 # Saved-reading page/PDF — author verification
 
-**Implementation SHA:** `795b5b3e6acb706ae12b0720fba83256d26b7251` on `arena/78f55298-solara`.
-**Fetched staging base:** `13a886085aaa901b964e323fe3d2187650be8881`; implementation is five commits ahead, zero behind that fetched base.
+**Latest repair/validation SHA:** `66103fbd4d3e22082b02c2be2caaa56068c8dd17` on `arena/78f55298-solara`.
+**Original implementation SHA:** `795b5b3e6acb706ae12b0720fba83256d26b7251`.
+**Fetched staging base:** `13a886085aaa901b964e323fe3d2187650be8881`; repair checkpoint is nine commits ahead, zero behind that fetched base.
 
-This is author-local implementation evidence for [the approved design](plan-free-reading-page-pdf.md), **not a PR review/verdict, hosted qualification, issue-closure decision, or generation-activation approval**. The original report landed in documentation-only `c218ce8`; except for the explicitly newer addendum below, measurements describe implementation SHA `795b5b3` above.
+This is author-local implementation evidence for [the approved design](plan-free-reading-page-pdf.md), **not a PR review/verdict, hosted qualification, issue-closure decision, or generation-activation approval**. Results are pinned by section: latest review repairs at `66103fb`, historical deployment-input repair at `7a43715`, and original implementation/benchmark at `795b5b3`. Documentation-only evidence commits do not change the measured source.
 
-## PR #149 build-input repair and renewed validation
+## PR #149 review repairs — `66103fb`
+
+The [posted AI-assisted COMMENT review](https://github.com/jtanori/solara/pull/149#pullrequestreview-5934379408) and [CHANGES REQUESTED verdict](https://github.com/jtanori/solara/pull/149#issuecomment-6941382234) cover head `5a0bc702ee61732b6b5c7220cf3af55c4b39d5e5`, not this repair. Both Medium findings and the legacy-label Low finding are implemented below. Thread resolution and an updated reviewer verdict remain separate; this author evidence does not supersede that verdict.
+
+| Review finding | Repair and collateral protection |
+| --- | --- |
+| [Medium: explicit chart edition / history / original-chart link](https://github.com/jtanori/solara/pull/149#discussion_r4596437669) | Reviewer Option A: a required parsed `ReadingSelector` reaches the server page view; explicit chart notes do not mount AI controls at all. The existing plain canonical link remains. Canonical pages retain orphan-history suppression and verified original-chart navigation. No generation-store dependency was added to explicit chart page/PDF access; MissingStore PDFs remain 200. Auto/pinned selection and ordinary unused-chart controls are preserved. |
+| [Medium: Retry-After on permanent PDF errors](https://github.com/jtanori/solara/pull/149#discussion_r4596437678) | Render-error status is computed once; only transient 503 mappings advertise `Retry-After: 3`. All four deterministic 409 renderer codes omit it; view-level 409, MissingStore 503/explicit-chart 200 and independent quota 429 remain covered, with private headers and safe JSON/logs. |
+| [Low: legacy questions falsely mark a complete reading partial](https://github.com/jtanori/solara/pull/149#discussion_r4596437692) | The informational `legacy_question_missing` notice stays at section level but does not set document `partial`. Failed, missing, unsupported or malformed content still does. En/es tests cover decoder immutability, HTML banner/title, real PDF extracted text/metadata and pinned HTTP filenames, including genuinely partial legacy documents. |
+| [Low: font coverage](https://github.com/jtanori/solara/pull/149#discussion_r4596437703) | **Deferred optional improvement, not claimed fixed.** `docs/setup/04-pdf.md` now names the chart-name/geocoded-place boundary, examples that can fail with `409 pdf_glyphs`, and reading the preserved HTML. No font/bundle expansion, transliteration, remote fallback or in-page download-error UI is claimed. |
+
+Before changing implementation, the new focused tests produced **five genuine assertion failures** (chart control mounting in en/es, legacy completeness in en/es, permanent-error retry header). The expanded production-browser script also failed against the prior build with `explicit chart edition must not mount AI controls` (`1 !== 0`). These baseline failures are expected defect reproductions, not green checks.
+
+Latest validation used Node 22.22.3/npm 10.9.8, the disposable migrated PostgreSQL 16.2 database at loopback port 5438, synthetic fixtures/fake providers, `READINGS_GENERATION_ENABLED=false`, both integration gates, `DOTENV_CONFIG_PATH=/dev/null`, and provider/billing keys **unset** in the parent shell. No hosted data, live provider or email delivery was used. Commands executed on the repair checkpoint:
+
+```bash
+node scripts/verify-reading-mutations.mjs
+# The four deployment-input mutations in the historical table below were also
+# rerun individually at 66103fb, restoring .vercelignore after each assertion kill.
+RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
+npx next typegen
+npm run typecheck
+npm run lint
+npm run db:manifest:check
+npm run db:check
+npm run build
+node scripts/check-pdf-package.mjs
+npm audit --omit=dev --audit-level=high
+npx tsx scripts/verify-reading-browser.ts
+```
+
+| Check at `66103fb` | Executed result |
+| --- | --- |
+| Main mutation runner | **58/58 assertion kills**: original 54 plus four review guards; all original bytes restored, clean Git tree checked |
+| Deployment-input mutations | **4/4 assertion kills**, byte-restored; strict filtered-input tests included in the full run |
+| Restored unmodified scoped suite | **153/153**, 36.83 s; zero failures/cancellations/skips |
+| Full repository suite | **625/625**, 381.00 s; zero failures/cancellations/skips (614 previous + 11 new cases) |
+| PDF coverage | **26 cases** included in the above; eight frozen text/page/raster baselines unchanged, plus en/es complete-legacy extraction/metadata cases |
+| Typegen/typecheck/lint | Passed; generated `next-env.d.ts` churn restored instead of committed |
+| Manifest/local schema | Passed: 16 tables, 62 columns, 9 indexes, seven migrations, no pending/unexpected hashes |
+| Build/package trace | Passed: **216 files / 5.8 MiB**, worker/fonts/license/metrics/ICC present; prohibited test/browser/extractor/environment files absent |
+| Authenticated built-app browser QA | **13/13**; original nine plus en/es orphan-history and other-chart explicit-edition/canonical-navigation/download scenarios; zero provider fetches/automatic POST/PUT/unhandled browser errors |
+| Production audit | **0 vulnerabilities**; unchanged development dependency graph's previously recorded 11 moderate findings are not represented as audit-clean |
+
+Counts overlap; 153 scoped and 26 PDF cases are not additional to 625. The four new core mutations are reproducible from the committed runner:
+
+| Mutation | Exact command / observed assertion |
+| --- | --- |
+| `explicit-chart-controls`: in `src/components/reading-page-view.tsx`, `selector.kind !== "chart" && controls` → `controls` | `node --import tsx --test '--test-name-pattern=explicit chart edition omits' tests/readings-renderer.test.ts` → both locales fail `explicit chart edition must not mount AI controls` |
+| `permanent-pdf-retry-after`: in `src/readings/pdf-http.ts`, `return failure(code, status, status === 503);` → `return failure(code, status, true);` | `node --import tsx --test '--test-name-pattern=safe render/DB errors' tests/readings-page.test.ts` → `pdf_input_limit: only transient PDF failures invite a retry`, `'3' !== null` |
+| `legacy-question-partial`: in `src/readings/stored-document.ts`, `section.notices.some(notice => notice !== "legacy_question_missing")` → `section.notices.length > 0` | `node --import tsx --test '--test-name-pattern=legacy-only notices' tests/readings-presentation.test.ts` → both locales fail `true !== false` |
+| `chart-selector-propagation`: in `src/app/reading/[id]/page.tsx`, `selector={selector}` → `selector={{ kind: "auto" }}` | `npm run build` succeeds, then `node --import tsx scripts/verify-reading-browser.ts` → `explicit chart edition must not mount AI controls`, `1 !== 0` |
+
+The extended browser checks explicitly observe **zero consent/status GETs** while on the explicit chart page, then follow its canonical link: history suppression remains in force and an owned other-chart link leads to the original saved document. Generated chart PDFs remain chart notes and ledger snapshots are unchanged. Desktop English other-chart and Spanish orphan-history chart-edition screenshots were also visually inspected; the canonical link and notes remain visible without the AI panel. This is not full accessibility certification.
+
+The worker SHA-256 remains `a1a20933681bd6350c5e4a8a75c961b69e64b6be8e0ccb6c933b5acbed8b0c79`; frozen snapshot SHA-256 remains `a90465fd2b159ef98d4a35eec21d816d182fe911ef77139dab0f6f6d169ddd2f`. Font assets, layout/worker/permission/budget code, dependencies and benchmark fixtures did not change. The **231-render resource benchmark was not rerun**; its measurements remain at `795b5b3`, not attributed to the new application tree or hosted Node 26. All hosted/cutover/activation gates below remain required. Current-head remote CI/preview results belong in the PR body; author repairs do not authorize merge or promotion.
+
+## Historical: PR #149 build-input repair and renewed validation
 
 [PR #149](https://github.com/jtanori/solara/pull/149) is open against `staging`. Its first head, `c218ce8cecefdf79ba7ecc5e3c189c9847f8e1ab`, passed GitHub [CI 44028399334](https://github.com/jtanori/solara/actions/runs/44028399334), but its automatic [Vercel preview](https://vercel.com/jaime-tanoris-projects/solara/FW3eEFNwhBE5Yt1nGVGcCoxPZBNs) failed. The build log identified TS2307 imports of `../tests/helpers/{reading-pdf,browser,reading-account}` from the new local benchmark/browser scripts: `.vercelignore` had removed `tests/` but not those consumers. A full-checkout build did not reproduce that filtering.
 
