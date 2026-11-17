@@ -1,5 +1,5 @@
 import type { Locale } from "@/lib/i18n";
-import { LOCKED_TEASERS, SECTION_TITLES, type LocalizedText } from "@/readings/copy";
+import { LOCKED_TEASERS, PAID_SECTION_TITLES, PAID_SECTION_SUBTITLES, type LocalizedText } from "@/readings/copy";
 import { sectionDefinition } from "@/readings/registry";
 import { SECTION_KEYS } from "@/readings/types";
 import type { ReadingAvailability, ReadingContent, ReadingNotice, SectionPreview } from "@/readings/presentation";
@@ -45,7 +45,8 @@ export function paidPricingNotice(available: boolean, enabled: boolean, locale: 
 /** Current product catalog, NOT a rewrite of the frozen document's lockedSections. */
 export function readingPreviews(locale: Locale): SectionPreview[] {
   return SECTION_KEYS.filter(key => sectionDefinition(key).tier === "paid").map(key => ({
-    key, title: SECTION_TITLES[key][locale], teaser: LOCKED_TEASERS[key][locale],
+    key, title: PAID_SECTION_TITLES[key][locale],
+    teaser: (sectionDefinition(key).requiresFacts ? PAID_SECTION_SUBTITLES : LOCKED_TEASERS)[key][locale],
     availability: sectionDefinition(key).requiresFacts ? "planned" : "not_included",
   }));
 }

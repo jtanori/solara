@@ -201,6 +201,9 @@ test("presentation: catalog is honest, complete and never taken from persisted p
     assert.match(PREVIEW_COPY.notice[locale], locale === "es" ? /nunca genera una interpretación automáticamente/ : /never generates an interpretation automatically/);
     assert.match(PREVIEW_COPY.notice[locale], locale === "es" ? /disponibilidad/ : /availability/);
     assert.match(PREVIEW_COPY.planned[locale], locale === "es" ? /cálculos adicionales/ : /additional chart calculations/);
+    const transit = readingPreviews(locale).find(preview => preview.key === "transits")!;
+    assert.equal(transit.title, locale === "es" ? "Tránsitos en el retorno solar" : "Transits at the Solar Return");
+    assert.equal(transit.teaser, locale === "es" ? "Una instantánea guardada, no un calendario de tránsitos" : "A frozen snapshot, not a transit calendar");
   }
 });
 
