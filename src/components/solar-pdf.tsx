@@ -6,7 +6,7 @@ import type { ReadingBlock } from "@/readings/types";
 import { AVAILABILITY_COPY, NOTICE_COPY, PREVIEW_COPY, aspectHeadings, editionTitle } from "@/readings/presentation-copy";
 import { chartDetails, chartDisclaimer, chartPlacements, returnDate, savedDate } from "@/readings/presentation-format";
 import { PDF_FONT, pdfGlyphsSupported, pdfLines } from "@/readings/pdf-fonts";
-import { ReadingPdfError, type ReadingPdfInput } from "@/readings/pdf-contract";
+import { PDF_FIXED_LAYOUT_LIMITS, ReadingPdfError, type ReadingPdfInput } from "@/readings/pdf-contract";
 
 type PdfRenderer = Pick<typeof import("@react-pdf/renderer"), "Document" | "Page" | "Text" | "View" | "StyleSheet" | "Font">;
 // Do not inherit lineHeight into dynamic footer Text: layout 5.2 resolves it
@@ -92,6 +92,9 @@ export function SolarReturnDocument({ chart, content, renderer, onPageCount }: R
       ...leadingSection.notices.map(code => NOTICE_COPY[code][locale]),
       block.title ?? (es ? "Aspectos" : "Aspects"),
     ].filter(Boolean).join("\n"), 499, 10, renderer, true) : titleLines;
+    // A fixed title cannot consume the space needed by a bounded row fragment.
+    // Fail before layout, not after pages of clipped text or a render timeout.
+    if (!inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines) throw new ReadingPdfError("pdf_input_limit");
     return { inline, node: inline
       ? <View key={key} wrap={false} style={{ marginBottom: 16 }}><Text style={s.heading}>{titleLines.join("\n")}</Text><View style={{ flexDirection: "row", fontSize: 9, fontWeight: 700 }}>{columns}</View>{rows}</View>
       : <Page key={key} size="A4" style={{ ...s.page, paddingTop: 76 + repeatedTitle.length * 15 + 35 }}>{header}
@@ -115,12 +118,19 @@ export function SolarReturnDocument({ chart, content, renderer, onPageCount }: R
   let narrative: React.ReactNode[] = [];
   const renderSection = (section: DisplaySection) => {
     const beforeHeading = narrative.length;
-    // Only this bounded title/subtitle/notice group is unbreakable. Reserve the
-    // opening body lines too: keeping a title with just its subtitle can still
-    // orphan both above a page break. The section body itself remains wrappable.
+    const titleLines = pdfLines(section.title, 499, 21, renderer, true);
+    const subtitleLines = section.subtitle ? pdfLines(section.subtitle, 499, 9, renderer) : [];
+    // Conservatively include leading, margins and notice padding. A 200-character
+    // heading can contain 100 newlines: a character cap is not a height cap.
+    const headingHeight = 28 + titleLines.length * 21 * 1.3 + (subtitleLines.length ? subtitleLines.length * 14 + 12 : 0) +
+      section.notices.reduce((height, code) => height + pdfLines(NOTICE_COPY[code][locale], 475, 9, renderer).length * 14 + 38, 0);
+    if (headingHeight > PDF_FIXED_LAYOUT_LIMITS.sectionHeadingPt) throw new ReadingPdfError("pdf_input_limit");
+    // Only this geometrically bounded title/subtitle/notice group is unbreakable.
+    // Reserve opening body lines too: a title with only its subtitle can still
+    // be orphaned. The section body itself remains wrappable.
     narrative.push(<View key={`${section.key}-heading`} wrap={false} minPresenceAhead={section.blocks[0]?.kind === "aspectTable" ? 300 : 90}>
-      <Text style={{ ...s.section, marginTop: 16 }}>{wrap(section.title, 499, 21, true)}</Text>
-      {section.subtitle && <Text style={s.small}>{wrap(section.subtitle, 499, 9)}</Text>}
+      <Text style={{ ...s.section, marginTop: 16 }}>{titleLines.join("\n")}</Text>
+      {section.subtitle && <Text style={s.small}>{subtitleLines.join("\n")}</Text>}
       {section.notices.map(code => <Text key={code} style={s.notice}>{NOTICE_COPY[code][locale]}</Text>)}
     </View>);
     section.blocks.forEach((block, index) => {

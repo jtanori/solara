@@ -6,6 +6,8 @@ import { resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { ReadingPdfRenderer } from "../src/readings/pdf-render";
+import { SolarReturnDocument } from "../src/components/solar-pdf";
+import { loadPdfFonts } from "../src/readings/pdf-fonts";
 import { PDF_IPC_CHUNK_BYTES, ReadingPdfError } from "../src/readings/pdf-contract";
 import { READING_LIMITS, blockText } from "../src/readings/presentation";
 import { NOTICE_COPY, PREVIEW_COPY, readingPreviews } from "../src/readings/presentation-copy";
@@ -191,6 +193,44 @@ test("PDF: leading long tables keep section headings with data; all long cells a
   }
   assert.ok(pdf.text.includes("25.1°")); assert.ok(pdf.text.includes(lead.closingQuestion!));
   tables.forEach((page, i) => writeFileSync(`.venv/pdf-evidence/leading-table-es-${i + 1}.png`, page.image!));
+});
+
+test("PDF: multiline section titles and subtitles fail safely before unbreakable heading clipping", async () => {
+  const pdf = await import("@react-pdf/renderer");
+  await loadPdfFonts(pdf, resolve("src/readings/fonts"));
+  for (const field of ["title", "subtitle"] as const) {
+    const raw = frozenReading("es"); raw.sections[0][field] = "Á\n".repeat(90) + "FINAL_TÍTULO";
+    const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw));
+    assert.ok(decoded.ok, "valid stored prose must remain available to HTML");
+    assert.equal(decoded.value.sections[0][field], raw.sections[0][field]);
+    const input = { ...pdfFixture("es"), content: decoded.value };
+    // Pure tree construction must reject before React-PDF layout. A timeout or
+    // a rendered file with the final heading text clipped is not a passing guard.
+    assert.throws(() => SolarReturnDocument({ ...input, renderer: pdf }),
+      (error: unknown) => error instanceof ReadingPdfError && error.code === "pdf_input_limit");
+    await assert.rejects(renderer.render(input),
+      (error: unknown) => error instanceof ReadingPdfError && error.code === "pdf_input_limit");
+  }
+  const supported = pdfFixture("es"); supported.content.sections[0].title = "Á\n".repeat(7) + "FINAL_TÍTULO";
+  const inspected = await inspectPdf((await renderer.render(supported)).buffer);
+  assert.ok(inspected.text.includes(normalizePdfText(supported.content.sections[0].title)), "bounded multiline headings still render completely");
+});
+
+test("PDF: oversized repeated table headings fail pre-layout instead of exhausting the deadline", async () => {
+  const pdf = await import("@react-pdf/renderer");
+  await loadPdfFonts(pdf, resolve("src/readings/fonts"));
+  for (const leading of [true, false]) {
+    const raw = frozenReading("es");
+    const table: ReadingBlock = { kind: "aspectTable", title: "Á\n".repeat(90) + "FINAL_TABLA",
+      rows: Array.from({ length: 35 }, (_, i) => ({ a: `FILA_${i}`, b: "Luna", type: "cuadratura", orb: 1.2 })) };
+    raw.sections[0].blocks = leading ? [table] : [{ kind: "prose", text: "Un párrafo anterior." }, table];
+    const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw)); assert.ok(decoded.ok);
+    const input = { ...pdfFixture("es"), content: decoded.value };
+    assert.throws(() => SolarReturnDocument({ ...input, renderer: pdf }),
+      (error: unknown) => error instanceof ReadingPdfError && error.code === "pdf_input_limit");
+    await assert.rejects(renderer.render(input),
+      (error: unknown) => error instanceof ReadingPdfError && error.code === "pdf_input_limit");
+  }
 });
 
 test("PDF: over-page callouts, twenty list items, long names/versions and high-latitude omissions stay readable", async () => {

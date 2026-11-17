@@ -68,6 +68,8 @@ const mutations = [
   mutation("mutable-notes-substitution", [change(view, 'if (decoded?.ok) return { chart, content: decoded.value, generation, availability: "ready" };', 'if (decoded?.ok) return { chart, content: chartNotes(chart, await (deps.notes ?? getReadingNotes)(chart.result, locale), locale, user.plan === "paid"), generation, availability: "ready" };')], pdf, "actual canonical reads stay frozen"),
   mutation("section-heading-orphan", [change(component, 'minPresenceAhead={section.blocks[0]?.kind === "aspectTable" ? 300 : 90}', 'minPresenceAhead={0}')], pdf, "PDF: frozen paid-es"),
   mutation("table-heading-orphan", [change(component, "if (index === 0) narrative.splice(beforeHeading);", "")], pdf, "leading long tables"),
+  mutation("section-heading-overflow", [change(component, "if (headingHeight > PDF_FIXED_LAYOUT_LIMITS.sectionHeadingPt)", "if (false && headingHeight > PDF_FIXED_LAYOUT_LIMITS.sectionHeadingPt)")], pdf, "multiline section titles"),
+  mutation("table-title-overflow", [change(component, "if (!inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines)", "if (false && !inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines)")], pdf, "oversized repeated table headings"),
   { ...mutation("premium-plans-promise", [change("src/app/pricing/page.tsx", "Full AI interpretations are not available yet; a subscription does not unlock them.", "Premium unlocks all nine generated topics now.")], []), builtBrowser: true },
   { ...mutation("raw-client-rsc-prop", [change("src/app/reading/[id]/page.tsx", "controls={<ReadingGenerationControls key=", 'controls={<ReadingGenerationControls {...{ rawDocument: { models: { overview: "fixture-only" } } }} key=')], []), builtBrowser: true },
 ];

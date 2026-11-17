@@ -61,11 +61,19 @@ Each request forks one fresh, terminable Node process:
 | Saved JSON / chart JSON before transfer | 512 KiB / 16 KiB |
 | Sections / blocks per section | 11 / 30; existing per-block field/array limits |
 | Aggregate free / paid-fixture text | 32,768 / 131,072 UTF-16 units |
+| Fixed layout geometry | Section heading group <=400 pt; repeated table title <=20 measured lines |
 | PDF output | 8 MiB, checked during collection in child and parent |
 | Pages | 40 production / 80 synthetic paid-renderer stress |
 | Concurrency | One active child per Node process, zero pending queue |
 | Render deadline | 15 s; route `maxDuration = 30` leaves read/cleanup headroom |
 | Child heap / RSS | 160 MiB V8 old-space; 256 MiB externally sampled RSS ceiling |
+
+The fixed-layout caps leave space for opening content and a full bounded table
+row fragment. Character limits alone do not constrain height: a short title can
+contain many newlines. Such an unrepresentable PDF returns `pdf_input_limit`
+(409) before layout, without clipping or rewriting text; the saved HTML remains
+available. Ordinary prose and large blocks still wrap, and normal frozen snapshots
+are unchanged by this guard.
 
 The child receives only chart display data and the validated content projection,
 not raw documents, birth input, account/run/consent/attempt records, DB URLs or
