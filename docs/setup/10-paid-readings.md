@@ -4,7 +4,10 @@
 flags and the database control default off. No genuine provider evaluation or
 editorial approval is supplied by test fixtures. The approved product contract is
 [paid reading editions](../plan-paid-reading-editions.md); free recovery remains in
-[reading generation safety](09-reading-generation-safety.md).
+[reading generation safety](09-reading-generation-safety.md). The SHA-pinned
+[local verification record](../paid-reading-verification.md) records test/mutation
+results, the development-dependency audit caveat, and the still-unverified release
+gates; it is not live-provider/editorial approval.
 
 ## Customer contract
 
