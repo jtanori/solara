@@ -12,5 +12,5 @@ export default defineConfig([
     files: ["src/lib/log.ts"],
     rules: { "no-console": "off" },
   },
-  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts"]),
+  globalIgnores([".next/**", ".pdf/**", ".venv/**", "out/**", "build/**", "next-env.d.ts"]),
 ]);

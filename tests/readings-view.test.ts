@@ -1,7 +1,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { before, after, test } from "node:test";
+import { before, after, test as nodeTest } from "node:test";
 import { and, eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { db, pool, coordinationPool } from "../src/db";
@@ -14,6 +14,9 @@ import { frozenReading, readingChartInput } from "./helpers/reading-fixtures";
 import { createTempDatabase } from "./temp-database";
 import type { Locale } from "../src/lib/i18n";
 
+const enabled = process.env.RUN_INTEGRATION_TESTS === "1";
+const test = enabled ? nodeTest : nodeTest.skip;
+
 const createdUsers: string[] = [];
 const originalFetch = globalThis.fetch;
 const originalEnabled = process.env.READINGS_GENERATION_ENABLED;
@@ -25,6 +28,7 @@ const store = new ReadingViewStore();
 const verified = new Date("2026-01-01T00:00:00.000Z");
 
 before(() => {
+  if (!enabled) return;
   assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(new URL(process.env.DATABASE_URL!).hostname), "disposable local database only");
   process.env.READINGS_GENERATION_ENABLED = "false";
   globalThis.fetch = async () => { fetches++; throw new Error("Read paths must not make provider/HTTP calls"); };

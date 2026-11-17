@@ -1,40 +1,151 @@
 import React from "react";
-import type { DocumentProps } from "@react-pdf/renderer";
-import { DateTime } from "luxon";
-import { localizeWarning, signName, type Locale } from "@/lib/i18n";
-import type { ReadingNotes } from "@/lib/reading-content";
-import type { ChartInput, ChartResult } from "@/lib/types";
+import type { DocumentProps, PageProps } from "@react-pdf/renderer";
+import { localeName } from "@/lib/i18n";
+import { READING_LIMITS, sectionText, type DisplaySection } from "@/readings/presentation";
+import type { ReadingBlock } from "@/readings/types";
+import { AVAILABILITY_COPY, NOTICE_COPY, PREVIEW_COPY, aspectHeadings, editionTitle } from "@/readings/presentation-copy";
+import { chartDetails, chartDisclaimer, chartPlacements, returnDate, savedDate } from "@/readings/presentation-format";
+import { PDF_FONT, pdfGlyphsSupported, pdfLines } from "@/readings/pdf-fonts";
+import { ReadingPdfError, type ReadingPdfInput } from "@/readings/pdf-contract";
 
-type PdfRenderer = typeof import("@react-pdf/renderer");
-function makeStyles(StyleSheet: PdfRenderer["StyleSheet"]) { return StyleSheet.create({
-  page:{backgroundColor:"#FBF7F2",paddingTop:44,paddingBottom:56,paddingHorizontal:52,color:"#373330",fontFamily:"Helvetica",fontSize:10},
-  header:{flexDirection:"row",justifyContent:"space-between",alignItems:"center",borderBottomWidth:1,borderBottomColor:"#DDCFC5",paddingBottom:15},
-  brand:{fontFamily:"Times-Roman",fontSize:23,color:"#9F3C20"}, headerLabel:{fontSize:8,letterSpacing:1.5,color:"#A58C7D"},
-  cover:{flex:1,justifyContent:"center",paddingTop:20}, eyebrow:{fontSize:8,letterSpacing:2,color:"#A54D31",marginBottom:18},
-  title:{fontFamily:"Times-Roman",fontSize:46,lineHeight:1.12,color:"#35312F"}, italic:{fontFamily:"Times-Italic",fontSize:46,color:"#9F3C20",lineHeight:1.12},
-  subtitle:{fontSize:11,lineHeight:1.7,color:"#7E746D",marginTop:22,maxWidth:325}, coverRule:{height:1,width:55,backgroundColor:"#B97457",marginVertical:28},
-  name:{fontFamily:"Times-Roman",fontSize:20}, small:{fontSize:9,color:"#9A8C82",marginTop:6},
-  sunOuter:{position:"absolute",right:8,top:96,width:140,height:140,borderRadius:70,borderWidth:1,borderColor:"#D2A78E",alignItems:"center",justifyContent:"center"},
-  sunInner:{width:112,height:112,borderRadius:56,borderWidth:1,borderColor:"#E8CABB",alignItems:"center",justifyContent:"center"}, sunCore:{width:60,height:60,borderRadius:30,backgroundColor:"#E4B49A"},
-  footer:{position:"absolute",bottom:28,left:52,right:52,borderTopWidth:1,borderTopColor:"#E5D9D0",paddingTop:10,flexDirection:"row",justifyContent:"space-between",fontSize:8,color:"#AB9C92"},
-  sectionTitle:{fontFamily:"Times-Roman",fontSize:30,lineHeight:1.2,marginBottom:12}, sectionIntro:{fontSize:10,lineHeight:1.7,color:"#81766F",marginBottom:20},
-  grid:{flexDirection:"row",flexWrap:"wrap",marginHorizontal:-5,marginBottom:18}, cell:{width:"50%",paddingHorizontal:5,marginBottom:10}, card:{backgroundColor:"#FFFFFF",borderWidth:1,borderColor:"#EADFD7",padding:15,minHeight:76},
-  label:{fontSize:8,letterSpacing:1.1,color:"#A8735A",marginBottom:7}, value:{fontFamily:"Times-Roman",fontSize:18}, detail:{fontSize:8,color:"#998D84",marginTop:4},
-  note:{backgroundColor:"#F4E9E1",padding:18,marginBottom:16}, noteTitle:{fontFamily:"Times-Roman",fontSize:19,marginBottom:8}, paragraph:{fontSize:10,lineHeight:1.75,color:"#6E6660"},
-  detailLine:{flexDirection:"row",justifyContent:"space-between",paddingVertical:8,borderBottomWidth:1,borderBottomColor:"#EDE2DA"}, detailKey:{fontSize:9,color:"#A09085"},detailValue:{fontSize:9,color:"#635B55",maxWidth:290,textAlign:"right"},
-  notice:{marginTop:14,fontSize:8.5,lineHeight:1.6,color:"#9A8D83"}, block:{marginBottom:22}, accentLine:{width:35,height:1,backgroundColor:"#B76F52",marginBottom:12},
+type PdfRenderer = Pick<typeof import("@react-pdf/renderer"), "Document" | "Page" | "Text" | "View" | "StyleSheet" | "Font">;
+// Do not inherit lineHeight into dynamic footer Text: layout 5.2 resolves it
+// twice and clips the page number. Body text sets its own explicit leading.
+function styles(renderer: PdfRenderer) { return renderer.StyleSheet.create({
+  page: { backgroundColor: "#FBF7F2", paddingTop: 76, paddingBottom: 64, paddingHorizontal: 48, color: "#373330", fontFamily: PDF_FONT, fontSize: 10 },
+  header: { position: "absolute", top: 30, left: 48, right: 48, height: 27, borderBottomWidth: 1, borderBottomColor: "#DDCFC5", flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  brand: { fontSize: 18, color: "#9F3C20", fontWeight: 700 },
+  footer: { position: "absolute", bottom: 24, left: 48, right: 48, height: 28, borderTopWidth: 1, borderTopColor: "#DDCFC5", paddingTop: 8, flexDirection: "row", justifyContent: "space-between", fontSize: 8 },
+  title: { fontSize: 28, lineHeight: 1.3, fontWeight: 700, marginBottom: 18 },
+  section: { fontSize: 21, lineHeight: 1.3, fontWeight: 700, marginBottom: 12 },
+  heading: { fontSize: 11, fontWeight: 700, marginBottom: 7 },
+  small: { fontSize: 9, color: "#65564a", marginBottom: 12 },
+  paragraph: { fontSize: 10, lineHeight: 1.5, marginBottom: 13 },
+  notice: { fontSize: 9, lineHeight: 1.5, padding: 12, backgroundColor: "#F4E9E1", marginBottom: 14 },
+  question: { fontSize: 10, fontStyle: "italic", borderLeftWidth: 2, borderLeftColor: "#a54d31", paddingLeft: 12, marginTop: 8, marginBottom: 16 },
+  keyRow: { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#E4D9CF", paddingVertical: 7, gap: 12 },
+  key: { width: "40%", fontWeight: 700 }, value: { width: "57%" },
+  tableHead: { position: "absolute", top: 112, left: 48, right: 48, flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#A58C7D", fontSize: 9, fontWeight: 700, paddingBottom: 7 },
+  tableTitle: { position: "absolute", top: 76, left: 48, right: 48, fontWeight: 700, fontSize: 10 },
+  tableRow: { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#E4D9CF", paddingVertical: 7 },
+  tableCell: { width: "28%", paddingRight: 10, fontSize: 9, lineHeight: 1.5 },
+  tableOrb: { width: "16%", fontSize: 9, lineHeight: 1.5 },
 }); }
-export function SolarReturnDocument({ input,result,notes,locale,premium,renderer }: { input:ChartInput; result:ChartResult; notes:ReadingNotes; locale:Locale; premium:boolean; renderer:PdfRenderer }): React.ReactElement<DocumentProps> {
-  const {Document,Page,Text,View}=renderer;
-  const s=makeStyles(renderer.StyleSheet);
-  const es=locale==="es"; const local=DateTime.fromISO(result.exactUtc,{zone:"utc"}).setZone(input.returnPlace.timezone).setLocale(locale);
-  const date=local.toFormat(es ? "d 'de' LLLL 'de' yyyy, HH:mm ZZZZ" : "LLLL d, yyyy 'at' h:mm a ZZZZ");
-  const footer=<View style={s.footer} fixed><Text>SOLARA  ·  {es?"TU REVOLUCIÓN SOLAR":"YOUR SOLAR RETURN"}</Text><Text render={({pageNumber,totalPages})=>`${pageNumber} / ${totalPages}`} /></View>;
-  const header=<View style={s.header}><Text style={s.brand}>solara.</Text><Text style={s.headerLabel}>{es?"TU CIELO PERSONAL":"YOUR PERSONAL SKY"}</Text></View>;
-  const placements=[{label:es?"SOL":"SUN",value:signName(result.natalSun.sign,locale),detail:`${result.natalSun.degree.toFixed(2)}°`},{label:es?"LUNA":"MOON",value:signName(result.moon.sign,locale),detail:`${result.moon.degree.toFixed(2)}°`},{label:es?"ASCENDENTE":"ASCENDANT",value:result.ascendant?signName(result.ascendant.sign,locale):(es?"No disponible":"Not shown"),detail:result.ascendant?`${result.ascendant.degree.toFixed(2)}°`:(es?"Latitud alta":"High latitude")},{label:es?"CASA DEL SOL":"SUN HOUSE",value:result.sunHouse?`${es?"Casa":"House"} ${result.sunHouse}`:(es?"No disponible":"Not shown"),detail:es?"Casas de signo completo":"Whole-sign houses"}];
-  return <Document title={es?`Revolución solar ${input.year} | Solara`:`Solar return ${input.year} | Solara`} author="Solara" subject={es?"Una guía de reflexión personal":"A personal reflection guide"}>
-    <Page size="A4" style={s.page}>{header}<View style={s.cover}><Text style={s.eyebrow}>{es?"UNA GUÍA PARA TU PRÓXIMO CAPÍTULO":"A GUIDE TO YOUR NEXT CHAPTER"}</Text><Text style={s.title}>{es?"Tu año,":"Your year,"}</Text><Text style={s.italic}>{es?"iluminado.":"illuminated."}</Text><Text style={s.subtitle}>{es?"Una mirada personal al momento en que el Sol regresa a su posición de nacimiento y comienza un nuevo ciclo.":"A personal look at the moment the Sun returns to its birth position and a new cycle begins."}</Text><View style={s.coverRule} /><Text style={s.name}>{input.name}</Text><Text style={s.small}>{es?"REVOLUCIÓN SOLAR":"SOLAR RETURN"}  ·  {input.year}  ·  {premium?(es?"EDICIÓN PREMIUM":"PREMIUM EDITION"):(es?"RESUMEN GRATUITO":"FREE SUMMARY")}</Text><View style={s.sunOuter}><View style={s.sunInner}><View style={s.sunCore} /></View></View></View>{footer}</Page>
-    <Page size="A4" style={s.page}>{header}<View style={{marginTop:32}}><Text style={s.eyebrow}>{es?"TU MOMENTO EN EL TIEMPO":"YOUR MOMENT IN TIME"}</Text><Text style={s.sectionTitle}>{es?"El cielo de tu retorno.":"The sky at your return."}</Text><Text style={s.sectionIntro}>{date}  ·  {input.returnPlace.name}</Text><View style={s.grid}>{placements.map(p=><View style={s.cell} key={p.label}><View style={s.card}><Text style={s.label}>{p.label}</Text><Text style={s.value}>{p.value}</Text><Text style={s.detail}>{p.detail}</Text></View></View>)}</View><View style={s.note}><Text style={s.noteTitle}>{es?`Tu Sol en ${signName(result.natalSun.sign,locale)}`:`Your Sun in ${result.natalSun.sign}`}</Text><Text style={s.paragraph}>{notes.sun}</Text></View><View style={s.detailLine}><Text style={s.detailKey}>{es?"RETORNO UTC":"RETURN UTC"}</Text><Text style={s.detailValue}>{DateTime.fromISO(result.exactUtc,{zone:"utc"}).toFormat("yyyy-LL-dd HH:mm:ss 'UTC'")}</Text></View><View style={s.detailLine}><Text style={s.detailKey}>{es?"SISTEMA DE CASAS":"HOUSE SYSTEM"}</Text><Text style={s.detailValue}>{es?"Signo completo":"Whole sign"}</Text></View><Text style={s.notice}>{result.warnings.map(w=>localizeWarning(w,locale)).join(" ")} {es?"La astrología es una herramienta de reflexión, no una predicción ni asesoría profesional.":"Astrology is a reflection tool, not a prediction or professional advice."}</Text></View>{footer}</Page>
-    {premium && <Page size="A4" style={s.page}>{header}<View style={{marginTop:32}}><Text style={s.eyebrow}>{es?"UNA MIRADA MÁS PROFUNDA":"A DEEPER PERSPECTIVE"}</Text><Text style={s.sectionTitle}>{es?"Espacio para reflexionar.":"Space to reflect."}</Text><Text style={s.sectionIntro}>{es?"Estas notas son invitaciones a la reflexión, escritas para acompañarte en tu año.":"These notes are invitations to reflect, written to accompany you through your year."}</Text><View style={s.block}><View style={s.accentLine} /><Text style={s.noteTitle}>{es?`La Luna en ${signName(result.moon.sign,locale)}`:`The Moon in ${result.moon.sign}`}</Text><Text style={s.paragraph}>{notes.moon}</Text></View>{notes.ascendant && result.ascendant && <View style={s.block}><View style={s.accentLine} /><Text style={s.noteTitle}>{es?`Ascendente en ${signName(result.ascendant.sign,locale)}`:`${result.ascendant.sign} rising`}</Text><Text style={s.paragraph}>{notes.ascendant}</Text></View>}{notes.house && result.sunHouse && <View style={s.block}><View style={s.accentLine} /><Text style={s.noteTitle}>{es?`El Sol en la casa ${result.sunHouse}`:`The Sun in house ${result.sunHouse}`}</Text><Text style={s.paragraph}>{notes.house}</Text></View>}<Text style={s.notice}>{es?"Contenido editorial ilustrativo. Las interpretaciones pueden cambiar y no sustituyen el consejo profesional.":"Illustrative editorial content. Interpretations may change and do not replace professional advice."}</Text></View>{footer}</Page>}
-  </Document>;
+
+/** Separate PDF primitives; the selection/projection is shared with HTML. */
+export function SolarReturnDocument({ chart, content, renderer, onPageCount }: ReadingPdfInput & { renderer: PdfRenderer; onPageCount?: (pages: number) => void }): React.ReactElement<DocumentProps> {
+  const { Document, Page, Text, View } = renderer;
+  const s = styles(renderer);
+  const locale = content.locale; const es = locale === "es"; const saved = content.kind === "saved-reading";
+  const title = editionTitle(content);
+  const strings = [chart.name, chart.returnPlace, returnDate(chart, locale), title, chartDisclaimer(chart, locale),
+    ...chartDetails(chart, locale).flatMap(entry => [entry.key, entry.value]),
+    ...chartPlacements(chart, locale).flatMap(entry => [entry.label, entry.value, entry.detail]),
+    ...content.sections.flatMap(sectionText), ...content.notices.map(code => NOTICE_COPY[code][locale]),
+    ...content.sections.flatMap(section => section.notices.map(code => NOTICE_COPY[code][locale])),
+    ...(saved ? [content.contentVersion, content.chartVersion, ...content.previews.flatMap(preview => [preview.title, preview.teaser, PREVIEW_COPY[preview.availability][locale]])] : []),
+  ];
+  if (!pdfGlyphsSupported(strings, renderer)) throw new ReadingPdfError("pdf_glyphs");
+  const wrap = (value: string, width = 499, size = 10, bold = false) => pdfLines(value, width, size, renderer, bold).join("\n");
+  const header = <View fixed style={s.header}><Text style={s.brand}>solara.</Text><Text style={{ fontSize: 8 }}>{es ? "TU REVOLUCIÓN SOLAR" : "YOUR SOLAR RETURN"}</Text></View>;
+  const footer = <View fixed style={s.footer}><Text>Solara · {chart.year} · {localeName(locale)}</Text><Text style={{ width: 80, textAlign: "right", fontSize: 8 }} render={({ pageNumber, totalPages }) => {
+    if (totalPages) {
+      if (totalPages > (saved && content.tier === "paid" ? READING_LIMITS.paidPdfPages : READING_LIMITS.pdfPages)) throw new ReadingPdfError("pdf_page_limit");
+      onPageCount?.(totalPages);
+    }
+    return `${pageNumber} / ${totalPages}`;
+  }} /></View>;
+  const pages: React.ReactElement<PageProps>[] = [];
+  const flowPage = (key: string, children: React.ReactNode[]) => {
+    if (children.length) pages.push(<Page key={key} size="A4" style={s.page}>{header}{children}{footer}</Page>);
+  };
+  const paragraph = (text: string, key: string) => <Text key={key} style={s.paragraph} orphans={2} widows={2}>{wrap(text)}</Text>;
+  const blockView = (block: Exclude<ReadingBlock, { kind: "aspectTable" }>, key: string): React.ReactNode => {
+    const heading = "title" in block && block.title ? <Text style={s.heading} minPresenceAhead={24}>{wrap(block.title, 499, 11, true)}</Text> : null;
+    switch (block.kind) {
+      case "prose": return paragraph(block.text, key);
+      case "callout": return <View key={key} style={s.notice}>{heading}<Text orphans={2} widows={2}>{wrap(block.text, 475, 9)}</Text></View>;
+      case "list": return <View key={key}>{heading}{block.items.map((item, i) => <Text key={i} style={s.paragraph} orphans={2} widows={2}>{wrap(`• ${item}`)}</Text>)}</View>;
+      case "keyValue": return <View key={key} style={{ marginBottom: 14 }}>{heading}{block.entries.map((entry, i) => <View key={i} style={s.keyRow}><Text style={s.key} orphans={2} widows={2}>{wrap(entry.key, 192, 10, true)}</Text><Text style={s.value} orphans={2} widows={2}>{wrap(entry.value, 275)}</Text></View>)}</View>;
+      default: return null;
+    }
+  };
+  const table = (block: Extract<ReadingBlock, { kind: "aspectTable" }>, key: string, leadingSection?: DisplaySection) => {
+    // Small tables stay with surrounding prose. Larger tables get dedicated
+    // wrapping pages with fixed headers. Long rows split at measured lines.
+    let height = 0;
+    const rows = block.rows.flatMap((row, index) => {
+      const cells = [row.a, row.b, row.type, `${row.orb}°`].map((value, i) => pdfLines(value, i === 3 ? 69 : 129, 9, renderer));
+      const count = Math.max(...cells.map(cell => cell.length));
+      height += count * 14 + Math.ceil(count / 20) * 15;
+      return Array.from({ length: Math.ceil(count / 20) }, (_, fragment) => <View key={`${index}-${fragment}`} style={s.tableRow} wrap={false}>
+        {cells.map((lines, i) => <Text key={i} style={i === 3 ? s.tableOrb : s.tableCell}>{lines.slice(fragment * 20, (fragment + 1) * 20).join("\n")}</Text>)}
+      </View>);
+    });
+    const titleLines = pdfLines(block.title ?? (es ? "Aspectos" : "Aspects"), 499, 10, renderer, true);
+    const columns = aspectHeadings(locale).map((heading, i) => <Text key={i} style={{ width: i === 3 ? "16%" : "28%" }}>{heading}</Text>);
+    const inline = height + titleLines.length * 15 < 280;
+    // If a section starts with a long table, its heading must travel with the
+    // rows, not create a heading-only page before the dedicated table pages.
+    const repeatedTitle = leadingSection ? pdfLines([
+      leadingSection.title, leadingSection.subtitle,
+      ...leadingSection.notices.map(code => NOTICE_COPY[code][locale]),
+      block.title ?? (es ? "Aspectos" : "Aspects"),
+    ].filter(Boolean).join("\n"), 499, 10, renderer, true) : titleLines;
+    return { inline, node: inline
+      ? <View key={key} wrap={false} style={{ marginBottom: 16 }}><Text style={s.heading}>{titleLines.join("\n")}</Text><View style={{ flexDirection: "row", fontSize: 9, fontWeight: 700 }}>{columns}</View>{rows}</View>
+      : <Page key={key} size="A4" style={{ ...s.page, paddingTop: 76 + repeatedTitle.length * 15 + 35 }}>{header}
+          <Text fixed style={s.tableTitle}>{repeatedTitle.join("\n")}</Text>
+          <View fixed style={{ ...s.tableHead, top: 76 + repeatedTitle.length * 15 + 8 }}>{columns}</View>
+          {rows}{footer}
+        </Page> };
+
+  };
+  flowPage("cover", [
+    <Text key="title" style={s.title}>{wrap(title, 499, 28, true)}</Text>,
+    <Text key="name" style={s.section}>{wrap(chart.name, 499, 21, true)}</Text>,
+    <Text key="date" style={s.small}>{chart.year} · {localeName(locale)}{"\n"}{wrap(returnDate(chart, locale), 499, 9)}{"\n"}{wrap(chart.returnPlace, 499, 9)}</Text>,
+    saved ? <Text key="version" style={s.small}>{savedDate(content.generatedAt)}{"\n"}{wrap(`${content.contentVersion} · ${content.chartVersion}`, 499, 9)}</Text> : <Text key="edition" style={s.notice}>{AVAILABILITY_COPY.chart_only[locale]}</Text>,
+    ...content.notices.map(code => <Text key={code} style={s.notice}>{NOTICE_COPY[code][locale]}</Text>),
+    <Text key="chart-heading" style={s.heading} minPresenceAhead={30}>{es ? "Datos guardados de la carta" : "Saved chart summary"}</Text>,
+    ...chartPlacements(chart, locale).map(entry => <View key={entry.label} style={s.keyRow}><Text style={s.key}>{entry.label}</Text><Text style={s.value}>{entry.value} · {entry.detail}</Text></View>),
+    ...chartDetails(chart, locale).map(entry => <View key={entry.key} style={s.keyRow}><Text style={s.key}>{entry.key}</Text><Text style={s.value}>{wrap(entry.value, 275)}</Text></View>),
+    <Text key="disclaimer" style={{ ...s.small, marginTop: 18 }}>{wrap(chartDisclaimer(chart, locale), 499, 9)}</Text>,
+  ]);
+  let narrative: React.ReactNode[] = [];
+  const renderSection = (section: DisplaySection) => {
+    const beforeHeading = narrative.length;
+    // Only this bounded title/subtitle/notice group is unbreakable. Reserve the
+    // opening body lines too: keeping a title with just its subtitle can still
+    // orphan both above a page break. The section body itself remains wrappable.
+    narrative.push(<View key={`${section.key}-heading`} wrap={false} minPresenceAhead={section.blocks[0]?.kind === "aspectTable" ? 300 : 90}>
+      <Text style={{ ...s.section, marginTop: 16 }}>{wrap(section.title, 499, 21, true)}</Text>
+      {section.subtitle && <Text style={s.small}>{wrap(section.subtitle, 499, 9)}</Text>}
+      {section.notices.map(code => <Text key={code} style={s.notice}>{NOTICE_COPY[code][locale]}</Text>)}
+    </View>);
+    section.blocks.forEach((block, index) => {
+      if (block.kind === "aspectTable") {
+        const layout = table(block, `${section.key}-${index}-table`, index === 0 ? section : undefined);
+        if (layout.inline) narrative.push(layout.node);
+        else {
+          if (index === 0) narrative.splice(beforeHeading);
+          flowPage(`${section.key}-${index}-before`, narrative); narrative = [];
+          pages.push(layout.node);
+        }
+      } else narrative.push(blockView(block, `${section.key}-${index}`));
+    });
+    if (section.closingQuestion) narrative.push(<Text key={`${section.key}-question`} style={s.question} orphans={2} widows={2}>{wrap(section.closingQuestion, 480)}</Text>);
+  };
+  content.sections.forEach(renderSection);
+  flowPage("narrative-end", narrative);
+  if (saved && content.previews.length) flowPage("previews", [
+    <Text key="title" style={s.section} minPresenceAhead={50}>{PREVIEW_COPY.title[locale]}</Text>,
+    <Text key="notice" style={s.notice}>{PREVIEW_COPY.notice[locale]}</Text>,
+    ...content.previews.map(preview => <View key={preview.key} wrap={false} style={{ marginBottom: 18 }}>
+      <Text style={s.heading} minPresenceAhead={35}>{preview.title}</Text><Text style={s.paragraph}>{wrap(preview.teaser)}</Text>
+      <Text style={s.small}>{PREVIEW_COPY[preview.availability][locale]}</Text>
+    </View>),
+  ]);
+  const timestamp = saved ? new Date(content.generatedAt) : new Date(chart.result.exactUtc);
+  return <Document title={`${title} ${chart.year} | Solara`} author="Solara" subject={title} language={locale} creationDate={timestamp} modificationDate={timestamp}>{pages}</Document>;
 }

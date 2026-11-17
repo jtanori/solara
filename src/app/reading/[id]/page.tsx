@@ -1,26 +1,48 @@
-import { ReadingGenerationControls } from "@/components/reading-generation-controls";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { and, eq } from "drizzle-orm";
-import { DateTime } from "luxon";
-import { ArrowLeft, ArrowRight, Download, LockKeyhole, Sparkles } from "lucide-react";
+import { ReadingGenerationControls } from "@/components/reading-generation-controls";
+import { ReadingPageView } from "@/components/reading-page-view";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
-import { AstroWheel } from "@/components/astro-wheel";
 import { DeleteReading } from "@/components/delete-reading";
 import { currentUser } from "@/lib/auth";
 import { getLocale } from "@/lib/i18n-server";
-import { localizeWarning, signName } from "@/lib/i18n";
-import { getReadingNotes } from "@/lib/reading-content";
-import { db } from "@/db";
-import { readings } from "@/db/schema";
+import { isReadingId, readingSelector } from "@/readings/chart-presentation";
+import { loadReadingPresentation } from "@/readings/reading-view";
+import { ReadingViewError, type ReadingPresentation } from "@/readings/presentation";
 
-export default async function ReadingPage({params}:{params:Promise<{id:string}>}) {
-  const {id}=await params;if(!/^[0-9a-f-]{36}$/i.test(id))notFound();
-  const [user,locale]=await Promise.all([currentUser(),getLocale()]);const es=locale==="es";if(!user)redirect(`/account?next=${encodeURIComponent(`/reading/${id}`)}`);
-  const [chart]=await db.select().from(readings).where(and(eq(readings.id,id),eq(readings.userId,user.id))).limit(1);if(!chart)notFound();
-  const {input,result}=chart;const notes=await getReadingNotes(result,locale);const local=DateTime.fromISO(result.exactUtc,{zone:"utc"}).setZone(input.returnPlace.timezone).setLocale(locale);
-  const displayDate=local.toFormat(es?"d 'de' LLLL 'de' yyyy 'a las' HH:mm ZZZZ":"LLLL d, yyyy 'at' h:mm a ZZZZ");
-  const cards=[{symbol:"☉",label:es?"SOL DE RETORNO":"RETURN SUN",value:signName(result.natalSun.sign,locale),detail:`${result.natalSun.degree.toFixed(2)}°`},{symbol:"☽",label:es?"LUNA DE RETORNO":"RETURN MOON",value:signName(result.moon.sign,locale),detail:`${result.moon.degree.toFixed(2)}°`},{symbol:"↗",label:es?"ASCENDENTE":"RETURN ASCENDANT",value:result.ascendant?signName(result.ascendant.sign,locale):(es?"No disponible":"Not shown"),detail:result.ascendant?`${result.ascendant.degree.toFixed(2)}°`:(es?"Latitud alta":"High-latitude location")},{symbol:"⌂",label:es?"CASA DEL SOL":"SUN’S HOUSE",value:result.sunHouse?`${es?"Casa":"House"} ${result.sunHouse}`:(es?"No disponible":"Not shown"),detail:es?"Casas de signo completo":"Whole-sign houses"}];
-  return <><SiteHeader /><main className="app-page"><div className="app-wrap"><Link href="/dashboard" className="back-link"><ArrowLeft size={15} /> {es?"Volver a mis cartas":"Back to my charts"}</Link><div className="chart-header"><div><div className="eyebrow">{es?`TU REVOLUCIÓN SOLAR ${chart.year}`:`YOUR ${chart.year} SOLAR RETURN`}</div><h1>{es?<>Un nuevo capítulo<br /><em>para {input.name}.</em></>:<>A new chapter<br /><em>for {input.name}.</em></>}</h1><p>{es?<>Tu Sol regresó a su longitud natal el <strong>{displayDate}</strong>, visto desde {input.returnPlace.name}.</>:<>Your Sun returned to its birth longitude on <strong>{displayDate}</strong>, as seen from {input.returnPlace.name}.</>}</p><div className="chart-actions"><span className="pill"><LockKeyhole size={12} /> {es?"PRIVADO PARA TI":"PRIVATE TO YOU"}</span><a className="outline-button" href={`/api/readings/${id}/pdf`}><Download size={15} /> {user.plan==="paid"?(es?"Descargar PDF completo":"Download full PDF"):(es?"Descargar resumen PDF":"Download PDF summary")}</a></div></div><AstroWheel className="chart-wheel" label={es?"Rueda decorativa, no representa esta carta":"Decorative wheel, not a plot of this chart"} /></div><div className="notice" style={{marginTop:25}}>{es?"Este cálculo es preliminar y una invitación a reflexionar, no una carta verificada profesionalmente. La rueda es decorativa y no representa tus posiciones.":"This is a preliminary calculation and a starting point for reflection—not a professionally verified chart. The wheel is decorative, not a plot of your placements."}</div><div className="placement-grid">{cards.map(card=><div className="placement-card" key={card.label}><span className="symbol">{card.symbol}</span><span className="tiny-label" style={{marginTop:14}}>{card.label}</span><h3>{card.value}</h3><p>{card.detail}</p></div>)}</div><div className="chart-body"><div className="dashboard-main"><ReadingGenerationControls readingId={id} locale={locale} /><section className="panel"><div className="eyebrow">{es?"UN MOMENTO PARA REFLEXIONAR":"A MOMENT TO REFLECT"}</div><h2 style={{marginTop:12}}>{es?`Tu Sol en ${signName(result.natalSun.sign,locale)}.`:`Your Sun in ${result.natalSun.sign}.`}</h2><p>{notes.sun}</p><div className="notice"><Sparkles size={14} style={{display:"inline",marginRight:7}} />{es?"Estas interpretaciones son ilustrativas y no son predicciones.":"These interpretations are illustrative, not predictions."}</div></section>{user.plan==="paid"?<section className="panel"><span className="tiny-label">{es?"TU LECTURA PREMIUM":"YOUR PREMIUM READING"}</span><h2>{es?"Una mirada más profunda.":"A deeper perspective."}</h2><h3>{es?`Luna en ${signName(result.moon.sign,locale)}`:`Moon in ${result.moon.sign}`}</h3><p>{notes.moon}</p>{notes.ascendant&&result.ascendant&&<><h3>{es?`Ascendente en ${signName(result.ascendant.sign,locale)}`:`${result.ascendant.sign} rising`}</h3><p>{notes.ascendant}</p></>}{notes.house&&result.sunHouse&&<><h3>{es?`Sol en la casa ${result.sunHouse}`:`Sun in house ${result.sunHouse}`}</h3><p>{notes.house}</p></>}</section>:<section className="panel premium-teaser"><span className="tiny-label">✦ &nbsp; SOLARA PREMIUM</span><h2>{es?"Tu historia tiene más matices.":"There’s more to your story."}</h2><p>{es?"Profundiza en tu Luna, ascendente y casa solar. Incluye un PDF editorial completo.":"Go deeper into your Moon, Ascendant, and Sun house, with a complete editorial PDF."}</p><Link href="/pricing" className="button button-large">{es?"Descubrir Premium":"Explore Premium"} <ArrowRight size={16} /></Link></section>}</div><section className="panel"><span className="tiny-label">{es?"LOS DATOS DE TU CARTA":"THE DETAILS BEHIND YOUR CHART"}</span><h2>{es?"Tu momento en el tiempo.":"Your moment in time."}</h2><div className="detail-list"><div className="detail-row"><span>{es?"Año de retorno":"Return year"}</span><span>{chart.year}</span></div><div className="detail-row"><span>{es?"Lugar de retorno":"Return location"}</span><span>{input.returnPlace.name}</span></div><div className="detail-row"><span>{es?"Hora de retorno (UTC)":"Return time (UTC)"}</span><span>{DateTime.fromISO(result.exactUtc,{zone:"utc"}).toFormat("yyyy-LL-dd HH:mm:ss 'UTC'")}</span></div><div className="detail-row"><span>{es?"Sistema de casas":"House system"}</span><span>{es?"Signo completo":result.houseSystem}</span></div><div className="detail-row"><span>{es?"Cálculo":"Calculation"}</span><span>Astronomy Engine</span></div></div><p className="small muted" style={{marginTop:18}}>{result.warnings.map(w=>localizeWarning(w,locale)).join(" ")}</p><DeleteReading id={chart.id} locale={locale} /></section></div></div></main><SiteFooter /></>;
+export const dynamic = "force-dynamic";
+export default async function ReadingPage({ params, searchParams }: {
+  params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const { id } = await params;
+  if (!isReadingId(id)) notFound();
+  const [user, locale, query] = await Promise.all([currentUser(), getLocale(), searchParams]);
+  if (!user?.emailVerifiedAt) redirect(`/account?next=${encodeURIComponent(`/reading/${id}`)}`);
+  const es = locale === "es";
+  let view: ReadingPresentation | null = null;
+  let errorCode: string | null = null;
+  try {
+    const urlParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (Array.isArray(value)) value.forEach(item => urlParams.append(key, item));
+      else if (value !== undefined) urlParams.append(key, value);
+    }
+    view = await loadReadingPresentation(user, id, locale, readingSelector(urlParams));
+  } catch (error) {
+    if (error instanceof ReadingViewError && error.code === "not_found") notFound();
+    errorCode = error instanceof ReadingViewError ? error.code : "service_unavailable";
+  }
+  return <><SiteHeader />{view ? <ReadingPageView view={view} locale={locale}
+    controls={<ReadingGenerationControls key={`${id}-${locale}`} readingId={id} locale={locale}
+      initialGeneration={view.generation} displayedDocumentId={view.content.kind === "saved-reading" ? view.content.id : null}
+      allowGeneration={view.availability === "chart_only" || view.availability === "ready"}
+      refreshOnPublication={!query.document && query.edition !== "chart"} />}
+    deleteControl={<DeleteReading id={id} locale={locale} />}
+  /> : <main className="app-page"><section className="panel app-wrap" role="status">
+    <h1>{errorCode === "invalid_selection" ? (es ? "Selección de lectura no válida" : "Invalid reading selection") : (es ? "Lectura no disponible" : "Reading unavailable")}</h1>
+    <p>{es ? "No se pudo mostrar esta edición. No se ha solicitado otra interpretación." : "This edition could not be displayed. No replacement interpretation has been requested."}</p>
+    {errorCode !== "invalid_chart" && <p><Link className="plain-link" href={`/reading/${id}?edition=chart`}>{es ? "Ver carta y notas ilustrativas" : "View chart and illustrative notes"}</Link></p>}
+    <Link className="plain-link" href="/dashboard">{es ? "Volver a mis cartas" : "Back to my charts"}</Link>
+  </section></main>}<SiteFooter /></>;
 }
