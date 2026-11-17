@@ -3,7 +3,44 @@
 **Implementation SHA:** `795b5b3e6acb706ae12b0720fba83256d26b7251` on `arena/78f55298-solara`.
 **Fetched staging base:** `13a886085aaa901b964e323fe3d2187650be8881`; implementation is five commits ahead, zero behind that fetched base.
 
-This is author-local implementation evidence for [the approved design](plan-free-reading-page-pdf.md), **not a PR review/verdict, hosted qualification, issue-closure decision, or generation-activation approval**. This report lands in a subsequent documentation-only checkpoint; the executable source, tests and scripts measured below are the implementation SHA above.
+This is author-local implementation evidence for [the approved design](plan-free-reading-page-pdf.md), **not a PR review/verdict, hosted qualification, issue-closure decision, or generation-activation approval**. The original report landed in documentation-only `c218ce8`; except for the explicitly newer addendum below, measurements describe implementation SHA `795b5b3` above.
+
+## PR #149 build-input repair and renewed validation
+
+[PR #149](https://github.com/jtanori/solara/pull/149) is open against `staging`. Its first head, `c218ce8cecefdf79ba7ecc5e3c189c9847f8e1ab`, passed GitHub [CI 44028399334](https://github.com/jtanori/solara/actions/runs/44028399334), but its automatic [Vercel preview](https://vercel.com/jaime-tanoris-projects/solara/FW3eEFNwhBE5Yt1nGVGcCoxPZBNs) failed. The build log identified TS2307 imports of `../tests/helpers/{reading-pdf,browser,reading-account}` from the new local benchmark/browser scripts: `.vercelignore` had removed `tests/` but not those consumers. A full-checkout build did not reproduce that filtering.
+
+**Repair/renewed-validation SHA: `7a437150e2580d663b7d195ebb381176cf850d43`.** The fix excludes only the three local reading runners from deployment input. It does not disable TypeScript, remove local/CI coverage, deploy fixtures, change dependencies, pin a different Node major, or change runtime application code. New tests use Git's ignore matcher on tracked inputs, copy the retained sources to an ignored disposable directory, assert both required PDF sources/fonts and prohibited local tools/fixtures, and run strict `tsc` against the filtered tree. This is a build-input regression check, not emulation of Vercel's runtime or package installation.
+
+The pre-fix check failed with the same four TS2307 imports (and dependent implicit-any errors) as the host. Four separate deliberate `.vercelignore` mutations then failed assertions on the repaired checkpoint; each restored the original file byte-for-byte before the next case. The original 54 renderer mutations were **not rerun** here; their exact source files, fixtures and runner remain unchanged from `795b5b3`.
+
+| Deployment mutation at `7a43715` | Exact test command | Observed failure |
+| --- | --- | --- |
+| Remove the three exact entries `scripts/benchmark-reading-pdf.ts`, `scripts/verify-reading-browser.ts`, `scripts/verify-reading-mutations.mjs` | `npx tsx --test tests/deployment-inputs.test.ts` | Both tests fail: local runner included, and filtered-tree `tsc` cannot resolve excluded test helpers; `ERR_ASSERTION`, exit 1 |
+| Remove the exact `tests` entry | `npx tsx --test '--test-name-pattern=deployment input keeps' tests/deployment-inputs.test.ts` | `test fixtures must stay out of deployment input`; `ERR_ASSERTION`, exit 1 |
+| Append `scripts/build-pdf.mjs` | `npx tsx --test '--test-name-pattern=deployment input keeps' tests/deployment-inputs.test.ts` | `required deployment file missing: scripts/build-pdf.mjs`; `ERR_ASSERTION`, exit 1 |
+| Append `src/readings/fonts` | `npx tsx --test '--test-name-pattern=deployment input keeps' tests/deployment-inputs.test.ts` | `required deployment file missing: src/readings/fonts/LICENSE`; `ERR_ASSERTION`, exit 1 |
+
+After restoration, the two deployment-input tests passed. Renewed full validation used the same disposable local database and both integration gates, with `DOTENV_CONFIG_PATH=/dev/null` and `READINGS_API_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_MXN`, `STRIPE_PRICE_ID_USD` **unset** in the parent shell. Existing billing tests set their own synthetic placeholders and inject fake clients. Generation remained off. Commands re-executed:
+
+```bash
+npx tsx --test tests/checkout-deletion-race.test.ts
+RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
+npx next typegen
+npm run typecheck
+npm run lint
+npm run db:manifest:check
+npm run db:check
+npm run build
+node scripts/check-pdf-package.mjs
+npm audit --omit=dev --audit-level=high
+npx tsx scripts/verify-reading-browser.ts
+```
+
+Results: **11/11** affected billing cases; **614 passed / 0 failed / 0 cancelled / 0 skipped**, 378.86 s, across the full repository (the original 612 plus the two new tests); typegen/typecheck/lint/manifest/local schema/build passed; PDF trace remains **216 files / 5.8 MiB**; production audit **0 vulnerabilities**; authenticated built-app browser QA **9/9**, zero server fetches/automatic reading POST/PUT. Counts overlap. Generated `next-env.d.ts` churn was restored rather than committed.
+
+One unsuccessful renewed full run is retained rather than hidden: **608 passed / 4 failed / 2 cancelled**, 408.92 s. The author invocation incorrectly exported `STRIPE_SECRET_KEY=`; the empty string prevented existing `??=` fake-placeholder setup, so `billingIsConfigured()` rejected the injected fake checkouts with 503 before the tested paths. Removing that override and disabling dotenv loading produced the 11-case and full-suite passes above, without changing application code, tests, assertions or thresholds.
+
+The rebuilt worker and frozen snapshot hashes still equal those below (`a1a209…b0c79` and `a90465…d2f`). The **231-render benchmark remains at `795b5b3`**, not a new hosted or Node-26 measurement. Only `.vercelignore`, two deployment-input test files and documentation differ since the prior report; `src/`, packages, renderer/build scripts and existing test/fixture sources do not. Replacement remote CI/preview status is recorded in the PR body; a READY preview does not qualify hosted runtime/readiness or waive the release gates.
 
 ## Delivery and scope
 
@@ -218,7 +255,7 @@ The transformation cells use literal `\n` for source newlines; `(delete)` means 
 
 ## Outstanding release gates — not waived
 
-- This feature has **not been pushed, submitted for PR review, merged or deployed** by this delivery. No COMMENT review or new mergeability verdict is claimed. Apply the existing SHA-pinned PR process; a coding-agent verification report is not an independent review. No issue was closed, and #106 must not be claimed complete merely from synthetic renderer capability.
+- [PR #149](https://github.com/jtanori/solara/pull/149) is the current submission record, superseding the original pre-push snapshot. No merge, manual deployment, COMMENT review or new mergeability verdict is claimed by this author report. Apply the existing SHA-pinned PR process; coding-agent verification is not an independent review. No issue was closed, and #106 must not be claimed complete merely from synthetic renderer capability.
 - Hosted PDF qualification remains required: numeric **function** memory allocation (not build-machine RAM), Node version reconciliation, child/permission support, deployed asset tracing, aggregate app+child memory <=75% of allocation, actual cold <=10 s / warm p95 <=5 s and cancellation on the approved isolated deployment. The earlier read-only inspection returned Fluid/standard, a 300 s default and project 22.x versus deployment 26.x, not numeric function MiB or runtime proof. If the request-time host cannot meet the gate, #81/#83 are prerequisites; do not increase timeouts or leave untracked work running.
 - Generation-off staging authorization still requires preview isolation, old-dispatch shutdown/drain, recovery/restore/representative-upgrade rehearsal, refreshed cutover counts and the exact-SHA migration/readiness process. The last hosted verification left `0006` pending. Local seven-migration success does not satisfy that gate. This feature does not edit that migration.
 - Require authenticated hosted health/readiness and en/es browser/download QA on the approved target; READY status or a protected login page is not application evidence. Roll back only to a reviewed schema-compatible build or forward-fix, never by deleting saved documents/ledger rows or resetting the offer.
