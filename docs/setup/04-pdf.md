@@ -47,6 +47,14 @@ runtime tsx/dev dependency is needed. No remote fonts/images or arbitrary links
 are rendered. The pinned Noto Sans Latin WOFFs and SIL license live in
 `src/readings/fonts/`; unsupported glyphs fail safely instead of becoming boxes.
 
+`.vercelignore` excludes `tests/` and the local reading browser, benchmark and
+mutation runners that depend on those fixtures. It must retain `build-pdf.mjs`
+and the renderer/font sources. `tests/deployment-inputs.test.ts` applies those
+exclusions to a disposable tracked-source copy, asserts both boundaries and runs
+strict TypeScript checking there; a full-checkout build alone misses this class
+of deployment-only import failure. Local/CI typechecking still includes the
+runners and tests; production typechecking is not disabled.
+
 The typed `SolarReturnDocument({ chart, content, renderer })` replaces the old
 notes/premium overload. Five block kinds share the same minimal projection as
 HTML. Small tables stay inline; long tables have repeated fixed column headers,
