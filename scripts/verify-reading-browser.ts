@@ -25,7 +25,7 @@ async function main() {
   const preload = resolve(".venv/reading-browser/no-server-fetch.cjs");
   writeFileSync(preload, 'globalThis.fetch=async()=>{process.stderr.write("QA_HTTP_BLOCKED\\n");throw new Error("QA network disabled")};');
   const server = spawn(process.execPath, ["--require", preload, "node_modules/next/dist/bin/next", "start", "--hostname", "0.0.0.0", "--port", String(port)], {
-    env: { ...process.env, APP_URL: origin, READINGS_GENERATION_ENABLED: "false", NEXT_TELEMETRY_DISABLED: "1" }, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, APP_URL: origin, READINGS_GENERATION_ENABLED: "false", READINGS_API_KEY: "", STRIPE_SECRET_KEY: "", MAIL_TRANSPORT: "outbox", NEXT_TELEMETRY_DISABLED: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let output = ""; const collect = (data: Buffer) => { output = (output + data.toString()).slice(-50000); };
   server.stdout.on("data", collect); server.stderr.on("data", collect);
@@ -124,7 +124,13 @@ async function main() {
         assert.ok((await page.locator("body").innerText()).includes(uiLocale === "es" ? "no son una interpretación generada" : "not a generated interpretation"));
         const notesPdf = await inspectPdf(await (await ctx.request.get(`${origin}/api/readings/${owner.chart.id}/pdf?edition=chart`)).body());
         assert.ok(notesPdf.text.includes(uiLocale === "es" ? "no son una interpretación generada" : "not a generated interpretation"));
+        const pricing = await ctx.request.get(`${origin}/pricing`); assert.equal(pricing.status(), 200);
+        assert.ok((await pricing.text()).includes(uiLocale === "es" ? "Las interpretaciones completas con IA aún no están disponibles" : "Full AI interpretations are not available yet"), "plans do not promise generated paid output");
+        const home = await ctx.request.get(origin); assert.equal(home.status(), 200);
+        assert.ok((await home.text()).includes(uiLocale === "es" ? "Notas ilustrativas adicionales" : "Additional illustrative notes"));
         if (paid) {
+          const accountPage = await ctx.request.get(`${origin}/dashboard`); assert.equal(accountPage.status(), 200);
+          assert.ok((await accountPage.text()).includes(uiLocale === "es" ? "La suscripción no desbloquea interpretaciones completas con IA" : "A subscription does not unlock full AI interpretations"));
           await db.update(subscriptions).set({ status: "canceled", grantsAccess: false }).where(eq(subscriptions.userId, owner.viewer.id));
           await page.reload(); await page.locator('article[data-edition="chart-notes"]').waitFor(); assert.equal(await page.locator("[data-section]").count(), 1);
           await page.locator(`a[href="/reading/${owner.chart.id}"]`).click(); await article.waitFor();
