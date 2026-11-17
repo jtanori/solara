@@ -216,8 +216,10 @@ test("actual paid wire payload is Placidus, privacy-allowlisted, capped, and has
 });
 
 test("paid completeness is the frozen nine-section manifest, never just overview/Sun", gated, async () => {
-  const a = await account(); const f = fake(); const accepted = await accept(a, f); await workOnePaidReading({ store, config: f.config });
-  const document = (await ledger(accepted.run.id)).editions[0].document;
+  const a = await account(); const f = fake(); const accepted = await accept(a, f);
+  assert.equal((await workOnePaidReading({ store, config: f.config }))?.status, "completed");
+  const [edition] = (await ledger(accepted.run.id)).editions; assert.ok(edition);
+  const document = edition.document;
   const incomplete = { ...document, sections: document.sections.slice(0, 2) };
   const decoded = readStoredDocument(JSON.stringify(incomplete), incomplete, { allowPaid: true });
   assert.ok(decoded.ok); assert.equal(decoded.value.partial, true); assert.ok(decoded.value.notices.includes("missing_sections"));

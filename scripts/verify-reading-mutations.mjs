@@ -94,7 +94,7 @@ const paidMutations = [
   mutation("paid-zero-cost-consumed-allowance", [change(paidStore, 'if (!run.consumedAt && !ledger.length) await tx.delete(allowances).where(and(eq(allowances.runId, run.id), isNull(allowances.consumedAt)));', 'await tx.delete(allowances).where(eq(allowances.runId, run.id));')], paidTests, "ledger validates model receipts"),
   mutation("paid-snapshot-hash", [change(view, " || paidSnapshotHash(snapshot) !== edition.snapshotHash", "")], paidTests, "mismatching hash"),
   mutation("paid-snapshot-facts", [change("src/readings/paid-chart.ts", "chart.result.sunHouse !== sun?.house || ", "")], paidTests, "snapshot contradictions are rejected"),
-  mutation("paid-manifest-completeness", [change(decoder, 'options.expectedSections ?? PAID_CORE_SECTIONS', '["overview", "sun"] as const')], paidTests, "paid completeness is the frozen"),
+  mutation("paid-manifest-completeness", [change(decoder, 'const missing = expectedSections.some(key => !seen.has(key));', 'const missing = !seen.has("overview") || !seen.has("sun");')], paidTests, "paid completeness is the frozen"),
   mutation("paid-get-never-reaps", [change("src/readings/paid-http.ts", 'if (request.method === "GET") {', 'if (request.method === "GET") { await store.reapExpired();')], paidTests, "GET never performs recovery"),
   mutation("annual-selected-year-age", [change(annual, "const age = selectedReturnYear - birthYear;", "const age = selectedReturnYear - birthYear + 1;")], annualTests),
   mutation("annual-traditional-scorpio-ruler", [change(annual, '"Venus", "Mars", "Jupiter", "Saturn", "Saturn", "Jupiter"] as const', '"Venus", "Saturn", "Jupiter", "Saturn", "Saturn", "Jupiter"] as const')], annualTests),
