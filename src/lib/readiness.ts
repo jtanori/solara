@@ -2,7 +2,7 @@ import { Pool, type PoolClient } from "pg";
 import { normalizeDatabaseUrl } from "@/lib/database-url";
 import { log } from "@/lib/log";
 import { EXPECTED_MIGRATIONS, type MigrationManifestEntry } from "@/lib/migration-manifest";
-import { findMissingColumns, REQUIRED_INDEXES, REQUIRED_TABLES, type ColumnRow } from "@/lib/schema-verification";
+import { findMissingColumns, REQUIRED_COLUMN_TABLES, REQUIRED_INDEXES, REQUIRED_TABLES, type ColumnRow } from "@/lib/schema-verification";
 
 export type Readiness = {
   ok: boolean;
@@ -80,8 +80,8 @@ export async function probeReadiness(pool: Pool): Promise<ReadinessSnapshot> {
       select table_name, column_name, is_nullable, data_type, column_default
       from information_schema.columns
       where table_schema = 'public'
-        and table_name in ('users', 'rate_limits', 'email_tokens', 'account_lifecycle_leases')
-    `);
+        and table_name = any($1::text[])
+    `, [REQUIRED_COLUMN_TABLES]);
     const missingColumns = findMissingColumns(columns.rows);
 
     const indexes = await client.query<{ indexname: string }>(

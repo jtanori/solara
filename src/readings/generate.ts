@@ -4,41 +4,21 @@ import path from "node:path";
 import type { ChartDigest } from "@/lib/chart";
 import { localeName, type Locale } from "@/lib/i18n";
 import { log } from "@/lib/log";
-import {
-  costMxn,
-  generationEnabled,
-  MAX_OUTPUT_TOKENS_PER_SECTION,
-  modelForTier,
-  priceFor,
-  providerName,
-  TIER_CEILING_MXN,
-} from "@/readings/config";
+import { generationEnabled, MAX_OUTPUT_TOKENS_PER_SECTION, providerName } from "@/readings/config";
 import { availableSections, sectionDefinition, sectionsForTier } from "@/readings/registry";
 import { computeContentVersion } from "@/readings/content-version";
-import { approxTokens, PROVIDERS, validUsage, type ProviderUsage, type ReadingProvider } from "@/readings/provider";
+import { PROVIDERS, type ReadingProvider } from "@/readings/provider";
+import { costMicros, dispatchAttempt, type GenerationExecution, type AttemptResult } from "@/readings/execution";
+import { outboundDigest } from "@/readings/outbound-digest";
 import { sectionJsonSchema, validateSectionOutput, type SectionOutput } from "@/readings/schemas";
 import { buildReadingDocument, type SectionResult } from "@/readings/document";
+import type { ProviderUsage } from "@/readings/provider";
 import type { ReadingDocument, SectionKey, SectionTier } from "@/readings/types";
 
-/**
- * The generation pipeline (`docs/plan-readings-engine-epic.md` §4).
- *
- * Order of operations per section, invariants in comments:
- *   pricing    → the model must be priceable BEFORE anything is dispatched
- *                (unpriced ⇒ fail closed, never a silent 0 MXN)
- *   cache hit  → reuse the frozen row (regeneration is explicit, §4.5)
- *   ceiling    → projected worst-case spend checked BEFORE dispatch (§4.6, fails closed)
- *   dispatch   → provider adapter; model chosen by configuration (§4.4)
- *   account    → EVERY attempt's cost is added to the run's spend the moment it
- *                reports usage — primary, repair, rescued or wasted alike
- *   validate   → strict schema; ONE repair attempt (ceiling re-checked against
- *                the actual, longer repair prompt); then status "failed"
- *   fallback   → static chart-grounded blocks, never an error page (§4.7)
- *   freeze     → insert-only cache put; no update path exists anywhere
- *
- * The whole function NEVER throws: a chart must always get its document.
+/** Sections are pure orchestration; every primary/repair goes through execution.ts.
+ * Missing usage/transport exceptions halt BOTH tiers and retain exposure (#129).
+ * The production service supplies a durable context; there is no default bypass.
  */
-
 const PROMPTS_DIR = path.join(process.cwd(), "src", "readings", "prompts");
 
 // ------------------------------------------------------------------ cache
@@ -58,21 +38,11 @@ export type CachedSection = {
   latencyMs: number;
 };
 
-/** Insert-only store for frozen sections. Production: DB; tests: memory. */
+/** Insert-only section store. The live service uses per-run memory only; legacy DB cache is not wired to it. */
 export interface SectionCache {
   get(key: SectionCacheKey): Promise<CachedSection | null>;
   put(key: SectionCacheKey, value: CachedSection): Promise<void>;
 }
-
-/**
- * Marks a failed section whose spend could not be measured from the provider's
- * own report, because the report was untrustworthy (non-finite, negative, or
- * an unpriced model). Such a section's cost is a *worst-case estimate*, not a
- * receipt: `maxOutputTokens × price + prompt estimate`. It exists so that a
- * provider which never reports usage honestly cannot dispatch the whole tier
- * for free by keeping the ledger at 0/0 (#129).
- */
-export type EstimatedCostResult = { failureReason: string; estimatedCostMxn: number };
 
 export class MemorySectionCache implements SectionCache {
   private readonly store = new Map<string, CachedSection>();
@@ -146,8 +116,8 @@ function resolveProvider(): ReadingProvider | null {
   if (!factory) return null;
   try {
     return factory();
-  } catch (error) {
-    log.error("readings.provider_unconfigured", { provider: name, error });
+  } catch {
+    log.error("readings.provider_unconfigured", { provider: name });
     return null;
   }
 }
@@ -161,297 +131,99 @@ export type GenerateDocumentArgs = {
   tier: SectionTier;
   digest: ChartDigest;
   cache: SectionCache;
-  /** Defaults to the config-selected provider; tests inject fixtures/spies here. */
   provider?: ReadingProvider;
+  execution: GenerationExecution;
+  contentVersion?: string;
 };
 
 export async function generateReadingDocument(args: GenerateDocumentArgs): Promise<ReadingDocument> {
   const results: SectionResult[] = [];
   const wanted = sectionsForTier(args.tier).filter(key => availableSections(args.digest).includes(key));
-
   let contentVersion = "unavailable";
-  try {
-    contentVersion = computeContentVersion();
-  } catch (error) {
-    // No prompts ⇒ no version ⇒ nothing cacheable or generatable. Fails closed.
-    log.warn("readings.content_version_unavailable", { error });
-  }
+  let halt: string | undefined;
+  let measuredMicros = 0;
+  let uncertainMicros = 0;
+  let settled = true;
+  try { contentVersion = args.contentVersion ?? computeContentVersion(); }
+  catch { log.warn("readings.content_version_unavailable"); }
 
   try {
-    if (contentVersion === "unavailable") {
-      for (const key of wanted) results.push({ key, status: "failed", failureReason: "content_version_unavailable" });
-    } else {
-      const digestHash = digestHashOf(args.digest);
-      const enabled = generationEnabled();
-      const provider = args.provider ?? resolveProvider();
-      let spent = 0; // MXN spent by THIS run, every attempt counted as it reports
-      /**
-       * Set when an attempt reports usage that cannot be measured. The ledger is
-       * then no longer trustworthy for this run: no further section is
-       * dispatched, the remainder fails with a run-level reason, and the
-       * estimate already booked keeps the ceiling honest (#129).
-       */
-      let runHalted: string | null = null;
-
-      for (const key of wanted) {
-        if (!enabled) {
-          results.push({ key, status: "failed", failureReason: "generation_disabled" });
-          continue;
-        }
-
-        // The run stopped being measurable: fail the rest without spending.
-        // Placed before the cache read so a halt cannot be masked by cache hits
-        // appearing to succeed while the ledger is untrustworthy.
-        if (runHalted) {
-          results.push({ key, status: "failed", failureReason: `generation_halted: ${runHalted}` });
-          continue;
-        }
-
-        const cacheKey: SectionCacheKey = { digestHash, section: key, locale: args.locale, contentVersion };
-
-        let cached: CachedSection | null = null;
-        try {
-          cached = await args.cache.get(cacheKey);
-        } catch (error) {
-          log.warn("readings.cache_read_failed", { section: key, locale: args.locale, error });
-          cached = null; // an unreadable cache means regenerate, never crash
-        }
-        if (cached) {
-          results.push({
-            key, status: "generated", fromCache: true, output: cached.output,
-            model: cached.model, usage: cached.usage, costMxn: 0, latencyMs: cached.latencyMs,
-          });
-          continue;
-        }
-
-        if (!provider) {
-          results.push({ key, status: "failed", failureReason: "provider_unavailable" });
-          continue;
-        }
-
-        const model = modelForTier(sectionDefinition(key).modelTier);
-
-        // Pricing first, always: an unpriceable model is never dispatched.
-        if (!priceFor(model)) {
-          results.push({
-            key, status: "failed",
-            failureReason: `pricing_unavailable: model "${model}" has no price entry${process.env.READINGS_MODEL_PRICES ? " (READINGS_MODEL_PRICES is set — it must be valid JSON with numeric MXN-per-million prices and cover every dispatched model)" : ""}`,
-          });
-          continue;
-        }
-
-        let schema: Record<string, unknown>;
-        let prompt: string;
-        try {
-          schema = sectionJsonSchema(key);
-          prompt = assemblePrompt(key, args.locale, JSON.stringify(args.digest, null, 1), JSON.stringify(schema));
-        } catch (error) {
-          // One unreadable prompt file must not abort the remaining sections.
-          results.push({ key, status: "failed", failureReason: `prompt_unavailable: ${errorMessage(error)}` });
-          continue;
-        }
-
-        // Ceiling, pre-dispatch, worst case: primary attempt + one repair at
-        // max output. If even that projection breaches the tier ceiling, the
-        // section is not dispatched at all (§4.6 fails closed).
-        const projectedOnce = costMxn(model, { inputTokens: approxTokens(prompt), outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION });
-        if (spent + 2 * projectedOnce! > TIER_CEILING_MXN[args.tier]) {
-          results.push({
-            key, status: "failed",
-            failureReason: `cost_ceiling: projected ${(2 * projectedOnce!).toFixed(6)} MXN would exceed the ${args.tier} ceiling of ${TIER_CEILING_MXN[args.tier]} MXN`,
-          });
-          continue;
-        }
-
-        // Attempt accounting: every completion's usage/cost/latency is counted
-        // here, whether it ends up published, rescued by a repair, or wasted.
-        const sectionUsage: ProviderUsage = { inputTokens: 0, outputTokens: 0 };
-        let sectionLatency = 0;
-        let sectionCost = 0;
-        /**
-         * Spend the provider's report could not establish. Kept separately from
-         * `sectionCost` so an *estimated* number is never presented as a receipt.
-         */
-        let sectionEstimatedCost = 0;
-        /**
-         * Why an unmeasurable report halts the run rather than being ignored:
-         * the provider's usage is the only pricing input, so a provider that
-         * always misreports would otherwise dispatch the whole tier for free.
-         *
-         * Two *post-dispatch* cases are unmeasurable and must both halt:
-         *   - invalid usage (non-finite/negative token counts)
-         *   - a provider-reported model that has no price entry
-         * The second is NOT the same as the pre-dispatch `pricing_unavailable`
-         * case above. That one prices the model we *configured*, is identical
-         * for every section, and is deterministically fixable by editing the
-         * price table — it keeps the whole-table fail-closed behaviour. This one
-         * is discovered only after a paid call, is the provider's own answer,
-         * and would otherwise let an unpriced response dispatch the remaining
-         * sections while the ledger recorded zero (#129).
-         */
-        /**
-         * Worst-case price of one attempt: the whole output budget plus the
-         * prompt we actually assembled. Conservative on purpose — an estimate
-         * that can under-report is the bug being fixed.
-         */
-        const worstCaseCost = (promptText: string): number => {
-          const estimate = costMxn(model, {
-            inputTokens: approxTokens(promptText),
-            outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION,
-          });
-          // priceFor(model) was checked above, so this is non-null; guard anyway.
-          if (estimate === null) throw new Error(`unpriceable model ${model}`);
-          return estimate;
-        };
-        const account = (completion: { model: string; usage: ProviderUsage; latencyMs: number }, promptText: string): string | null => {
-          // Provider-reported usage is untrusted: NaN would poison every later
-          // ceiling comparison into false, negatives would offset spend.
-          if (!validUsage(completion.usage)) {
-            if (!runHalted) runHalted = `usage_invalid: provider reported non-finite or negative token counts (${JSON.stringify(completion.usage)})`;
-            sectionEstimatedCost += worstCaseCost(promptText);
-            return `usage_invalid: provider reported non-finite or negative token counts (${JSON.stringify(completion.usage)})`;
-          }
-          const cost = costMxn(completion.model, completion.usage);
-          if (cost === null) {
-            // An unpriced model in the response is unmeasurable spend, not a free
-            // call: book a worst-case estimate and stop the run. Halting is what
-            // makes the missing price entry cost one call instead of the tier.
-            const reason = `pricing_unavailable: provider reported unpriced model "${completion.model}"`;
-            if (!runHalted) runHalted = reason;
-            sectionEstimatedCost += worstCaseCost(promptText);
-            return reason;
-          }
-          spent += cost;
-          sectionCost += cost;
-          sectionUsage.inputTokens += completion.usage.inputTokens;
-          sectionUsage.outputTokens += completion.usage.outputTokens;
-          sectionLatency += completion.latencyMs;
-          return null;
-        };
-
-        let completion;
-        try {
-          completion = await provider.complete({
-            section: key, locale: args.locale, prompt, digest: args.digest,
-            jsonSchema: schema, model, maxOutputTokens: MAX_OUTPUT_TOKENS_PER_SECTION,
-          });
-        } catch (error) {
-          results.push({ key, status: "failed", failureReason: `provider_error: ${errorMessage(error)}` });
-          continue;
-        }
-
-        /** Failure-path total: measured spend plus any worst-case estimate. */
-        const failedSectionCost = (): number => {
-          const total = sectionCost + sectionEstimatedCost;
-          sectionEstimatedCost = 0;
-          return total;
-        };
-
-        const primaryPricingFailure = account(completion, prompt);
-        if (primaryPricingFailure) {
-          // The provider answered with a model we cannot price: discard, fail closed.
-          // An unmeasurable report is booked at worst case so the ledger and the
-          // ceiling both see it (#129).
-          results.push({ key, status: "failed", failureReason: primaryPricingFailure, costMxn: failedSectionCost() });
-          continue;
-        }
-
-        let validation = validateSectionOutput(key, completion.output);
-        if (!validation.ok) {
-          // Exactly one repair attempt (§4.3): same request, plus the rejection.
-          // The repair prompt is longer — re-check the ceiling against its
-          // actual size plus everything already spent.
-          const repairPrompt = `${prompt}\n\nYour previous response was rejected:\n${validation.error}\n\nRespond again with a single corrected JSON object that satisfies the schema. Output JSON only.`;
-          const projectedRepair = costMxn(model, { inputTokens: approxTokens(repairPrompt), outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION })!;
-          if (spent + projectedRepair > TIER_CEILING_MXN[args.tier]) {
-            results.push({
-              key, status: "failed",
-              failureReason: `cost_ceiling: repair projected ${projectedRepair.toFixed(6)} MXN would exceed the ${args.tier} ceiling of ${TIER_CEILING_MXN[args.tier]} MXN`,
-              costMxn: sectionCost,
-            });
-            continue;
-          }
-          try {
-            const repaired = await provider.complete({
-              section: key, locale: args.locale, prompt: repairPrompt,
-              digest: args.digest, jsonSchema: schema, model, maxOutputTokens: MAX_OUTPUT_TOKENS_PER_SECTION,
-            });
-            const repairPricingFailure = account(repaired, repairPrompt);
-            if (repairPricingFailure) {
-              // Cannot price or trust the repair's usage: do not use its output.
-              log.warn("readings.repair_rejected", { section: key, model: repaired.model, reason: repairPricingFailure });
-            } else {
-              const revalidated = validateSectionOutput(key, repaired.output);
-              if (revalidated.ok) {
-                completion = repaired;
-                validation = revalidated;
-              }
-            }
-          } catch (error) {
-            log.warn("readings.repair_failed", { section: key, error });
-            // repair threw: the original validation failure stands
-          }
-        }
-
-        if (!validation.ok) {
-          results.push({
-            key, status: "failed",
-            failureReason: `invalid_output: ${validation.error.split("\n")[0]}`,
-            costMxn: failedSectionCost(),
-          });
-          continue;
-        }
-
-        // Post-dispatch: the run's actual spend (this section's attempts
-        // included) must respect the ceiling. A provider that under-reports
-        // its own usage until the receipt arrives lands here, discarded.
-        if (spent > TIER_CEILING_MXN[args.tier]) {
-          results.push({ key, status: "failed", failureReason: "cost_ceiling_exceeded_after_dispatch", costMxn: sectionCost });
-          continue;
-        }
-
-        const frozen: CachedSection = {
-          output: validation.value,
-          model: completion.model,
-          usage: sectionUsage,
-          costMxn: sectionCost,
-          latencyMs: sectionLatency,
-        };
-        try {
-          await args.cache.put(cacheKey, frozen);
-        } catch (error) {
-          log.warn("readings.cache_write_failed", { section: key, locale: args.locale, error });
-          // freeze insert failed: keep the section, it just won't be cached
-        }
-
-        results.push({
-          key, status: "generated", fromCache: false, output: validation.value,
-          model: completion.model, usage: sectionUsage, costMxn: sectionCost, latencyMs: sectionLatency,
-        });
-      }
-    }
-  } catch (error) {
-    // Belt and braces: the per-section work above is individually guarded, but
-    // a document must exist no matter what.
-    log.error("readings.generation_internal_error", { error });
-    const done = new Set(results.map(result => result.key));
+    const execution = args.execution;
+    const provider = args.provider ?? resolveProvider();
+    let safeDigest: ChartDigest | undefined;
+    try { safeDigest = outboundDigest(args.digest); } catch { /* classified below, never log the rejected data */ }
     for (const key of wanted) {
-      if (!done.has(key)) results.push({ key, status: "failed", failureReason: `internal_error: ${errorMessage(error)}` });
+      const fail = (failureReason: string, costMxn = 0) => results.push({ key, status: "failed", failureReason, costMxn });
+      if (!generationEnabled()) { fail("generation_disabled"); continue; }
+      if (!execution) { fail("generation_unauthorized"); continue; }
+      if (contentVersion === "unavailable") { fail("content_version_unavailable"); continue; }
+      if (!safeDigest) { fail("digest_invalid"); continue; }
+      const model = execution.settings.models[sectionDefinition(key).modelTier];
+      if (costMicros(execution.settings.prices, model, { inputTokens: 0, outputTokens: 0 }) === null) { fail("pricing_unavailable"); continue; }
+      if (halt) { fail(`generation_halted: ${halt}`); continue; }
+      const cacheKey: SectionCacheKey = { digestHash: digestHashOf(args.digest), section: key, locale: args.locale, contentVersion };
+      let cached: CachedSection | null = null;
+      try { cached = await args.cache.get(cacheKey); }
+      catch { log.warn("readings.cache_read_failed", { section: key }); }
+      if (cached && validateSectionOutput(key, cached.output).ok) {
+        results.push({ key, status: "generated", fromCache: true, ...cached, costMxn: 0 });
+        continue;
+      }
+      if (!provider) { fail("provider_unavailable"); continue; }
+      const schema = sectionJsonSchema(key);
+      let prompt: string;
+      try { prompt = assemblePrompt(key, args.locale, JSON.stringify(safeDigest, null, 1), JSON.stringify(schema)); }
+      catch { fail("prompt_unavailable"); continue; }
+      const request = { section: key, locale: args.locale, prompt, digest: safeDigest, jsonSchema: schema, model, maxOutputTokens: MAX_OUTPUT_TOKENS_PER_SECTION };
+      let sectionMicros = 0;
+      let latencyMs = 0;
+      const usage: ProviderUsage = { inputTokens: 0, outputTokens: 0 };
+      const account = (attempt: AttemptResult) => {
+        sectionMicros += attempt.measuredMicros + attempt.uncertainMicros;
+        measuredMicros += attempt.measuredMicros;
+        uncertainMicros += attempt.uncertainMicros;
+        if (attempt.halt) halt = attempt.halt;
+        if (attempt.ledgerFailed) settled = false;
+        if (attempt.completion) {
+          usage.inputTokens += attempt.completion.usage.inputTokens;
+          usage.outputTokens += attempt.completion.usage.outputTokens;
+          latencyMs += attempt.completion.latencyMs;
+        }
+      };
+      const primary = await dispatchAttempt(execution, provider, request, "primary");
+      account(primary);
+      if (!primary.completion) { fail(primary.failure ?? "provider_error", sectionMicros / 1_000_000); continue; }
+      let completion = primary.completion;
+      let validation = validateSectionOutput(key, completion.output);
+      if (!validation.ok) {
+        const originalFailure = `invalid_output: ${validation.error.split("\n")[0]}`;
+        const repairPrompt = `${prompt}\n\nYour previous response was rejected:\n${validation.error}\n\nRespond again with a single corrected JSON object that satisfies the schema. Output JSON only.`;
+        const repaired = await dispatchAttempt(execution, provider, { ...request, prompt: repairPrompt }, "repair");
+        account(repaired);
+        // #128: an unusable repair NEVER rescues output and NEVER replaces the
+        // primary invalid_output reason; both attempts' exposure remains counted.
+        if (repaired.completion) {
+          const revalidated = validateSectionOutput(key, repaired.completion.output);
+          if (revalidated.ok) { validation = revalidated; completion = repaired.completion; }
+        }
+        if (!validation.ok) {
+          fail(repaired.failure === "cost_ceiling" ? "cost_ceiling: repair not admitted" : originalFailure, sectionMicros / 1_000_000);
+          continue;
+        }
+      }
+      const frozen: CachedSection = { output: validation.value, model: completion.model, usage, costMxn: sectionMicros / 1_000_000, latencyMs };
+      try { await args.cache.put(cacheKey, frozen); }
+      catch { log.warn("readings.cache_write_failed", { section: key }); }
+      results.push({ key, status: "generated", fromCache: false, ...frozen });
     }
+  } catch {
+    settled = false;
+    halt = "generation_internal_error";
+    log.error("readings.generation_internal_error");
+    for (const key of wanted) if (!results.some(result => result.key === key)) results.push({ key, status: "failed", failureReason: halt });
   }
-
-  return buildReadingDocument({
-    readingId: args.readingId,
-    documentId: args.documentId,
-    locale: args.locale,
-    tier: args.tier,
-    digest: args.digest,
-    contentVersion,
-    results,
-  });
-}
-
-function errorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.slice(0, 200);
+  return {
+    ...buildReadingDocument({ readingId: args.readingId, documentId: args.documentId, locale: args.locale, tier: args.tier, digest: args.digest, contentVersion, results }),
+    accounting: { measuredMxn: measuredMicros / 1_000_000, uncertainMxn: uncertainMicros / 1_000_000, settled, halt: halt ?? null },
+  };
 }

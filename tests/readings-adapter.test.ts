@@ -75,7 +75,7 @@ test("adapter: request body carries the assembled prompt, schema and token budge
   assert.ok(messages[0].content.includes("JSON"));
 
   assert.equal(body.model, "test-model", "the pipeline's configured model wins");
-  assert.ok((body.max_tokens as number) > request.maxOutputTokens, "headroom above the per-section cap");
+  assert.equal(body.max_tokens, request.maxOutputTokens, "wire cap must equal admitted cap");
 
   const format = body.response_format as {
     type: string;
@@ -174,7 +174,9 @@ test("adapter: HTTP failure, error object, and non-JSON body all throw ChatAdapt
   await assert.rejects(() => provider.complete(request), /non-JSON response/);
 
   const noContent = adapter(async () => jsonResponse(completionBody({ choices: [{ message: {} }] })));
-  await assert.rejects(() => noContent.provider.complete(request), /no message content/);
+  const measured = await noContent.provider.complete(request);
+  assert.equal(measured.output, null, "unusable content is validated separately from billing");
+  assert.deepEqual(measured.usage, { inputTokens: 1234, outputTokens: 456 });
 });
 
 test("adapter: a timeout aborts instead of hanging the request", async () => {
@@ -191,5 +193,5 @@ test("adapter: a timeout aborts instead of hanging the request", async () => {
         });
       }),
   });
-  await assert.rejects(() => provider.complete(request), /timed out after 5ms/);
+  await assert.rejects(() => provider.complete(request), /timed out or was aborted after at most 5ms/);
 });

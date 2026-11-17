@@ -1,3 +1,4 @@
+import { memoryExecution } from "./helpers/reading-execution";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { calculateSolarReturnChart } from "../src/lib/solar";
@@ -122,6 +123,7 @@ test("corpus: charts × locales through the pipeline — validity, cost, latency
         },
       };
       const document = await generateReadingDocument({
+        execution: memoryExecution("free"),
         readingId: `corpus-${index}-${locale}`,
         locale,
         tier: "free",
@@ -182,6 +184,7 @@ test("corpus: paid tier for every chart — 9 sections, no locks, under the paid
     const digest = chartDigest(calculateSolarReturnChart(input).facts);
     for (const locale of LOCALES) {
       const document = await generateReadingDocument({
+        execution: memoryExecution("paid"),
         readingId: `corpus-paid-${index}-${locale}`,
         locale,
         tier: "paid",
@@ -207,6 +210,7 @@ test("corpus: locales are separate cache rows and separate words (es ≠ en)", a
   const documents: Record<Locale, Awaited<ReturnType<typeof generateReadingDocument>>> = { en: undefined as never, es: undefined as never };
   for (const locale of LOCALES) {
     documents[locale] = await generateReadingDocument({
+        execution: memoryExecution("free"),
       readingId: "corpus-locale-separation",
       locale,
       tier: "free",
@@ -233,6 +237,7 @@ test("corpus: same digest and locale twice ⇒ frozen reuse, zero re-dispatch, z
   const cache = new MemorySectionCache();
   const digest = chartDigest(calculateSolarReturnChart(INPUTS[1]).facts);
   const first = await generateReadingDocument({
+        execution: memoryExecution("free"),
     readingId: "corpus-freeze-1",
     locale: "en",
     tier: "free",
@@ -249,6 +254,7 @@ test("corpus: same digest and locale twice ⇒ frozen reuse, zero re-dispatch, z
     },
   };
   const second = await generateReadingDocument({
+        execution: memoryExecution("free"),
     readingId: "corpus-freeze-2",
     locale: "en",
     tier: "free",
@@ -266,6 +272,7 @@ test("corpus: forced provider failure degrades without throwing, chart always re
   for (const provider of [throwingProvider, garbageProvider]) {
     for (const tier of ["free", "paid"] as const) {
       const document = await generateReadingDocument({
+        execution: memoryExecution(tier),
         readingId: `corpus-failure-${provider.name}-${tier}`,
         locale: "es",
         tier,
@@ -283,9 +290,13 @@ test("corpus: forced provider failure degrades without throwing, chart always re
       }
       assert.equal(document.costMxn, 0); // nothing was published
       // honest accounting: garbage responses reported usage, so their attempts
-      // are recorded as waste; a throwing provider reports nothing
+      // are recorded as waste; a throwing provider retains a labelled reservation
       if (provider === garbageProvider) assert.ok(document.wastedCostMxn > 0, `${provider.name}/${tier} wasted spend recorded`);
-      else assert.equal(document.wastedCostMxn, 0, `${provider.name}/${tier} no spend invented for throws`);
+      else {
+        assert.ok(document.wastedCostMxn > 0, `${provider.name}/${tier} uncertain exposure retained`);
+        assert.equal(document.accounting?.measuredMxn, 0, "no receipt invented for throws");
+        assert.equal(document.accounting?.uncertainMxn, document.wastedCostMxn);
+      }
       // the failure still produces a renderable document with locked copy
       assert.ok(document.contentVersion.length > 0);
     }

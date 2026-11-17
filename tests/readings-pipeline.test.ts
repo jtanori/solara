@@ -1,3 +1,4 @@
+import { memoryExecution } from "./helpers/reading-execution";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { calculateSolarReturnChart } from "../src/lib/solar";
@@ -81,6 +82,7 @@ const garbageProvider: ReadingProvider = {
 
 async function generate(args: Omit<Partial<Parameters<typeof generateReadingDocument>[0]>, "cache" | "tier"> & { tier: SectionTier; cache?: SectionCache }) {
   return generateReadingDocument({
+        execution: memoryExecution(args.tier),
     readingId: "00000000-0000-0000-0000-000000000001",
     locale: "en",
     digest: baseDigest,
@@ -298,7 +300,7 @@ test("cost ceiling: astronomic prices ⇒ pre-dispatch failure, zero spend, char
     assert.equal(document.wastedCostMxn, 0);
     for (const section of document.sections) {
       assert.equal(section.status, "failed");
-      assert.match(section.failureReason ?? "", /^cost_ceiling/);
+      assert.match(section.failureReason ?? "", /^(?:generation_halted: )?cost_ceiling/);
       assert.ok(section.blocks.length >= 1);
     }
   });
@@ -414,7 +416,7 @@ test("ceiling: every attempt counts — post-dispatch breach discards, accumulat
     assert.equal(generated.length, 4, "four 2.2-MXN sections fit the 10-MXN paid ceiling");
     assert.equal(failed.length, 5);
     assert.equal(failed.filter(section => section.failureReason === "cost_ceiling_exceeded_after_dispatch").length, 1, "the section whose actual spend crossed the ceiling is discarded after dispatch");
-    assert.equal(failed.filter(section => (section.failureReason ?? "").startsWith("cost_ceiling:")).length, 4, "later sections are blocked pre-dispatch by accumulated spend");
+    assert.equal(failed.filter(section => (section.failureReason ?? "").startsWith("generation_halted: cost_ceiling")).length, 4, "later sections are blocked pre-dispatch by accumulated spend");
     assert.ok(Math.abs(document.costMxn - 8.8) < 1e-6, `published cost ${document.costMxn}`);
     assert.ok(Math.abs(document.wastedCostMxn - 2.2) < 1e-6, `wasted cost ${document.wastedCostMxn}`);
   });
@@ -547,7 +549,7 @@ test("repair ceiling: a repair that would cross the ceiling is skipped, the sect
     assert.equal(overviewAttempts, 1, "the repair is NOT dispatched once its projection crosses the ceiling");
     const overview = document.sections.find(section => section.key === "overview");
     assert.equal(overview?.status, "failed");
-    assert.match(overview?.failureReason ?? "", /^cost_ceiling: repair projected/, `reason: ${overview?.failureReason}`);
+    assert.match(overview?.failureReason ?? "", /^cost_ceiling: repair not admitted/, `reason: ${overview?.failureReason}`);
     assert.ok(Math.abs((document.wastedCostMxn ?? 0) - 2.7) < 1e-6, `primary spend recorded as waste (${document.wastedCostMxn})`);
   });
 });
@@ -589,11 +591,13 @@ test("provider throw ⇒ provider_error, never a throw out of the pipeline", asy
     const document = await generate({ tier: "free", cache: new MemorySectionCache(), provider: throwingProvider });
     for (const section of document.sections) {
       assert.equal(section.status, "failed");
-      assert.match(section.failureReason ?? "", /^provider_error/);
+      assert.match(section.failureReason ?? "", /^(?:generation_halted: )?provider_error/);
       assert.ok(section.blocks.length >= 1);
     }
     assert.equal(document.costMxn, 0);
-    assert.equal(document.wastedCostMxn, 0, "a throw reports no usage, so no spend is invented");
+    assert.ok(document.wastedCostMxn > 0, "a throw retains the admitted exposure");
+    assert.equal(document.accounting?.measuredMxn, 0, "no provider receipt was invented");
+    assert.equal(document.accounting?.uncertainMxn, document.wastedCostMxn);
   });
 });
 
@@ -669,6 +673,7 @@ test("prompt: locale, digest, schema, brief, and the injection-defense contract"
     for (const locale of ["en", "es"] as const) {
       const spy = spyAround(createFixtureProvider());
       await generateReadingDocument({
+        execution: memoryExecution("free"),
         readingId: "00000000-0000-0000-0000-000000000002",
         locale,
         tier: "free",
@@ -692,6 +697,7 @@ test("prompt: Spanish sections get the Spanish brief", async () => {
   await withEnv({ READINGS_GENERATION_ENABLED: "true" }, async () => {
     const spy = spyAround(createFixtureProvider());
     await generateReadingDocument({
+        execution: memoryExecution("free"),
       readingId: "00000000-0000-0000-0000-000000000003",
       locale: "es",
       tier: "free",
@@ -746,6 +752,9 @@ test("#128 repair branch: a repair that reports invalid usage is discarded, the 
       `the discarded attempt's spend is still recorded (wastedCostMxn=${document.wastedCostMxn})`,
     );
     assert.equal(document.costMxn, 0, "nothing was published, so published spend is zero");
+    assert.equal(document.accounting?.measuredMxn, costMxn("fixture-1", { inputTokens: 100, outputTokens: 100 }), "the EXACT primary receipt survives, not just the repair's estimate");
+    assert.ok(document.accounting!.uncertainMxn > 0);
+    assert.ok(Math.abs(document.wastedCostMxn - document.accounting!.measuredMxn - document.accounting!.uncertainMxn) < 1e-9);
     // The repair was actually dispatched (the branch is reachable), then discarded.
     const overviewCalls = spy.calls.filter(call => call.section === "overview");
     assert.equal(overviewCalls.length, 2, "primary + exactly one repair dispatch");
@@ -808,7 +817,7 @@ test("#129 a provider that always misreports usage cannot force the full dispatc
   });
 });
 
-test("#129 the worst-case estimate makes later sections ceiling-gated, not free", async () => {
+test("#129 a large unknown exposure is retained and the remainder HALTS, not dispatched for free", async () => {
   // Price the output budget so ONE worst-case estimate is most of the ceiling:
   // 2000 output tokens at 4000 MXN/M = 8 MXN, against a 10 MXN paid ceiling.
   await withEnv({
@@ -825,8 +834,8 @@ test("#129 the worst-case estimate makes later sections ceiling-gated, not free"
     const document = await generate({ tier: "paid", cache: new MemorySectionCache(), provider: alwaysInvalid });
     const reasons = document.sections.map(section => section.failureReason ?? "");
     assert.ok(
-      reasons.some(reason => /^cost_ceiling/.test(reason)),
-      `the booked estimate pushes the run into the ceiling (${reasons.join(" | ")})`,
+      reasons.slice(1).every(reason => /^generation_halted: usage_invalid/.test(reason)),
+      `uncertainty halts every remaining section (${reasons.join(" | ")})`,
     );
   });
 });
@@ -855,7 +864,7 @@ test("#129 a model reported unpriced AFTER dispatch halts the run instead of dis
     assert.equal(spy.calls[0].section, "overview");
 
     const reasons = document.sections.map(section => section.failureReason ?? "");
-    assert.match(reasons[0], /^pricing_unavailable: provider reported unpriced model "unknown-model"/);
+    assert.equal(reasons[0], "pricing_unavailable", "raw provider model identifiers are not public errors");
     for (const reason of reasons.slice(1)) {
       assert.match(reason, /^generation_halted: pricing_unavailable/, "the rest carry the run-level halt reason");
     }

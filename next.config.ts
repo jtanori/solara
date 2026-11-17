@@ -12,7 +12,7 @@ const nextConfig: NextConfig = {
   // trace these reads, so include them explicitly or Vercel functions ship
   // without prompts and generation fails closed.
   outputFileTracingIncludes: {
-    "/api/readings": ["./src/readings/prompts/**/*"],
+    "/api/readings/*/generate": ["./src/readings/prompts/**/*"],
   },
   async headers() {
     return [

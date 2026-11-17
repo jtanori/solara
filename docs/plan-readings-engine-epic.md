@@ -1,6 +1,9 @@
 # Epic design — the reading document (for review)
 
-Status: **proposal, not approved, nothing filed.** Input for the review conversation.
+Historical epic proposal. The later [approved generation-safety plan](plan-reading-generation-safety.md)
+supersedes implicit generation, free monthly quotas, shared live cache reuse, and
+anonymity/accounting claims below. Live-provider costs/quality remain unverified;
+this document's illustrative estimates are not an activation decision.
 Follows `docs/audit/readings-engine-assessment.md` (PR #98) and the four answers given on
 2026-11-08:
 
@@ -129,10 +132,12 @@ Keep `tests/solar.test.ts` green throughout; `calculateSolarReturn` stays the pu
 ```
 reading created
    → facts = computeChartFacts(input)            deterministic, stored in `result`
-   → digest = chartDigest(facts)                 PII-free, stable, hashable
-   → freeDoc = generateSections(digest, FREE, locale)
-        ├─ cache hit on (digestHash, section, contentVersion, locale) → reuse
-        └─ miss → LLM, strict JSON schema, validate, repair-or-retry, store
+   → save chart only (no AI allowance consumed)
+explicit request + versioned named-processor consent + unused lifetime offer
+   → digest = allowlisted chartDigest(facts)     derived data, not guaranteed anonymous
+   → freeDoc = guardedGenerate(digest, FREE, pinnedLocale)
+        ├─ existing canonical run → return status/document identity, never replay
+        └─ durable permit → LLM → settle receipt/exposure → validate/one guarded repair
    → persist ReadingDocument, tier="free"
 purchase / entitlement granted
    → paidDoc = generateSections(digest, PAID, locale)  → merge, tier="paid"
@@ -143,22 +148,25 @@ Design rules, each with a reason:
 - **Strict schema + validation.** One JSON Schema per section (`blocks` shape from §2). On
   validation failure: one repair attempt, then mark `status:"failed"` and render a graceful
   fallback. A reading is never blocked by a generation failure — the chart renders regardless.
-- **Generation is idempotent and cached** on `(digest, section, contentVersion, locale)`. Two users
-  with identical charts share prose; regeneration after a prompt change is explicit, not implicit.
+- **The free offer is lifetime-idempotent per verified account.** It pins its initial chart
+  and locale. The live service uses per-run memory, not the unowned shared persistent cache;
+  legacy cache retention/provenance remains #82. Neither cache nor a version change funds a replay.
 - **Frozen prose.** Once stored, the document is immutable. A prompt or policy change bumps
   `contentVersion` and only affects *new* readings unless a regeneration is requested. This fixes
   the retroactive-edit defect identified in the audit.
-- **Cost guards:** per-reading token budget, per-user monthly generation cap, paid-only
-  generation, a global kill switch that degrades to chart-only readings. All four are
-  configuration, not code paths sprinkled through the app.
+- **Cost guards:** durable cumulative reservations and measured/unknown settlement, a
+  5 MXN free-run ceiling, one free interpretation ever, and a kill switch. The first
+  committed dispatch permit consumes the offer. Paid generation/volume policy is a later slice.
 - **Model tiering:** a cheaper model for `overview`/`sun`/`moon`/`ascendant` (short, formulaic),
   a stronger one for `guidance` (the synthesis users judge the product by). Measured, not assumed:
   the eval in §7 compares both.
 
 ## 5. Privacy — the design that makes consent easy to write
 
-**The LLM never receives personal data.** Not a name, not an email, not a birth date, not a
-birthplace — only derived chart facts:
+**The LLM receives allowlisted derived chart facts, not raw identity/birth input.**
+Do not describe those facts or account-linked interpretations as anonymous or as
+necessarily non-personal data. The complete primary/repair payload excludes names,
+emails, birth date/time, places and coordinates:
 
 ```
 { chartVersion:"chart/2", bodies:[{body:"Sun", sign:"Leo", degree:17.4, house:5, retro:false}, …],
@@ -166,14 +174,14 @@ birthplace — only derived chart facts:
   balance:{fire:4, earth:2, air:3, water:3} }
 ```
 
-Raw birth data stays in our database, used only to compute the chart. Consequences: the consent
-copy is about *derived astrological facts*, the data-processing agreement is easier to obtain, the
-blast radius of a provider incident is limited, and retention/erasure (#82) is unaffected because
-nothing identifying was ever sent.
+Raw birth input stays in the application database. Derived data can still be identifying;
+provider terms, retention/erasure (#82), and legal pages (#85) still need explicit work.
+Legacy shared-cache/audit retention is not silently solved by deleting new run records.
 
-Consent is captured **once, versioned, at the first generation**, not buried in sign-up: a
-checkbox naming the provider and the policy version, recorded with a timestamp on the user. Terms
-and privacy pages are #85.
+Consent is affirmative, named-processor and versioned, with server timestamp and revision,
+not buried in sign-up. Material processor/endpoint/privacy changes require a new grant.
+Withdrawal blocks new permits and publication; already authorized work may finish.
+It neither deletes saved documents nor restores the consumed lifetime offer.
 
 ## 6. Free vs paid without a CMS
 

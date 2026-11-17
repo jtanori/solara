@@ -43,6 +43,13 @@
       "when": 1794788488996,
       "tag": "0005_account_lifecycle_leases",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794860849952,
+      "tag": "0006_reading_generation_safety",
+      "breakpoints": true
     }
   ]
 }

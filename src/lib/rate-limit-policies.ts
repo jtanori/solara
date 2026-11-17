@@ -55,6 +55,11 @@ export const AUTH_RATE_LIMITS = {
   readingsCreateIp: { limit: 20, windowSeconds: 60 * 60 },
   readingsCreateUser: { limit: 10, windowSeconds: 60 * 60 },
   readingPdfUser: { limit: 20, windowSeconds: 60 * 60 },
+  readingsGenerateUser: { limit: 10, windowSeconds: 60 * 60 },
+  readingsGenerateIp: { limit: 20, windowSeconds: 60 * 60 },
+  readingsConsentUser: { limit: 20, windowSeconds: 60 * 60 },
+  readingsDeleteUser: { limit: 30, windowSeconds: 60 * 60 },
+  readingsStatusUser: { limit: 60, windowSeconds: 60 },
   billingCheckoutUser: { limit: 10, windowSeconds: 60 },
   billingPortalUser: { limit: 10, windowSeconds: 60 },
 } as const satisfies Record<string, RateLimitPolicy>;
