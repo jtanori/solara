@@ -1,0 +1,290 @@
+{
+  "id": "66666666-6666-4666-8666-666666666666",
+  "readingId": "22222222-2222-4222-8222-222222222222",
+  "locale": "es",
+  "chartVersion": "chart/2",
+  "contentVersion": "synthetic-reading-v1",
+  "generatedAt": "2026-01-01T12:00:00.000Z",
+  "tier": "paid",
+  "models": {
+    "overview": "fixture-only",
+    "sun": "fixture-only",
+    "moon": "fixture-only",
+    "ascendant": "fixture-only",
+    "aspects": "fixture-only",
+    "houses": "fixture-only",
+    "planets": "fixture-only",
+    "nodes": "fixture-only",
+    "planetaryYear": "fixture-only",
+    "transits": "fixture-only",
+    "guidance": "fixture-only"
+  },
+  "sections": [
+    {
+      "key": "overview",
+      "tier": "free",
+      "title": "El año en un solo aliento",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "El año en un solo aliento: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        },
+        {
+          "kind": "callout",
+          "title": "Práctica",
+          "text": "Reserva un momento de calma cada semana."
+        },
+        {
+          "kind": "list",
+          "title": "Ideas",
+          "items": [
+            "Escribe una página.",
+            "Observa qué cambió."
+          ]
+        },
+        {
+          "kind": "keyValue",
+          "title": "Datos de ejemplo",
+          "entries": [
+            {
+              "key": "Sol",
+              "value": "Tauro 25.1°"
+            }
+          ]
+        },
+        {
+          "kind": "aspectTable",
+          "title": "Aspectos de ejemplo",
+          "rows": [
+            {
+              "a": "Sol",
+              "b": "Luna",
+              "type": "cuadratura",
+              "orb": 1.2
+            }
+          ]
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated",
+      "closingQuestion": "¿Qué práctica cuidarás durante este año?"
+    },
+    {
+      "key": "sun",
+      "tier": "free",
+      "title": "El Sol: tu estrella de cumpleaños",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "El Sol: tu estrella de cumpleaños: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated",
+      "closingQuestion": "¿Dónde quieres invertir tu energía?"
+    },
+    {
+      "key": "moon",
+      "tier": "paid",
+      "title": "La Luna: el clima emocional",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "La Luna: el clima emocional: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    },
+    {
+      "key": "ascendant",
+      "tier": "paid",
+      "title": "El Ascendente: el lente del año",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "El Ascendente: el lente del año: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    },
+    {
+      "key": "aspects",
+      "tier": "paid",
+      "title": "Aspectos: tensiones y regalos",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "Aspectos: tensiones y regalos: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    },
+    {
+      "key": "houses",
+      "tier": "paid",
+      "title": "Casas: dónde se vive el año",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "Casas: dónde se vive el año: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    },
+    {
+      "key": "planets",
+      "tier": "paid",
+      "title": "Planetas: el reparto del año",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "Planetas: el reparto del año: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    },
+    {
+      "key": "nodes",
+      "tier": "paid",
+      "title": "Los Nodos: dirección de crecimiento",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "Los Nodos: dirección de crecimiento: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    },
+    {
+      "key": "planetaryYear",
+      "tier": "paid",
+      "title": "El año planetario",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "El año planetario: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    },
+    {
+      "key": "transits",
+      "tier": "paid",
+      "title": "Tránsitos: fechas que importan",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "Tránsitos: fechas que importan: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    },
+    {
+      "key": "guidance",
+      "tier": "paid",
+      "title": "Guía: vivir bien el año",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "Guía: vivir bien el año: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated"
+    }
+  ],
+  "lockedSections": [],
+  "costMxn": 0,
+  "wastedCostMxn": 0,
+  "accounting": {
+    "settled": true,
+    "measuredMxn": 0,
+    "uncertainMxn": 0,
+    "halt": null
+  }
+}

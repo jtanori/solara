@@ -1,0 +1,101 @@
+{
+  "id": "44444444-4444-4444-8444-444444444444",
+  "readingId": "22222222-2222-4222-8222-222222222222",
+  "locale": "es",
+  "chartVersion": "chart/2",
+  "contentVersion": "synthetic-reading-v1",
+  "generatedAt": "2026-01-01T12:00:00.000Z",
+  "tier": "free",
+  "models": {
+    "overview": "fixture-only",
+    "sun": "fixture-only"
+  },
+  "sections": [
+    {
+      "key": "overview",
+      "tier": "free",
+      "title": "El año en un solo aliento",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "El año en un solo aliento: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        },
+        {
+          "kind": "callout",
+          "title": "Práctica",
+          "text": "Reserva un momento de calma cada semana."
+        },
+        {
+          "kind": "list",
+          "title": "Ideas",
+          "items": [
+            "Escribe una página.",
+            "Observa qué cambió."
+          ]
+        },
+        {
+          "kind": "keyValue",
+          "title": "Datos de ejemplo",
+          "entries": [
+            {
+              "key": "Sol",
+              "value": "Tauro 25.1°"
+            }
+          ]
+        },
+        {
+          "kind": "aspectTable",
+          "title": "Aspectos de ejemplo",
+          "rows": [
+            {
+              "a": "Sol",
+              "b": "Luna",
+              "type": "cuadratura",
+              "orb": 1.2
+            }
+          ]
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated",
+      "closingQuestion": "¿Qué práctica cuidarás durante este año?"
+    },
+    {
+      "key": "sun",
+      "tier": "free",
+      "title": "El Sol: tu estrella de cumpleaños",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "Obsolete promise: the words will catch up."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "failed",
+      "failureReason": "private_failure_sentinel"
+    }
+  ],
+  "lockedSections": [],
+  "costMxn": 0,
+  "wastedCostMxn": 0,
+  "accounting": {
+    "settled": true,
+    "measuredMxn": 0,
+    "uncertainMxn": 0,
+    "halt": null
+  }
+}
