@@ -25,7 +25,9 @@ const presentationMutations = [
   mutation("published-state", [change(view, '["completed", "partial", "legacy"].includes(run.status)', "true")], foundation),
   mutation("sql-byte-bound", [change(view, "octet_length(${documents.document}::text) <= ${READING_LIMITS.documentBytes}", "true")], foundation),
   mutation("reader-network-dispatch", [change(view, "const store = deps.store ?? new ReadingViewStore();", 'const store = deps.store ?? new ReadingViewStore(); await fetch("https://must-not-be-called.invalid");')], foundation),
-  mutation("free-paid-key", [change(decoder, '(document.tier === "free" && (source.key !== "overview" && source.key !== "sun"))', "false")], foundation),
+  // Free membership is enforced twice now: removing only the early check is
+  // equivalent because the frozen-manifest boundary still rejects the paid key.
+  mutation("free-paid-key", [change(decoder, '(document.tier === "free" && (source.key !== "overview" && source.key !== "sun"))', "false"), change(decoder, '|| [...seen].some(key => !expectedSections.includes(key))', '|| (document.tier === "paid" && [...seen].some(key => !expectedSections.includes(key)))')], foundation),
   mutation("duplicate-section", [change(decoder, "seen.has(source.key) || ", "")], foundation),
   mutation("row-envelope-identity", [change(decoder, "if (document[key] !== expectedIdentity.data[key])", "if (false && document[key] !== expectedIdentity.data[key])")], foundation),
   mutation("closing-question", [change(decoder, "section.closingQuestion = question.data", "section.closingQuestion = undefined")], foundation),
