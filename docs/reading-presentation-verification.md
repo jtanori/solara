@@ -1,10 +1,55 @@
 # Saved-reading page/PDF — author verification
 
-**Latest repair/validation SHA:** `66103fbd4d3e22082b02c2be2caaa56068c8dd17` on `arena/78f55298-solara`.
+**Latest full-validation/test-repair SHA:** `e6a7c34a17f54545860d17f99e7bc840c806c1dc` on `arena/78f55298-solara`.
+**Review runtime-repair SHA:** `66103fbd4d3e22082b02c2be2caaa56068c8dd17` (application code unchanged since).
 **Original implementation SHA:** `795b5b3e6acb706ae12b0720fba83256d26b7251`.
-**Fetched staging base:** `13a886085aaa901b964e323fe3d2187650be8881`; repair checkpoint is nine commits ahead, zero behind that fetched base.
+**Fetched staging base:** `13a886085aaa901b964e323fe3d2187650be8881`; latest test checkpoint is eleven commits ahead, zero behind that fetched base.
 
-This is author-local implementation evidence for [the approved design](plan-free-reading-page-pdf.md), **not a PR review/verdict, hosted qualification, issue-closure decision, or generation-activation approval**. Results are pinned by section: latest review repairs at `66103fb`, historical deployment-input repair at `7a43715`, and original implementation/benchmark at `795b5b3`. Documentation-only evidence commits do not change the measured source.
+This is author-local implementation evidence for [the approved design](plan-free-reading-page-pdf.md), **not a PR review/verdict, hosted qualification, issue-closure decision, or generation-activation approval**. Results are pinned by section: latest CI-test repair at `e6a7c34`, review runtime repairs at `66103fb`, historical deployment-input repair at `7a43715`, and original implementation/benchmark at `795b5b3`. Documentation-only evidence commits do not change the measured source.
+
+## PR #149 CI heartbeat-test repair — `e6a7c34`
+
+[CI run 44042979920](https://github.com/jtanori/solara/actions/runs/44042979920), [verify job 133901798165](https://github.com/jtanori/solara/actions/runs/44042979920/job/133901798165), failed at head `3230484370e6af5e5112f0444ef7bffdfa071828`. The operator supplied its log after the sandbox could not follow GitHub's log-storage redirects. It records **624 passed / 1 failed / 0 cancelled / 0 skipped**, 145.20 s. The sole failure is `tests/account-lifecycle-lock.test.ts`, `lease: heartbeat keeps the lease alive past its initial TTL`, assertion `heartbeat extended the lease` (`false !== true`). The test used a **150 ms TTL / 40 ms heartbeat** and read liveness after a fixed 350 ms sleep. Installation/schema/static checks passed; later CI audit/build/smoke steps were skipped after the test failure.
+
+The focused old test passes without an injected delay. Inserting `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)` immediately after `await started` reproduced exactly the failing liveness assertion with no skipped/cancelled cases. Original bytes were restored. This demonstrates the scheduling sensitivity; **the failed CI log contains no scheduler trace proving its exact stall duration**. Production intentionally refuses to heartbeat an already-expired row, so a delayed 150 ms test lease must not be revived merely to satisfy this test.
+
+`e6a7c34` changes **only `tests/account-lifecycle-lock.test.ts`**, not runtime lease SQL/timings, workflows, dependency versions, skips or retry policy:
+
+- The healthy test retains the production 60-second TTL and observes **two distinct committed PostgreSQL expiry extensions**, under the same owner, with a five-second test-observation bound. It retains live-row, final-fence, competing-waiter denial and release assertions. The shorter heartbeat interval is test-only. It no longer claims to measure real-time survival beyond the original TTL.
+- Two new real-DB cases deliberately expire or reassign the persisted lease, then require the scheduled heartbeat to mark it lost **without changing that row**. The final fence must reject it and release must preserve a replacement owner's row. Existing stopped-heartbeat takeover and old-owner fencing tests remain intact.
+- Assertions run inside the lifecycle callback, so production `finally` stops/awaits the heartbeat and releases before test cleanup even when an assertion fails. No unawaited holder remains behind a test gate.
+
+Five separate production mutations were tested against this new test checkpoint and byte-restored. Each exited **1 with `ERR_ASSERTION`**, no import/transform error, heartbeat SQL error, cancellation or runner timeout. For the first three rows the exact command was `node --import tsx --test '--test-name-pattern=lease: heartbeat renews expiry' tests/account-lifecycle-lock.test.ts`; the final two use their full test-name pattern as shown.
+
+| Mutation in `src/lib/account-lifecycle-lock.ts` | Observed assertion |
+| --- | --- |
+| Remove `scheduleHeartbeat();` immediately after `await acquire();` | `heartbeat 1 must commit a later expiry` |
+| In `HEARTBEAT_SQL`, replace `set expires_at = now() + ($3::int * interval '1 millisecond'),` with `set expires_at = expires_at + ($3::int * interval '0 millisecond'),` (valid SQL/parameters, but no renewal) | `heartbeat 1 must commit a later expiry` |
+| Remove `if (!stopped && !lost) scheduleHeartbeat();` | `heartbeat 2 must commit a later expiry` |
+| In `HEARTBEAT_SQL`, remove `and expires_at > now()` before `returning user_id` | `node --import tsx --test '--test-name-pattern=lease: heartbeat fails closed when the lease is expired' tests/account-lifecycle-lock.test.ts` → `heartbeat must reject a lease that is expired` |
+| In `HEARTBEAT_SQL`, replace `and owner = $2::uuid` with `and $2::uuid is not null` (keeps the typed bind parameter, bypasses ownership) | `node --import tsx --test '--test-name-pattern=lease: heartbeat fails closed when the lease is replaced' tests/account-lifecycle-lock.test.ts` → `heartbeat must reject a lease that is replaced` |
+
+The repaired tests were also run with the same diagnostic 250 ms pause inserted before **each** healthy renewal observation: four concurrent processes running `node --import tsx --test '--test-name-pattern=lease: heartbeat' tests/account-lifecycle-lock.test.ts`, **12/12 repeated cases passed**. These diagnostic pauses were removed afterward; original test bytes restored. Restored production-source SHA-256: `001dba5f3d7abdaa2463a7eb1735e91826d04e2a9a7b8aaf5dc26a26a89d4788`; test SHA-256: `1f3f26f3862f3eb7c2b0cee0e93b5a73997d3704b06e31060a13a0c9bd323b66`; Git checked clean before unmodified validation.
+
+Renewed commands used the same disposable loopback PostgreSQL 16.2 database, Node 22.22.3/npm 10.9.8, generation off, `DOTENV_CONFIG_PATH=/dev/null`, outbox/fake providers, both integration gates and unset parent-shell provider/billing keys:
+
+```bash
+node --import tsx --test tests/account-lifecycle-lock.test.ts tests/cleanup-account-leases.test.ts tests/checkout-deletion-race.test.ts
+RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts
+npx next typegen
+npm run typecheck
+npm run lint
+npm run db:manifest:check
+npm run db:check
+npm run build
+node scripts/check-pdf-package.mjs
+npm audit --omit=dev --audit-level=high
+npx tsx scripts/verify-reading-browser.ts
+```
+
+Results at `e6a7c34`: **30/30 restored scoped tests**, **627/627 full tests** (389.75 s, zero failed/cancelled/skipped), **5/5 heartbeat assertion kills**, **13/13 authenticated built-app browser scenarios**, zero provider fetches/automatic reading POST/PUT/unhandled browser errors. Typegen/typecheck/lint/manifest/schema/build/package/audit passed; schema remains 16 tables / 62 columns / 9 indexes, trace **216 files / 5.8 MiB**, production audit **0 vulnerabilities**, worker and frozen PDF hashes unchanged. Generated `next-env.d.ts` churn was restored. Counts overlap; the 12 stress cases are repeats, not new unique tests.
+
+The 58 presentation mutations and four deployment-input mutations were **not rerun for this test-only change**: their exact runtime sources, tests, runners, assets and dependencies are unchanged from `66103fb`; those results remain pinned below. The 231-render benchmark remains at `795b5b3`. This is local evidence, not a claim that the previous remote CI failure passed; replacement-head CI/preview status is recorded separately in the PR body. The latest posted reviewer verdict still needs recheck, all release gates remain, and no merge or generation activation is authorized by this test repair.
 
 ## PR #149 review repairs — `66103fb`
 
