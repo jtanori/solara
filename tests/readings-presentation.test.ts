@@ -64,7 +64,7 @@ for (const locale of ["en", "es"] as const) {
   test(`presentation ${locale}: pure paid renderer supports all eleven sections but default reader refuses paid`, () => {
     const document = frozenReading(locale, "paid");
     assert.equal(decode(document).ok, false);
-    const content = valid(document, { allowPaid: true });
+    const content = valid(document, { allowPaid: true, expectedSections: SECTION_KEYS });
     assert.deepEqual(content.sections.map(s => s.key), [...SECTION_KEYS]);
     assert.deepEqual(content.previews, []);
     document.sections = document.sections.filter(s => !["planetaryYear", "transits"].includes(s.key));

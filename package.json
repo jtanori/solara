@@ -27,7 +27,10 @@
     "db:check:remote": "tsx scripts/db-remote.ts --check",
     "db:manifest": "tsx scripts/generate-migration-manifest.ts",
     "db:manifest:check": "tsx scripts/generate-migration-manifest.ts --check",
-    "backlog:snapshot": "tsx scripts/backlog-snapshot.ts"
+    "backlog:snapshot": "tsx scripts/backlog-snapshot.ts",
+    "readings:worker": "tsx scripts/paid-reading-worker.ts",
+    "readings:evaluate": "tsx scripts/evaluate-paid-readings.ts",
+    "readings:approve-evaluation": "tsx scripts/approve-paid-reading-evaluation.ts"
   },
   "engines": {
     "node": ">=22"

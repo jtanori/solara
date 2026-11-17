@@ -2,7 +2,9 @@ import { sql } from "drizzle-orm";
 import type { GenerationSettings } from "@/readings/execution";
 import { bigint, check, boolean, doublePrecision, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { ChartInput, ChartResult, Role } from "@/lib/types";
-import type { ReadingDocument } from "@/readings/types";
+import type { PaidSnapshot } from "@/readings/paid-chart";
+import type { PaidStatus } from "@/readings/paid-contract";
+import type { ReadingDocument, SectionKey } from "@/readings/types";
 import type { ProviderUsage } from "@/readings/provider";
 import type { SectionOutput } from "@/readings/schemas";
 
@@ -241,3 +243,104 @@ export const rateLimits = pgTable("rate_limits", {
   lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 }, table => [index("rate_limits_expires_idx").on(table.expiresAt)]);
+
+// ------------------------------------------------------------------ paid editions (#107 / paid #108)
+// Separate from the lifetime-free identity and its immutable document slot.
+export const paidReadingControl = pgTable("paid_reading_control", {
+  id: text("id").primaryKey().default("paid"),
+  enabled: boolean("enabled").notNull().default(false),
+  revision: integer("revision").notNull().default(0),
+  workerHeartbeatAt: timestamp("worker_heartbeat_at", { withTimezone: true }),
+  workerConfigHash: text("worker_config_hash"),
+}, table => [check("paid_control_singleton_check", sql`${table.id} = 'paid' and ${table.revision} >= 0`)]);
+
+export const paidReadingApprovals = pgTable("paid_reading_approvals", {
+  profile: text("profile").notNull(), contentVersion: text("content_version").notNull(),
+  locale: text("locale").$type<"en" | "es">().notNull(), configHash: text("config_hash").notNull(),
+  sampleCount: integer("sample_count").notNull(), reviewer: text("reviewer").notNull(), evidence: text("evidence").notNull(),
+  approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+}, table => [
+  primaryKey({ columns: [table.profile, table.contentVersion, table.locale, table.configHash] }),
+  check("paid_approvals_evidence_check", sql`${table.sampleCount} >= 6 and length(${table.reviewer}) between 1 and 200 and length(${table.evidence}) between 1 and 2000 and ${table.locale} in ('en','es')`),
+]);
+
+export const paidReadingRuns = pgTable("paid_reading_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  readingId: uuid("reading_id").references(() => readings.id, { onDelete: "set null" }),
+  intentId: uuid("intent_id").notNull(), period: text("period").notNull(), allowancePolicy: text("allowance_policy").notNull(),
+  locale: text("locale").$type<"en" | "es">().notNull(), profile: text("profile").notNull(),
+  expectedSections: jsonb("expected_sections").$type<SectionKey[]>().notNull(),
+  contentVersion: text("content_version").notNull(), configHash: text("config_hash").notNull(),
+  settings: jsonb("settings").$type<GenerationSettings>().notNull(),
+  policyHash: text("policy_hash").notNull(), consentRevision: integer("consent_revision").notNull(), consentReceiptId: uuid("consent_receipt_id").notNull(),
+  entitlementId: text("entitlement_id").notNull(), entitlementUntil: timestamp("entitlement_until", { withTimezone: true }).notNull(),
+  controlRevision: integer("control_revision").notNull(), ceilingMicros: integer("ceiling_micros").notNull().default(10_000_000),
+  status: text("status").$type<PaidStatus>().notNull().default("queued"),
+  completedSections: integer("completed_sections").notNull().default(0),
+  owner: uuid("owner"), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  deadline: timestamp("deadline", { withTimezone: true }), queueExpiresAt: timestamp("queue_expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }), stopRequestedAt: timestamp("stop_requested_at", { withTimezone: true }),
+  failureCode: text("failure_code"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, table => [
+  uniqueIndex("paid_runs_intent_key").on(table.userId, table.intentId),
+  uniqueIndex("paid_runs_active_user_key").on(table.userId).where(sql`${table.status} in ('queued','preparing','generating')`),
+  index("paid_runs_queue_idx").on(table.createdAt, table.id).where(sql`${table.status} in ('queued','preparing','generating')`),
+  index("paid_runs_reading_idx").on(table.readingId, table.createdAt, table.id),
+  index("paid_runs_attention_idx").on(table.userId).where(sql`${table.status} = 'attention'`),
+  check("paid_runs_contract_check", sql`${table.profile} in ('paid-core-v1','paid-rich-v1') and ${table.allowancePolicy} = 'one-per-account-utc-month-v1' and ${table.ceilingMicros} = 10000000 and ${table.locale} in ('en','es') and ${table.period} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
+  check("paid_runs_manifest_check", sql`(${table.profile} = 'paid-core-v1' and ${table.expectedSections} = '["overview","sun","moon","ascendant","aspects","houses","planets","nodes","guidance"]'::jsonb) or (${table.profile} = 'paid-rich-v1' and ${table.expectedSections} = '["overview","sun","moon","ascendant","aspects","houses","planets","nodes","planetaryYear","transits","guidance"]'::jsonb)`),
+  check("paid_runs_state_check", sql`${table.completedSections} between 0 and jsonb_array_length(${table.expectedSections}) and ${table.status} in ('queued','preparing','generating','completed','partial','failed','stopped','attention') and (${table.status} not in ('completed','partial') or ${table.consumedAt} is not null)`),
+]);
+
+export const paidReadingAllowances = pgTable("paid_reading_allowances", {
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  period: text("period").notNull(), runId: uuid("run_id").notNull().references(() => paidReadingRuns.id, { onDelete: "cascade" }),
+  reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(), consumedAt: timestamp("consumed_at", { withTimezone: true }),
+}, table => [primaryKey({ columns: [table.userId, table.period] }), uniqueIndex("paid_allowances_run_key").on(table.runId)]);
+
+export const paidReadingSnapshots = pgTable("paid_reading_snapshots", {
+  runId: uuid("run_id").primaryKey().references(() => paidReadingRuns.id, { onDelete: "cascade" }),
+  readingId: uuid("reading_id").notNull().references(() => readings.id, { onDelete: "cascade" }),
+  hash: text("hash").notNull(), snapshot: jsonb("snapshot").$type<PaidSnapshot>().notNull(),
+}, table => [index("paid_snapshots_reading_idx").on(table.readingId), check("paid_snapshots_size_check", sql`octet_length(${table.snapshot}::text) <= 131072`)]);
+
+export const paidReadingAttempts = pgTable("paid_reading_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(), runId: uuid("run_id").notNull().references(() => paidReadingRuns.id, { onDelete: "cascade" }),
+  owner: uuid("owner").notNull(), section: text("section").$type<SectionKey>().notNull(), phase: text("phase").$type<"primary" | "repair">().notNull(),
+  state: text("state").$type<"reserved" | "measured" | "unknown" | "not_dispatched">().notNull().default("reserved"),
+  requestedModel: text("requested_model").notNull(), reportedModel: text("reported_model"),
+  reservedMicros: bigint("reserved_micros", { mode: "number" }).notNull(), costMicros: bigint("cost_micros", { mode: "number" }),
+  usage: jsonb("usage").$type<ProviderUsage>(), latencyMs: integer("latency_ms"), code: text("code"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), settledAt: timestamp("settled_at", { withTimezone: true }),
+}, table => [
+  uniqueIndex("paid_attempts_slot_key").on(table.runId, table.section, table.phase),
+  uniqueIndex("paid_attempts_outstanding_key").on(table.runId).where(sql`${table.state} = 'reserved'`),
+  check("paid_attempts_section_check", sql`${table.section} in ('overview','sun','moon','ascendant','aspects','houses','planets','nodes','planetaryYear','transits','guidance') and ${table.phase} in ('primary','repair')`),
+  check("paid_attempts_state_check", sql`${table.state} in ('reserved','measured','unknown','not_dispatched')`),
+  check("paid_attempts_money_check", sql`${table.reservedMicros} between 1 and 10000000 and (${table.costMicros} is null or ${table.costMicros} between 0 and 9007199254740991)`),
+  check("paid_attempts_settlement_check", sql`(${table.state} = 'reserved' and ${table.costMicros} is null and ${table.settledAt} is null) or (${table.state} <> 'reserved' and ${table.costMicros} is not null and ${table.settledAt} is not null)`),
+]);
+
+/** Only validated prose, transactionally coupled to receipts; removed at terminal finalization. */
+export const paidReadingCheckpoints = pgTable("paid_reading_checkpoints", {
+  attemptId: uuid("attempt_id").primaryKey().references(() => paidReadingAttempts.id, { onDelete: "cascade" }),
+  runId: uuid("run_id").notNull().references(() => paidReadingRuns.id, { onDelete: "cascade" }),
+  readingId: uuid("reading_id").notNull().references(() => readings.id, { onDelete: "cascade" }),
+  kind: text("kind").$type<"valid" | "invalid">().notNull(), output: jsonb("output").$type<SectionOutput>(),
+}, table => [index("paid_checkpoints_run_idx").on(table.runId), index("paid_checkpoints_reading_idx").on(table.readingId),
+  check("paid_checkpoints_output_check", sql`(${table.kind} = 'valid' and ${table.output} is not null and octet_length(${table.output}::text) <= 131072) or (${table.kind} = 'invalid' and ${table.output} is null)`),
+]);
+
+export const paidReadingEditions = pgTable("paid_reading_editions", {
+  id: uuid("id").primaryKey().defaultRandom(), runId: uuid("run_id").notNull().references(() => paidReadingRuns.id, { onDelete: "cascade" }),
+  readingId: uuid("reading_id").notNull().references(() => readings.id, { onDelete: "cascade" }),
+  locale: text("locale").$type<"en" | "es">().notNull(), profile: text("profile").notNull(), expectedSections: jsonb("expected_sections").$type<SectionKey[]>().notNull(),
+  contentVersion: text("content_version").notNull(), chartVersion: text("chart_version").notNull(),
+  snapshotHash: text("snapshot_hash").notNull(), snapshot: jsonb("snapshot").$type<PaidSnapshot>().notNull(),
+  document: jsonb("document").$type<ReadingDocument>().notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => [uniqueIndex("paid_editions_run_key").on(table.runId), index("paid_editions_reading_idx").on(table.readingId),
+  check("paid_editions_size_check", sql`octet_length(${table.document}::text) <= 524288 and octet_length(${table.snapshot}::text) <= 131072`),
+]);

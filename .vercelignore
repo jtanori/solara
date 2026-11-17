@@ -7,6 +7,10 @@ scripts/cleanup-rate-limits.ts
 scripts/benchmark-reading-pdf.ts
 scripts/verify-reading-browser.ts
 scripts/verify-reading-mutations.mjs
+scripts/evaluate-paid-readings.ts
+scripts/approve-paid-reading-evaluation.ts
+scripts/lib/paid-evaluation-corpus.ts
+scripts/gen-annual-facts-fixtures.py
 tests
 drizzle/meta
 .mail-outbox

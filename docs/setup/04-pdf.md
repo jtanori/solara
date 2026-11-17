@@ -8,10 +8,17 @@ It uses the same bounded SELECT-only projection as `/reading/<reading-id>`:
 - A coherent published lifetime-free run selects **exactly its canonical saved
   document**, not the newest row, interface language, or subscription. Free
   prose is `overview` + `sun`, including saved questions. Partial content stays
-  partial. Both adapters show nine static topic previews, explicitly distinguishing
-  unavailable paid generation from planned profection/transit calculations.
+  partial. Both adapters keep the existing nine static free-edition previews.
+  Those do not select or generate paid content; the paid offer discloses its own
+  frozen nine- or eleven-section scope and current availability.
 - `?document=<uuid>` pins that identity. Stale/foreign IDs do not substitute another
   reading. The page’s generated-reading download link always pins the document.
+- `?paidEdition=<uuid>` explicitly selects an owned, published paid run/edition
+  with matching immutable snapshot, content version and profile manifest. Page
+  and PDF use the same frozen Placidus/annual facts, not the current free chart or
+  today's subscription. Complete/partial core and rich editions stay distinct;
+  saved access survives subscription expiry. Legacy paid rows with no authorized
+  run are not adopted. See [paid editions](10-paid-readings.md).
 - `?edition=chart` pins the saved-chart / **illustrative notes** edition. Its notes
   are mutable editorial material; active verified subscriptions retain the
   existing Moon/Ascendant/house notes. Subscription does **not** select a paid AI
@@ -89,7 +96,7 @@ Each request forks one fresh, terminable Node process:
 | --- | --- |
 | Saved JSON / chart JSON before transfer | 512 KiB / 16 KiB |
 | Sections / blocks per section | 11 / 30; existing per-block field/array limits |
-| Aggregate free / paid-fixture text | 32,768 / 131,072 UTF-16 units |
+| Aggregate free / paid text | 32,768 / 131,072 UTF-16 units |
 | Fixed layout geometry | Section heading group <=400 pt; repeated table title <=20 measured lines |
 | PDF output | 8 MiB, checked during collection in child and parent |
 | Pages | 40 production / 80 synthetic paid-renderer stress |
@@ -174,8 +181,9 @@ benchmarks do not authorize paid production selection/generation (#107/#108/#110
 
 The generation-off rollout still requires preview isolation, old-dispatch drain,
 recovery/restore/upgrade rehearsal, exact-SHA migration/readiness checks and real
-authenticated en/es browser/download QA. The last hosted verification had `0006`
-pending. This change adds no migration and must not rewrite it. Keep generation
-off; real-provider evaluation/activation, email QA and production promotion remain
-separate. Roll back only to a schema-compatible reviewed build or forward-fix;
+authenticated en/es browser/download QA. The earlier PDF slice added no migration;
+the paid implementation adds `0007`/`0008` without rewriting `0006`. Its local
+schema evidence is not proof of hosted application. Keep generation off;
+real-provider evaluation/activation and production promotion remain separate.
+Email QA is deferred. Roll back only to a schema-compatible reviewed build or forward-fix;
 never delete documents/ledger rows to reset access.

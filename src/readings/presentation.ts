@@ -64,7 +64,9 @@ export type ReadingChart = {
   name: string;
   returnPlace: string;
   timezone: string;
-  result: ChartResult;
+  result: Omit<ChartResult, "houseSystem"> & { houseSystem: "Whole sign" | "Placidus" };
+  /** Whitelisted deterministic snapshot facts, not provider output or raw birth data. */
+  calculation?: ReadingBlock[];
 };
 export type ReadingPresentation = {
   chart: ReadingChart;
@@ -73,14 +75,14 @@ export type ReadingPresentation = {
   availability: ReadingAvailability;
 };
 
-export type ReadingSelector = { kind: "auto" } | { kind: "chart" } | { kind: "document"; id: string };
+export type ReadingSelector = { kind: "auto" } | { kind: "chart" } | { kind: "document"; id: string } | { kind: "paid"; id: string };
 export type ReadingViewCode = "unauthorized" | "not_found" | "invalid_selection" | "invalid_chart" | "document_unavailable" | "service_unavailable";
 export class ReadingViewError extends Error {
   constructor(readonly code: ReadingViewCode) { super(code); this.name = "ReadingViewError"; }
 }
 
 export function readingEditionQuery(content: ReadingContent): string {
-  return content.kind === "saved-reading" ? `document=${encodeURIComponent(content.id)}` : "edition=chart";
+  return content.kind === "saved-reading" ? `${content.tier === "paid" ? "paidEdition" : "document"}=${encodeURIComponent(content.id)}` : "edition=chart";
 }
 
 /** All text fields, in semantic order. Also used for aggregate bounds and font coverage. */

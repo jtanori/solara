@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { GenerationBlocked, generationSettings, type AttemptAdmission, type AttemptSettlement, type GenerationExecution } from "../../src/readings/execution";
+import { GenerationBlocked, generationSettings, type AttemptAdmission, type AttemptSettlement, type GenerationExecution, type GenerationSettings } from "../../src/readings/execution";
 import { TIER_CEILING_MXN } from "../../src/readings/config";
 import type { SectionTier } from "../../src/readings/types";
 
 /** Explicit test-only simulated ledger. Never imported by application code. */
-export function memoryExecution(tier: SectionTier = "free"): GenerationExecution {
-  const settings = generationSettings();
+export function memoryExecution(tier: SectionTier = "free", settings: GenerationSettings = generationSettings()): GenerationExecution {
   const attempts = new Map<string, { permit: AttemptAdmission; outcome?: AttemptSettlement }>();
   const exposure = () => [...attempts.values()].reduce((sum, row) => sum + (row.outcome?.costMicros ?? row.permit.reservedMicros), 0);
   const ceilingMicros = TIER_CEILING_MXN[tier] * 1_000_000;

@@ -25,7 +25,7 @@ Move an item to `pass` only when its evidence is committed or linked and a revie
 | 1.3 | Tolerance report: UTC instant ≤ 60s, Ascendant/house placement within documented tolerance vs. reference (e.g., Swiss Ephemeris or published tables) | @astro-reviewer | `docs/setup/06-astrology-and-houses.md` § Production setup + PDF report | todo |
 | 1.4 | Version pinning: engine, TZ data (IANA), and map boundaries recorded per report | @infra | `package.json` + `package-lock.json` + report header | todo |
 
-> Placidus is **not** implemented; whole-sign only. High absolute latitude ≥66° omits Ascendant/houses pending verification — see `src/app/blueprint` logic.
+> Whole-sign and Placidus now have independent numerical fixtures (`tests/ephemeris.test.ts`); rich annual facts have `tests/annual-facts.test.ts`. This is engineering evidence, not completion of the professional qualification rows above. Return latitude ≥66° stops a paid Placidus job before spending; missing natal Ascendant is a disclosed profection limitation. See `06-astrology-and-houses.md` and `10-paid-readings.md`.
 
 ### 2. Historical time zones, leap years, high latitudes
 

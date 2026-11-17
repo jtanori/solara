@@ -36,9 +36,9 @@ const browserEnvironment = (): StatusPollEnvironment => ({
 
 /** GET-only finite session. Hidden/offline/terminal states require an explicit
  * new status check. It has no generation/consent endpoint or mutation callback. */
-export function pollReadingStatus(options: {
-  readingId: string; immediate?: boolean; minimumDelay?: number;
-  onView: (view: GenerationView) => void;
+export function pollBoundedStatus<T>(options: {
+  url: string; parse: (value: unknown) => T | null; isActive: (value: T) => boolean; immediate?: boolean; minimumDelay?: number;
+  onView: (view: T) => void;
   onStop: (reason: PollStop, retryAt: number) => void;
 }, environment?: StatusPollEnvironment): () => void {
   const env = environment ?? browserEnvironment();
@@ -68,17 +68,17 @@ export function pollReadingStatus(options: {
     controller = new AbortController();
     requestTimer = env.later(() => { stop("error"); }, Math.min(STATUS_POLL_LIMITS.requestMs, STATUS_POLL_LIMITS.durationMs - (env.now() - start)));
     try {
-      const response = await env.fetch(`/api/readings/${options.readingId}/generation`, { method: "GET", cache: "no-store", signal: controller.signal });
+      const response = await env.fetch(options.url, { method: "GET", cache: "no-store", signal: controller.signal });
       if (stopped) return;
       const delay = Math.max(STATUS_POLL_LIMITS.delays[Math.min(count - 1, 2)], retryAfterMs(response.headers.get("retry-after"), env.now()));
       if (response.status === 429) { retryAt = env.now() + delay; schedule(delay); return; }
       if (response.status === 401 || response.status === 404) return stop("unauthorized");
       if (!response.ok) return stop("error");
-      const view = publicGenerationView(await response.json());
+      const view = options.parse(await response.json());
       if (stopped) return;
       if (!view) return stop("error");
       options.onView(view);
-      if (view.status !== "in_progress") return stop("terminal");
+      if (!options.isActive(view)) return stop("terminal");
       schedule(delay);
     } catch { if (!stopped) stop("error"); }
     finally { if (requestTimer !== undefined) env.cancel(requestTimer); }
@@ -87,6 +87,14 @@ export function pollReadingStatus(options: {
   if (env.hidden()) stop("hidden");
   else schedule(Math.max(options.minimumDelay ?? 0, options.immediate ? 0 : STATUS_POLL_LIMITS.delays[0]));
   return cleanup;
+}
+
+export function pollReadingStatus(options: {
+  readingId: string; immediate?: boolean; minimumDelay?: number;
+  onView: (view: GenerationView) => void; onStop: (reason: PollStop, retryAt: number) => void;
+}, environment?: StatusPollEnvironment): () => void {
+  return pollBoundedStatus({ ...options, url: `/api/readings/${options.readingId}/generation`, parse: publicGenerationView,
+    isActive: view => view.status === "in_progress" }, environment);
 }
 
 /** Per-mounted-chart guard, including a failed projection after refresh. */

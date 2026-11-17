@@ -4,6 +4,7 @@ import { signName, type Locale } from "@/lib/i18n";
 import { readingBlockSchema } from "@/readings/schemas";
 import { sectionDefinition } from "@/readings/registry";
 import { SECTION_KEYS, type ReadingBlock, type SectionKey } from "@/readings/types";
+import { PAID_CORE_SECTIONS } from "@/readings/paid-contract";
 import { readingPreviews } from "@/readings/presentation-copy";
 import { READING_LIMITS, READING_PRESENTATION_VERSION, sectionText, type DisplaySection, type SavedReadingPresentation } from "@/readings/presentation";
 
@@ -51,7 +52,7 @@ function failureFacts(key: SectionKey, facts: unknown, locale: Locale): ReadingB
 export function readStoredDocument(
   serialized: string,
   expected: StoredDocumentIdentity,
-  options: { legacy?: boolean; allowPaid?: boolean } = {},
+  options: { legacy?: boolean; allowPaid?: boolean; expectedSections?: readonly SectionKey[] } = {},
 ): StoredDocumentResult {
   if (Buffer.byteLength(serialized, "utf8") > READING_LIMITS.documentBytes) return { ok: false, code: "document_too_large" };
   let raw: unknown;
@@ -96,7 +97,7 @@ export function readStoredDocument(
         if (!validated.success) { invalid = true; break; }
         section.blocks.push(validated.data);
       }
-      const requiresQuestion = source.key === "overview" || source.key === "sun";
+      const requiresQuestion = document.tier === "free" && (source.key === "overview" || source.key === "sun");
       if (source.closingQuestion !== undefined) {
         const question = z.string().min(requiresQuestion && !options.legacy ? 10 : 1).max(500).safeParse(source.closingQuestion);
         if (question.success) section.closingQuestion = question.data;
@@ -121,7 +122,10 @@ export function readStoredDocument(
     sections.push(section);
   }
   if (!usable) return { ok: false, code: "document_unavailable" };
-  const missing = !seen.has("overview") || !seen.has("sun");
+  const expectedSections = document.tier === "paid" ? options.expectedSections ?? PAID_CORE_SECTIONS : ["overview", "sun"] as const;
+  if (!expectedSections.length || new Set(expectedSections).size !== expectedSections.length ||
+    expectedSections.some(key => !SECTION_KEYS.includes(key)) || [...seen].some(key => !expectedSections.includes(key))) return { ok: false, code: "invalid_document" };
+  const missing = expectedSections.some(key => !seen.has(key));
   // Older complete documents predate closing questions; disclose that history
   // without mislabeling intact saved content as a partial generation.
   const partial = missing || sections.some(section => section.status === "failed" || section.notices.some(notice => notice !== "legacy_question_missing"));

@@ -39,6 +39,15 @@ export const SECTION_SUBTITLES: Record<SectionKey, LocalizedText> = {
   guidance: { en: "Synthesis and practice", es: "Síntesis y práctica" },
 };
 
+/** Paid annual-facts scope is a frozen instant, not the older planned calendar. */
+export const PAID_SECTION_TITLES: Record<SectionKey, LocalizedText> = { ...SECTION_TITLES,
+  transits: { en: "Transits at the Solar Return", es: "Tránsitos en el retorno solar" },
+};
+export const PAID_SECTION_SUBTITLES: Record<SectionKey, LocalizedText> = { ...SECTION_SUBTITLES,
+  planetaryYear: { en: "Traditional whole-sign annual profection", es: "Profección anual tradicional por signo completo" },
+  transits: { en: "A frozen snapshot, not a transit calendar", es: "Una instantánea guardada, no un calendario de tránsitos" },
+};
+
 /** Teasers for locked (paid, not in this document) sections — static copy, no LLM. */
 export const LOCKED_TEASERS: Record<SectionKey, LocalizedText> = {
   overview: { en: "The year's headline, written for your chart.", es: "El titular del año, escrito para tu carta." },

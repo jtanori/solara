@@ -1,19 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { users, readings, readingDocuments, auditLogs, readingGenerationConsents as consents, readingGenerationRuns as runs, readingGenerationAttempts as attempts } from "@/db/schema";
-import { withAccountLifecycleLock, type LifecycleDb } from "@/lib/account-lifecycle-lock";
-import { costMicros, GenerationBlocked, type GenerationExecution, type AttemptSettlement } from "@/readings/execution";
+import { readings, readingDocuments, auditLogs, readingGenerationConsents as consents, readingGenerationRuns as runs, readingGenerationAttempts as attempts } from "@/db/schema";
+import { withAccountLifecycleLock } from "@/lib/account-lifecycle-lock";
+import { costMicros, GenerationBlocked, validateAttemptSettlement, type GenerationExecution } from "@/readings/execution";
 import { GENERATION_RUN_MS, type LiveGenerationConfig, type ProcessorProfile } from "@/readings/policy";
 import { MAX_OUTPUT_TOKENS_PER_SECTION } from "@/readings/config";
 import { persistableDocument } from "@/readings/document";
-import { validUsage } from "@/readings/provider";
+import { lockOwnedReading, lockVerifiedUser, withGenerationTransaction, type GenerationTransaction as Tx } from "@/readings/generation-access";
 import type { ReadingDocument } from "@/readings/types";
 import type { Locale } from "@/lib/i18n";
 import { generationView as view, type GenerationView } from "@/readings/generation-view";
 export type { GenerationView } from "@/readings/generation-view";
 
-type Tx = Parameters<Parameters<LifecycleDb["transaction"]>[0]>[0];
 type Run = typeof runs.$inferSelect;
 type TimedRun = Run & { expired: boolean; dispatchExpired: boolean };
 const runColumns = {
@@ -29,26 +28,11 @@ const exposure = (rows: (typeof attempts.$inferSelect)[]) => rows.reduce((sum, r
 export class GenerationStore {
   constructor(private readonly database = db, private readonly lifecycleLock = withAccountLifecycleLock) {}
 
-  private async user(tx: Tx, userId: string) {
-    const [user] = await tx.select({ id: users.id, verified: users.emailVerifiedAt }).from(users).where(eq(users.id, userId)).for("update");
-    if (!user?.verified) throw new GenerationBlocked("unauthorized");
-  }
+  private user = lockVerifiedUser;
+  private owned = lockOwnedReading;
   /** Lease → user → reading → consent → run → attempts. Never call HTTP inside. */
-  private async scope<T>(userId: string, work: (tx: Tx) => Promise<T>): Promise<T> {
-    return this.lifecycleLock(userId, async (database, lease) => {
-      await lease.stopHeartbeat();
-      return database.transaction(async tx => {
-        await tx.execute(sql`select set_config('lock_timeout', '2s', true), set_config('statement_timeout', '5s', true)`);
-        await lease.assertHeld(tx);
-        await this.user(tx, userId);
-        return work(tx);
-      });
-    });
-  }
-  private async owned(tx: Tx, userId: string, readingId: string) {
-    const [reading] = await tx.select().from(readings).where(and(eq(readings.id, readingId), eq(readings.userId, userId))).for("update");
-    if (!reading) throw new GenerationBlocked("not_found");
-    return reading;
+  private scope<T>(userId: string, work: (tx: Tx) => Promise<T>): Promise<T> {
+    return withGenerationTransaction(userId, work, this.lifecycleLock);
   }
   private async consentRow(tx: Tx, userId: string) {
     return (await tx.select().from(consents).where(eq(consents.userId, userId)).for("update"))[0];
@@ -175,7 +159,7 @@ export class GenerationStore {
         const row = ledger.find(row => row.id === id && row.owner === owner);
         if (!row) throw new GenerationBlocked("permit_missing");
         if (row.state !== "reserved") return exposure(ledger);
-        this.validateSettlement(result, row.reservedMicros, current, row.requestedModel, admitsModel);
+        validateAttemptSettlement(result, row.reservedMicros, current.settings, row.requestedModel, admitsModel);
         const [saved] = await tx.update(attempts).set({
           state: result.basis, costMicros: result.costMicros, usage: result.usage, reportedModel: result.model,
           latencyMs: Math.min(result.latencyMs, 2_147_483_647), code: result.code, settledAt: sql`clock_timestamp()`,
@@ -184,21 +168,6 @@ export class GenerationStore {
         return exposure(ledger.filter(item => item.id !== id)) + saved.costMicros!;
       }),
     };
-  }
-
-  private validateSettlement(
-    result: AttemptSettlement,
-    reserved: number,
-    run: Run,
-    requestedModel: string,
-    admitsModel: GenerationExecution["admitsModel"],
-  ) {
-    if (!Number.isSafeInteger(result.costMicros) || result.costMicros < 0 || !Number.isSafeInteger(result.latencyMs) || result.latencyMs < 0) throw new GenerationBlocked("accounting_invalid");
-    if (result.basis === "unknown" && (result.costMicros !== reserved || result.model || result.usage)) throw new GenerationBlocked("accounting_invalid");
-    if (result.basis === "not_dispatched" && (result.costMicros !== 0 || result.model || result.usage)) throw new GenerationBlocked("accounting_invalid");
-    // Pricing alone is insufficient: the receipt must belong to this permit's
-    // requested-model contract, even when a caller bypasses dispatchAttempt.
-    if (result.basis === "measured" && (!run.settings || !result.model || !admitsModel(requestedModel, result.model) || !validUsage(result.usage) || costMicros(run.settings.prices, result.model, result.usage) !== result.costMicros)) throw new GenerationBlocked("accounting_invalid");
   }
 
   async finish(run: Run, document: ReadingDocument | null, configurationCurrent: () => boolean): Promise<GenerationView> {

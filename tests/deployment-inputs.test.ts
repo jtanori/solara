@@ -15,7 +15,8 @@ test("deployment input keeps PDF build/runtime assets but no local reading fixtu
   ]) {
     assert.ok(files.includes(path), `required deployment file missing: ${path}`);
   }
-  for (const path of ["scripts/benchmark-reading-pdf.ts", "scripts/verify-reading-browser.ts", "scripts/verify-reading-mutations.mjs"]) {
+  for (const path of ["scripts/benchmark-reading-pdf.ts", "scripts/verify-reading-browser.ts", "scripts/verify-reading-mutations.mjs",
+    "scripts/evaluate-paid-readings.ts", "scripts/approve-paid-reading-evaluation.ts", "scripts/lib/paid-evaluation-corpus.ts", "scripts/gen-annual-facts-fixtures.py"]) {
     assert.ok(!files.includes(path), `local-only reading tool would be deployed: ${path}`);
   }
   assert.ok(!files.some(path => path.startsWith("tests/")), "test fixtures must stay out of deployment input");

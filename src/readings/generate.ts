@@ -9,6 +9,7 @@ import { availableSections, sectionDefinition, sectionsForTier } from "@/reading
 import { computeContentVersion } from "@/readings/content-version";
 import { PROVIDERS, type ReadingProvider } from "@/readings/provider";
 import { costMicros, dispatchAttempt, type GenerationExecution, type AttemptResult } from "@/readings/execution";
+import { paidPromptFile } from "@/readings/paid-contract";
 import { outboundDigest } from "@/readings/outbound-digest";
 import { sectionJsonSchema, validateSectionOutput, type SectionOutput } from "@/readings/schemas";
 import { buildReadingDocument, type SectionResult } from "@/readings/document";
@@ -92,10 +93,10 @@ function readPromptFile(file: string): string {
   return text;
 }
 
-function assemblePrompt(section: SectionKey, locale: Locale, digestJson: string, jsonSchema: string): string {
+export function assembleSectionPrompt(section: SectionKey, locale: Locale, digestJson: string, jsonSchema: string, tier: SectionTier = "free"): string {
   return readPromptFile("_wrapper.md")
     .replaceAll("{{localeName}}", localeName(locale))
-    .replaceAll("{{sectionBrief}}", readPromptFile(`${section}.${locale}.md`).trim())
+    .replaceAll("{{sectionBrief}}", readPromptFile(tier === "paid" ? paidPromptFile(section, locale) : `${section}.${locale}.md`).trim() + (tier === "paid" ? "\n" + readPromptFile("paid/_contract.md").trim() : ""))
     .replaceAll("{{digestJson}}", digestJson)
     .replaceAll("{{jsonSchema}}", jsonSchema);
 }
@@ -165,14 +166,14 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
       let cached: CachedSection | null = null;
       try { cached = await args.cache.get(cacheKey); }
       catch { log.warn("readings.cache_read_failed", { section: key }); }
-      if (cached && validateSectionOutput(key, cached.output).ok) {
+      if (cached && validateSectionOutput(key, cached.output, args.tier).ok) {
         results.push({ key, status: "generated", fromCache: true, ...cached, costMxn: 0 });
         continue;
       }
       if (!provider) { fail("provider_unavailable"); continue; }
-      const schema = sectionJsonSchema(key);
+      const schema = sectionJsonSchema(key, args.tier);
       let prompt: string;
-      try { prompt = assemblePrompt(key, args.locale, JSON.stringify(safeDigest, null, 1), JSON.stringify(schema)); }
+      try { prompt = assembleSectionPrompt(key, args.locale, JSON.stringify(safeDigest, null, 1), JSON.stringify(schema), args.tier); }
       catch { fail("prompt_unavailable"); continue; }
       const request = { section: key, locale: args.locale, prompt, digest: safeDigest, jsonSchema: schema, model, maxOutputTokens: MAX_OUTPUT_TOKENS_PER_SECTION };
       let sectionMicros = 0;
@@ -194,7 +195,7 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
       account(primary);
       if (!primary.completion) { fail(primary.failure ?? "provider_error", sectionMicros / 1_000_000); continue; }
       let completion = primary.completion;
-      let validation = validateSectionOutput(key, completion.output);
+      let validation = validateSectionOutput(key, completion.output, args.tier);
       if (!validation.ok) {
         const originalFailure = `invalid_output: ${validation.error.split("\n")[0]}`;
         const repairPrompt = `${prompt}\n\nYour previous response was rejected:\n${validation.error}\n\nRespond again with a single corrected JSON object that satisfies the schema. Output JSON only.`;
@@ -203,7 +204,7 @@ export async function generateReadingDocument(args: GenerateDocumentArgs): Promi
         // #128: an unusable repair NEVER rescues output and NEVER replaces the
         // primary invalid_output reason; both attempts' exposure remains counted.
         if (repaired.completion) {
-          const revalidated = validateSectionOutput(key, repaired.completion.output);
+          const revalidated = validateSectionOutput(key, repaired.completion.output, args.tier);
           if (revalidated.ok) { validation = revalidated; completion = repaired.completion; }
         }
         if (!validation.ok) {

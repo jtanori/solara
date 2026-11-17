@@ -50,6 +50,20 @@
       "when": 1794860849952,
       "tag": "0006_reading_generation_safety",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794919620573,
+      "tag": "0007_paid_reading_editions",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794921828602,
+      "tag": "0008_paid_annual_facts",
+      "breakpoints": true
     }
   ]
 }

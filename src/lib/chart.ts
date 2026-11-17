@@ -1,3 +1,4 @@
+import type { AnnualFacts, Profection } from "@/lib/annual-facts";
 import {
   BODIES, SIGN_NAMES, type BodyName, normalize, signOf, longitudeOf, isRetrograde,
   trueNodeLongitudeWithFallback, DEG,
@@ -458,6 +459,10 @@ export type ChartDigest = {
   crossAspects: { a: string; b: string; type: AspectType; orb: number }[];
   balance: Balance;
   warnings: string[];
+  /** Present only in the separately consented rich paid profile. No birth or return timestamps. */
+  natal?: { houseSystem: "whole-sign"; ascendant: string | null; midheaven: string | null; bodies: ChartDigest["bodies"] };
+  profections?: Profection;
+  transits?: AnnualFacts["transits"] & { total: number };
 };
 
 export function chartDigest(facts: ChartFacts): ChartDigest {

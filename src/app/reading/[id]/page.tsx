@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ReadingGenerationControls } from "@/components/reading-generation-controls";
+import { PaidReadingControls } from "@/components/paid-reading-controls";
 import { ReadingPageView } from "@/components/reading-page-view";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
@@ -18,7 +19,17 @@ export default async function ReadingPage({ params, searchParams }: {
   const { id } = await params;
   if (!isReadingId(id)) notFound();
   const [user, locale, query] = await Promise.all([currentUser(), getLocale(), searchParams]);
-  if (!user?.emailVerifiedAt) redirect(`/account?next=${encodeURIComponent(`/reading/${id}`)}`);
+  if (!user?.emailVerifiedAt) {
+    const selection = new URLSearchParams();
+    for (const key of ["paidEdition", "document", "edition"]) {
+      const value = query[key];
+      if (Array.isArray(value)) value.forEach(item => selection.append(key, item));
+      else if (value !== undefined) selection.append(key, value);
+    }
+    try { readingSelector(selection); } catch { notFound(); }
+    const next = `/reading/${id}${selection.size ? `?${selection}` : ""}`;
+    redirect(`/account?next=${encodeURIComponent(next)}`);
+  }
   const es = locale === "es";
   let view: ReadingPresentation | null = null;
   let selector: ReadingSelector = { kind: "auto" };
@@ -36,10 +47,12 @@ export default async function ReadingPage({ params, searchParams }: {
     errorCode = error instanceof ReadingViewError ? error.code : "service_unavailable";
   }
   return <><SiteHeader />{view ? <ReadingPageView view={view} locale={locale} selector={selector}
-    controls={<ReadingGenerationControls key={`${id}-${locale}`} readingId={id} locale={locale}
-      initialGeneration={view.generation} displayedDocumentId={view.content.kind === "saved-reading" ? view.content.id : null}
-      allowGeneration={view.availability === "chart_only" || view.availability === "ready"}
-      refreshOnPublication={selector.kind === "auto"} />}
+    controls={<><PaidReadingControls key={`paid-${id}-${locale}`} readingId={id} locale={locale}
+      displayedEditionId={view.content.kind === "saved-reading" && view.content.tier === "paid" ? view.content.id : null} />
+      <ReadingGenerationControls key={`${id}-${locale}`} readingId={id} locale={locale}
+      initialGeneration={view.generation} displayedDocumentId={view.content.kind === "saved-reading" && view.content.tier === "free" ? view.content.id : null}
+      allowGeneration={selector.kind !== "paid" && (view.availability === "chart_only" || view.availability === "ready")}
+      refreshOnPublication={selector.kind === "auto"} /></>}
     deleteControl={<DeleteReading id={id} locale={locale} />}
   /> : <main className="app-page"><section className="panel app-wrap" role="status">
     <h1>{errorCode === "invalid_selection" ? (es ? "Selección de lectura no válida" : "Invalid reading selection") : (es ? "Lectura no disponible" : "Reading unavailable")}</h1>

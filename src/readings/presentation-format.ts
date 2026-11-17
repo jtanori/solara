@@ -16,7 +16,7 @@ export function chartPlacements(chart: ReadingChart, locale: Locale) {
     { label: es ? "Sol" : "Sun", value: signName(result.natalSun.sign, locale), detail: `${result.natalSun.degree.toFixed(2)}°` },
     { label: es ? "Luna" : "Moon", value: signName(result.moon.sign, locale), detail: `${result.moon.degree.toFixed(2)}°` },
     { label: es ? "Ascendente" : "Ascendant", value: result.ascendant ? signName(result.ascendant.sign, locale) : (es ? "No disponible" : "Not shown"), detail: result.ascendant ? `${result.ascendant.degree.toFixed(2)}°` : (es ? "Latitud alta" : "High latitude") },
-    { label: es ? "Casa del Sol" : "Sun house", value: result.sunHouse ? `${es ? "Casa" : "House"} ${result.sunHouse}` : (es ? "No disponible" : "Not shown"), detail: es ? "Casas de signo completo" : "Whole-sign houses" },
+    { label: es ? "Casa del Sol" : "Sun house", value: result.sunHouse ? `${es ? "Casa" : "House"} ${result.sunHouse}` : (es ? "No disponible" : "Not shown"), detail: result.houseSystem === "Placidus" ? "Placidus" : es ? "Casas de signo completo" : "Whole-sign houses" },
   ];
 }
 export function chartDetails(chart: ReadingChart, locale: Locale) {
@@ -25,7 +25,7 @@ export function chartDetails(chart: ReadingChart, locale: Locale) {
     { key: es ? "Año de retorno" : "Return year", value: String(chart.year) },
     { key: es ? "Lugar de retorno" : "Return location", value: chart.returnPlace },
     { key: es ? "Hora de retorno (UTC)" : "Return time (UTC)", value: savedDate(chart.result.exactUtc) },
-    { key: es ? "Sistema de casas" : "House system", value: es ? "Signo completo" : chart.result.houseSystem },
+    { key: es ? "Sistema de casas" : "House system", value: chart.result.houseSystem === "Placidus" ? "Placidus" : es ? "Signo completo" : chart.result.houseSystem },
   ];
 }
 export function chartDisclaimer(chart: ReadingChart, locale: Locale): string {

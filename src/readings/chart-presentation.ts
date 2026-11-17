@@ -13,23 +13,28 @@ const chartSchema = z.object({
   result: z.object({
     exactUtc: z.iso.datetime({ offset: true }), localTime: z.string().max(200),
     natalSun: placement, moon: placement, ascendant: placement.nullable(),
-    sunHouse: z.number().int().min(1).max(12).nullable(), houseSystem: z.literal("Whole sign"),
+    sunHouse: z.number().int().min(1).max(12).nullable(), houseSystem: z.enum(["Whole sign", "Placidus"]),
     warnings: z.array(z.string().max(512)).max(20), engine: z.string().max(200),
   }),
 });
-export function readChart(value: unknown): ReadingChart {
+export function readChart(value: unknown, houseSystem: "Whole sign" | "Placidus" = "Whole sign"): ReadingChart {
   const parsed = chartSchema.safeParse(value);
-  if (!parsed.success) throw new ReadingViewError("invalid_chart");
+  if (!parsed.success || parsed.data.result.houseSystem !== houseSystem) throw new ReadingViewError("invalid_chart");
   return parsed.data;
 }
 export function isReadingId(value: string): boolean { return z.string().uuid().safeParse(value).success; }
 
 /** Reject repeated/conflicting/unknown control parameters, not just their first value. */
 export function readingSelector(params: URLSearchParams): ReadingSelector {
-  for (const key of params.keys()) if (key !== "document" && key !== "edition") throw new ReadingViewError("invalid_selection");
+  for (const key of params.keys()) if (key !== "document" && key !== "edition" && key !== "paidEdition") throw new ReadingViewError("invalid_selection");
   const ids = params.getAll("document");
   const editions = params.getAll("edition");
-  if (ids.length > 1 || editions.length > 1 || (ids.length && editions.length)) throw new ReadingViewError("invalid_selection");
+  const paid = params.getAll("paidEdition");
+  if (ids.length + editions.length + paid.length > 1) throw new ReadingViewError("invalid_selection");
+  if (paid.length) {
+    if (!isReadingId(paid[0])) throw new ReadingViewError("invalid_selection");
+    return { kind: "paid", id: paid[0] };
+  }
   if (ids.length) {
     if (!isReadingId(ids[0])) throw new ReadingViewError("invalid_selection");
     return { kind: "document", id: ids[0] };

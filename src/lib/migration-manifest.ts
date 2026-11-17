@@ -31,5 +31,13 @@ export const EXPECTED_MIGRATIONS: MigrationManifestEntry[] = [
   {
     "tag": "0006_reading_generation_safety",
     "hash": "7052c0d61022ad92a58d62053f2c9f965cf2f006c4f1fda107061781eb1c8525"
+  },
+  {
+    "tag": "0007_paid_reading_editions",
+    "hash": "3b113d8ae628189dfb00f74364eead8d39b2b37f7deaeeafa2d14e38efb3fe8b"
+  },
+  {
+    "tag": "0008_paid_annual_facts",
+    "hash": "9f1565c5656b626e76c51e2ee98adc3f3b597670cfd4159f20110b8e35fa065c"
   }
 ];

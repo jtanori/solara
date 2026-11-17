@@ -1,7 +1,7 @@
 import { Body, Ecliptic, GeoVector, SearchSunLongitude, SiderealTime, SunPosition } from "astronomy-engine";
 import { DateTime, IANAZone } from "luxon";
 import type { ChartInput, ChartResult, Place, Placement } from "@/lib/types";
-import { castChart, type ChartFacts } from "@/lib/chart";
+import { castChart, type ChartFacts, type HouseSystem } from "@/lib/chart";
 import { longitudeOf, type BodyName } from "@/lib/astro";
 
 export const SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"] as const;
@@ -21,6 +21,17 @@ function validPlace(value: unknown): value is Place {
     typeof p.timezone === "string" && IANAZone.isValidZone(p.timezone);
 }
 
+/** One timezone/fold policy for the return target and rich natal angles. */
+export function resolveBirthTime(input: Pick<ChartInput, "birthDate" | "birthTime" | "birthPlace" | "timeChoice">): DateTime {
+  const localString = `${input.birthDate}T${input.birthTime}`;
+  const birth = DateTime.fromISO(localString, { zone: input.birthPlace.timezone });
+  if (!birth.isValid || birth.toFormat("yyyy-MM-dd'T'HH:mm") !== localString) {
+    throw new Error("That local birth time does not exist in the selected time zone. Please check for a daylight-saving clock change.");
+  }
+  const possibilities = birth.getPossibleOffsets().sort((a, b) => a.toMillis() - b.toMillis());
+  return input.timeChoice === "later" ? possibilities[possibilities.length - 1] : possibilities[0];
+}
+
 export function calculateSolarReturn(input: ChartInput): ChartResult {
   if (!input || typeof input.name !== "string" || !input.name.trim() || input.name.length > 100 ||
       typeof input.birthDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(input.birthDate) ||
@@ -29,16 +40,11 @@ export function calculateSolarReturn(input: ChartInput): ChartResult {
       !Number.isInteger(input.year) || input.year < 1900 || input.year > 2100) {
     throw new Error("Please check the birth details, locations, time zones, and year.");
   }
-  const localString = `${input.birthDate}T${input.birthTime}`;
-  let birth = DateTime.fromISO(localString, { zone: input.birthPlace.timezone });
-  if (!birth.isValid || birth.toFormat("yyyy-MM-dd'T'HH:mm") !== localString) {
-    throw new Error("That local birth time does not exist in the selected time zone. Please check for a daylight-saving clock change.");
-  }
+  const birth = resolveBirthTime(input);
   if (birth.toMillis() > Date.now() || input.year < birth.year) throw new Error("Please choose a valid birth date and a return year after birth.");
   const warnings: string[] = [];
-  const possibilities = birth.getPossibleOffsets().sort((a, b) => a.toMillis() - b.toMillis());
+  const possibilities = birth.getPossibleOffsets();
   if (possibilities.length > 1) {
-    birth = input.timeChoice === "later" ? possibilities[possibilities.length - 1] : possibilities[0];
     warnings.push(`Your birth time occurs twice because of a clock change. The ${input.timeChoice === "later" ? "later" : "earlier"} occurrence was used.`);
   }
   const sunLongitude = SunPosition(birth.toJSDate()).elon;
@@ -86,14 +92,11 @@ export function calculateSolarReturn(input: ChartInput): ChartResult {
  * positions (Sun, Moon, ASC); v2 knows ten bodies, their houses, both angles, the true
  * node, and the aspects within the return chart and between it and the natal chart.
  */
-export function calculateSolarReturnChart(input: ChartInput): { result: ChartResult; facts: ChartFacts } {
+export function calculateSolarReturnChart(input: ChartInput, houseSystem: HouseSystem = "whole-sign"): { result: ChartResult; facts: ChartFacts } {
   const result = calculateSolarReturn(input);
 
   // Natal chart, cast for the birth moment at the birth place.
-  const birthLocal = DateTime.fromISO(`${input.birthDate}T${input.birthTime}`, { zone: input.birthPlace.timezone });
-  const offsets = birthLocal.getPossibleOffsets().sort((a, b) => a.toMillis() - b.toMillis());
-  const birth = input.timeChoice === "later" && offsets.length > 1 ? offsets[offsets.length - 1] : offsets[0];
-  const natalAt = birth.toJSDate();
+  const natalAt = resolveBirthTime(input).toJSDate();
 
   const when = new Date(result.exactUtc);
   const ramc = normalize(SiderealTime(when as unknown as Parameters<typeof SiderealTime>[0]) * 15 + input.returnPlace.longitude);
@@ -103,7 +106,7 @@ export function calculateSolarReturnChart(input: ChartInput): { result: ChartRes
     latitude: input.returnPlace.latitude,
     longitude: input.returnPlace.longitude,
     ramcDegrees: ramc,
-    houseSystem: "whole-sign",
+    houseSystem,
     natal: {
       at: natalAt,
       bodies: [

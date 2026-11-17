@@ -1,7 +1,9 @@
+import { z } from "zod";
+import { readControlJson } from "@/lib/control-json";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { subscriptions, users } from "@/db/schema";
+import { readings, subscriptions, users } from "@/db/schema";
 import { LifecycleLeaseLost, withAccountLifecycleLock } from "@/lib/account-lifecycle-lock";
 import { currentUser } from "@/lib/auth";
 import { appOrigin, billingIsConfigured, getStripe, priceIdFor, type BillingCurrency } from "@/lib/billing";
@@ -10,6 +12,7 @@ import { log, requestMeta } from "@/lib/log";
 import { AUTH_RATE_LIMITS, consumeBudgets, keyFor, rateLimitedResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+class CheckoutChartGone extends Error {}
 
 /**
  * Test seams. Production passes nothing; the race test injects a Stripe stub and
@@ -59,8 +62,15 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
       es: "Demasiados intentos de pago. Espera un momento.",
     });
   }
-  const data = await request.json().catch(() => ({})) as { currency?: string };
-  const currency: BillingCurrency = data.currency === "usd" ? "usd" : "mxn";
+  let data: { currency?: BillingCurrency; readingId?: string };
+  try { data = z.strictObject({ currency: z.enum(["mxn", "usd"]).optional(), readingId: z.string().uuid().optional() }).parse(await readControlJson(request)); }
+  catch { return NextResponse.json({ error: locale === "es" ? "Solicitud no válida." : "Invalid request." }, { status: 400 }); }
+  const readingId = data.readingId;
+  if (readingId) {
+    const [chart] = await db.select({ id: readings.id }).from(readings).where(and(eq(readings.id, readingId), eq(readings.userId, user.id))).limit(1);
+    if (!chart) return NextResponse.json({ error: "Reading not found." }, { status: 404 });
+  }
+  const currency: BillingCurrency = data.currency ?? "mxn";
   const priceId = priceIdFor(currency);
   if (!priceId) return NextResponse.json({ error: locale === "es" ? "Esta moneda no está disponible." : "This currency is not available." }, { status: 400 });
   const [existing] = await db.select({ id: subscriptions.stripeSubscriptionId }).from(subscriptions).where(and(eq(subscriptions.userId, user.id), inArray(subscriptions.status, ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]))).limit(1);
@@ -104,6 +114,10 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
         .where(eq(users.id, user.id))
         .limit(1);
       if (!survivor) return { kind: "gone" as const, orphanCustomer: null };
+      if (readingId) {
+        const [chart] = await clientDb.select({ id: readings.id }).from(readings).where(and(eq(readings.id, readingId), eq(readings.userId, user.id))).limit(1);
+        if (!chart) return { kind: "chart-gone" as const };
+      }
 
       /*
        * Stop the heartbeat and fence the lease immediately before a result is
@@ -122,6 +136,11 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
             .where(eq(users.id, user.id))
             .for("update");
           if (!still) throw new LifecycleLeaseLost();
+          if (readingId) {
+            const [chart] = await tx.select({ id: readings.id }).from(readings)
+              .where(and(eq(readings.id, readingId), eq(readings.userId, user.id))).for("key share");
+            if (!chart) throw new CheckoutChartGone();
+          }
         });
       };
 
@@ -173,6 +192,9 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
       // only after the final lease/user fence.
       if (openSession?.url) {
         await assertStillOwner();
+        // Do not mint a second payable checkout or silently redirect to a
+        // different chart. #143's separate pagination fix remains a release gate.
+        if ((openSession.metadata?.solara_reading_id ?? null) !== (readingId ?? null)) return { kind: "context-conflict" as const };
         return { kind: "url" as const, url: openSession.url };
       }
 
@@ -183,12 +205,12 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
         client_reference_id: user.id,
         line_items: [{ price: priceId, quantity: 1 }],
         subscription_data: { metadata: { solara_user_id: user.id, solara_product: "premium" } },
-        metadata: { solara_user_id: user.id },
+        metadata: { solara_user_id: user.id, ...(readingId ? { solara_reading_id: readingId } : {}) },
         locale: locale === "es" ? "es" : "en",
-        success_url: `${origin}/dashboard?billing=success`,
-        cancel_url: `${origin}/pricing?billing=cancelled`,
+        success_url: `${origin}/dashboard?billing=success${readingId ? `&reading=${readingId}` : ""}`,
+        cancel_url: `${origin}/pricing?billing=cancelled${readingId ? `&reading=${readingId}` : ""}`,
         allow_promotion_codes: true,
-      }, { idempotencyKey: `solara-checkout-${user.id}-${currency}-${Math.floor(Date.now() / 900000)}` });
+      }, { idempotencyKey: `solara-checkout-${user.id}-${currency}-${readingId ?? "general"}-${Math.floor(Date.now() / 900000)}` });
       if (!session.url) throw new Error("Checkout URL missing");
 
       try {
@@ -211,11 +233,16 @@ export async function startCheckout(request: Request, deps: CheckoutDeps = {}) {
       log.error("billing.checkout_user_vanished", { ...requestMeta(request), userId: user.id, customerId: outcome.orphanCustomer });
       return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
     }
+    if (outcome.kind === "chart-gone") return NextResponse.json({ error: "Reading not found." }, { status: 404 });
+    if (outcome.kind === "context-conflict") return NextResponse.json({ error: locale === "es"
+      ? "Ya hay un pago abierto con otro contexto. Vuelve a esa carta o espera a que venza el pago abierto. No creamos un segundo pago."
+      : "An open checkout has a different chart context. Return to that chart or wait for the open checkout to expire. We did not create a second checkout.", code: "checkout_context_conflict" }, { status: 409 });
     if (outcome.kind === "already-subscribed") {
       return NextResponse.json({ error: locale === "es" ? "Ya tienes una suscripción. Adminístrala desde tu cuenta." : "You already have a subscription. Manage it from your account." }, { status: 409 });
     }
     return NextResponse.json({ url: outcome.url });
   } catch (error) {
+    if (error instanceof CheckoutChartGone) return NextResponse.json({ error: "Reading not found." }, { status: 404 });
     if (error instanceof LifecycleLeaseLost) {
       log.error("billing.checkout_lease_lost", { ...requestMeta(request), userId: user.id });
     } else {

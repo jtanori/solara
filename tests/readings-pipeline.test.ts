@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { calculateSolarReturnChart } from "../src/lib/solar";
 import { chartDigest } from "../src/lib/chart";
+import { calculatePaidSnapshot, paidDigest } from "../src/readings/paid-chart";
 import type { ChartInput } from "../src/lib/types";
 import { SECTION_REGISTRY, availableSections, sectionsForTier } from "../src/readings/registry";
 import { contentVersionFromSources, computeContentVersion, policyJson, resetContentVersionCacheForTests } from "../src/readings/content-version";
@@ -105,8 +106,8 @@ test("registry: sections without engine facts are not available", () => {
   assert.ok(available.includes("guidance"));
   assert.ok(!available.includes("planetaryYear"));
   assert.ok(!available.includes("transits"));
-  // #110 extends the digest; those sections light up without registry changes.
-  const extended = { ...baseDigest, profections: { age: 42, lord: "Mars" }, transits: [] } as typeof baseDigest;
+  // Only the actual rich calculation supplies the typed annual facts.
+  const extended = paidDigest(calculatePaidSnapshot("22222222-2222-4222-8222-222222222222", baseInput, "paid-rich-v1"));
   const extendedAvailable = availableSections(extended);
   assert.ok(extendedAvailable.includes("planetaryYear"));
   assert.ok(extendedAvailable.includes("transits"));

@@ -1,0 +1,26 @@
+{
+  "version": "paid-corpus/1",
+  "purpose": "Synthetic chart corpus for repeatable engineering and separately authorized provider/editorial evaluation. This manifest is not an approval.",
+  "locales": ["en", "es"],
+  "profiles": ["paid-core-v1", "paid-rich-v1"],
+  "inputSource": "tests/fixtures/annual-facts.json",
+  "cases": [
+    {"id": "baseline", "en": "Mexicali birth, relocated New York return; distinguish natal whole-sign reference from Placidus return houses.", "es": "Nacimiento en Mexicali, retorno en Nueva York; distinguir la referencia natal por signo completo de las casas Placidus del retorno."},
+    {"id": "fold-earlier", "en": "Earlier occurrence of the ambiguous New York birth time; natal angles and age must agree everywhere.", "es": "Primera ocurrencia de la hora natal ambigua en Nueva York; los ángulos y la edad deben concordar entre secciones."},
+    {"id": "fold-later", "en": "Later occurrence of the same civil time; do not reuse the earlier-occurrence angles or prose.", "es": "Segunda ocurrencia de la misma hora civil; no reutilizar los ángulos ni la prosa de la primera."},
+    {"id": "southern", "en": "Southern hemisphere natal chart; verify reference places are not swapped and traditional rulership stays explicit.", "es": "Carta natal del hemisferio sur; verificar que no se intercambien lugares y que el regente tradicional sea explícito."},
+    {"id": "leap-day", "en": "Leap-day birth, non-leap return year; age is selected year minus birth year, not worker-date age.", "es": "Nacimiento bisiesto y retorno en año no bisiesto; la edad usa el año elegido, no la fecha del proceso."},
+    {"id": "polar-natal", "en": "Valid relocated Placidus return but unavailable natal Ascendant; honest annual-profection limitation, no invented lord or angle.", "es": "Retorno Placidus válido con Ascendente natal no disponible; declarar la limitación de profección sin inventar regente ni ángulo."}
+  ],
+  "rubric": {
+    "specificity": {"en": "At least two accurate chart-specific anchors per substantive section, with useful practices rather than interchangeable boilerplate. A limitation section may explain its missing facts instead.", "es": "Al menos dos apoyos correctos y específicos por sección sustantiva, con prácticas útiles y no prosa intercambiable. Una sección limitada puede explicar los datos ausentes."},
+    "factualAgreement": {"en": "Every sign, body, house system, aspect/orb, age, year lord and transit phase agrees with the frozen facts. No invented dates, natal angles, bodies or forecast windows.", "es": "Todo signo, cuerpo, sistema de casas, aspecto/orbe, edad, regente y fase concuerda con los hechos guardados. Sin fechas, ángulos, cuerpos ni ventanas inventadas."},
+    "crossSectionConsistency": {"en": "Read the entire report: no contradictory placements, themes or advice; distinguish natal and return facts consistently.", "es": "Leer el informe completo: sin posiciones, temas ni consejos contradictorios; distinguir siempre los datos natales y de retorno."},
+    "language": {"en": "Natural, fluent English or Spanish matching the requested document locale, including technical terminology and headings.", "es": "Inglés o español natural y fluido según el idioma solicitado, incluidos títulos y términos técnicos."},
+    "completeness": {"en": "Every expected section is a complete usable interpretation or an honest supported limitation; no placeholders or failed-section prose disguised as complete.", "es": "Cada sección esperada contiene una interpretación útil y completa o una limitación honesta; sin marcadores ni fallos disfrazados de contenido completo."},
+    "noUpsell": {"en": "No locked-content, upgrade or purchase promises and no free-tier cliffhanger substituted for the paid conclusion.", "es": "Sin promesas de desbloquear, mejorar el plan o comprar contenido ni preguntas de venta de la versión gratuita en lugar de conclusiones."},
+    "honestLimitations": {"en": "Reflective, non-deterministic tone; no medical/financial guarantees. State unavailable natal angles/profections and the fixed-instant, non-calendar transit scope.", "es": "Tono reflexivo y no determinista, sin garantías médicas o financieras. Declarar ángulos/profecciones no disponibles y el alcance instantáneo, no de calendario, de los tránsitos."}
+  },
+  "scores": {"0": "Fails / No cumple", "1": "Needs revision / Requiere revisión", "2": "Passes full editorial review / Cumple la revisión editorial completa"},
+  "approval": "Six distinct complete provider-generated reports per locale; every criterion must score 2, with notes and an explicit reviewer attestation bound to the report and sample hashes. Synthetic outputs can never qualify. No second-person identity requirement."
+}

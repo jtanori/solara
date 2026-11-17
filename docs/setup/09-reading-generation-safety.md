@@ -1,9 +1,11 @@
 # Reading generation safety: disabled rollout and recovery
 
-**This is a runbook, not permission to deploy or enable generation.** Step 1 is
-implemented on the current working branch; hosted operations, credentials and
-live-provider evaluation require separate authorization. See the
-[approved plan](../plan-reading-generation-safety.md),
+**This is a runbook, not permission to deploy or enable generation.** The free
+safety boundary and canonical page/PDF are implemented. Hosted operations,
+credentials and live-provider evaluation require separate authorization. Paid
+immutable editions, their separate worker/allowance and editorial gate are
+covered by [the paid runbook](10-paid-readings.md). See the historical
+[approved free-safety plan](../plan-reading-generation-safety.md),
 [PR #148 repair evidence](../reading-generation-review-fixes.md), and
 [historical initial evidence](../reading-generation-safety-verification.md).
 
@@ -19,9 +21,9 @@ live-provider evaluation require separate authorization. See the
   owned run and a durable reservation. Unknown billing retains exposure and halts.
   HTTP/provider error responses also halt, even with a valid measured receipt:
   billable work is not necessarily successful output or a repair opportunity.
-- Free ceiling: **5 MXN**; generic paid-pipeline tests use 10 MXN, but this slice
-  supplies no paid-generation endpoint or paid-volume policy. Existing Premium
-  access remains; subscribers may explicitly choose an unused free offer.
+- Free ceiling: **5 MXN**. Paid editions have a separate durable endpoint/worker,
+  **10 MXN** exposure ceiling and monthly allowance; none resets the free offer.
+  Existing Premium access remains; subscribers may choose an unused free offer.
 - Attempts: at most four free calls, 2,000 output tokens each; full verified
   billable-input contract reserved. 15-second maximum attempt timeout includes
   the body; 40-second dispatch budget, 45-second durable run, 60-second route.
@@ -32,9 +34,10 @@ live-provider evaluation require separate authorization. See the
   Account deletion cascades new consent/run/attempt state. Reading deletion keeps
   a consumed tombstone. Legacy shared cache and existing audit retention remain
   separate #82/#85 work; do not promise full erasure of those legacy stores.
-- Existing reading page/PDF notes are illustrative, not newly generated prose.
-  Full generated-document display and paid generation are later work. **Do not
-  enable the public feature before output is usable and honestly presented.**
+- The reading page/PDF distinguish illustrative chart notes from pinned generated
+  documents. Free canonical selection and explicit paid-edition selection never
+  generate. **Do not enable the public feature without separately authorized
+  provider/editorial evidence and runtime qualification.**
 
 ## Configuration inventory (all three env examples agree)
 
@@ -45,7 +48,7 @@ live-provider evaluation require separate authorization. See the
 | `READINGS_PROCESSOR_PROFILE` | Non-secret JSON: stable ID, actual processor name, privacy version, per-model full billable-input caps, explicit served-model aliases. |
 | `READINGS_API_BASE_URL` | Canonical HTTPS endpoint base; no credentials/query/fragment; redirects refused. Endpoint changes invalidate prior consent. |
 | `READINGS_CHEAP_MODEL` | Explicit live model ID for free sections. |
-| `READINGS_STRONG_MODEL` | Later paid synthesis configuration; no paid admission in this slice. |
+| `READINGS_STRONG_MODEL` | Required for paid guidance; paid preflight also validates its aliases, prices and input cap. Not used by free sections. |
 | `READINGS_MODEL_PRICES` | Explicit positive MXN per million input/output tokens, requested model and every served alias; aliases must currently have equal rates. The full input-cap + 2,000-output-token quote must be representable and ≤5 MXN before availability/claim. No fixture defaults for live work. |
 | `READINGS_REQUEST_TIMEOUT_MS` | Integer 1–15000; unset defaults to 15000. |
 | `READINGS_API_KEY` | Nonblank visible ASCII without internal whitespace; surrounding spaces are trimmed, controls including CR/LF/NUL are rejected. **Last stage only**, directly in the approved environment's secret manager. Never in chat, Git, local customer data, or a command transcript. |
@@ -78,11 +81,12 @@ receipts do not establish invoice accuracy, model quality or real latency.
    sections without matching model provenance do not qualify. Unsupported-locale
    documents stay unchanged for classification; an earlier such document cannot
    outrank a later qualifying document. No prior applied/hosted migration was
-   edited: `0006` is the new unpublished migration in this change.
+   edited. `0006` belongs to the earlier free-safety change; the paid additions
+   are `0007` and `0008`, described in the paid runbook.
 5. Use the existing exact-SHA staging preflight (`db-remote.ts --pr <number> --env
-   staging`) and migration/deploy flow only after authorization. Check seven
-   journal entries, no unexpected/pending hashes, **16 tables / 62 required
-   columns / 9 required indexes**, `/api/health` and `/api/ready`. Do not bypass
+   staging`) and migration/deploy flow only after authorization. At the current
+   schema, check nine journal entries, no unexpected/pending hashes, **24 tables /
+   147 required columns / 22 required indexes**, `/api/health` and `/api/ready`. Do not bypass
    migration checks or add a second-approver enforcement gate.
 6. Keep the flag off through rollout. Smoke authenticated chart save, reading,
    PDF, dashboard, consent withdrawal, status, origin rejection and no-store

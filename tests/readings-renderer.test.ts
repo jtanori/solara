@@ -1,3 +1,4 @@
+import { SECTION_KEYS } from "../src/readings/types";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -19,7 +20,7 @@ function section(overrides: Partial<DisplaySection> = {}): DisplaySection {
 }
 function saved(locale: "en" | "es" = "en", edition: Parameters<typeof frozenReading>[1] = "free") {
   const raw = frozenReading(locale, edition);
-  const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw), { allowPaid: true });
+  const decoded = readStoredDocument(JSON.stringify(raw), documentIdentity(raw), { allowPaid: true, expectedSections: SECTION_KEYS });
   assert.ok(decoded.ok);
   return decoded.value;
 }

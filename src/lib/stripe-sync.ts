@@ -93,6 +93,11 @@ export async function processStripeEvent(event: Stripe.Event, stripe: Stripe): P
         },
 
         upsertSubscription: async values => {
+          // Paid permits use this user fence before reading entitlement. The
+          // webhook already holds its subscription advisory lock; workers never
+          // take that lock, so there is no user → advisory inversion. Keep this
+          // fence even when setCustomerId was unnecessary for an existing user.
+          await tx.select({ id: users.id }).from(users).where(eq(users.id, values.userId)).for("update");
           await tx.insert(subscriptions).values(values).onConflictDoUpdate({
             target: subscriptions.stripeSubscriptionId,
             set: values,
