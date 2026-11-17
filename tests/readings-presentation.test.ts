@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readStoredDocument } from "../src/readings/stored-document";
-import { readingPreviews, PREVIEW_COPY, NOTICE_COPY } from "../src/readings/presentation-copy";
+import { readingPreviews, PREVIEW_COPY, NOTICE_COPY, paidPricingNotice } from "../src/readings/presentation-copy";
 import { READING_LIMITS, readingEditionQuery, sectionText, ReadingViewError } from "../src/readings/presentation";
 import { readingSelector, readChart, chartNotes } from "../src/readings/chart-presentation";
 import { generationView, type GenerationViewSource } from "../src/readings/generation-view";
@@ -198,8 +198,23 @@ test("presentation: byte and aggregate text bounds are independent of per-field 
 test("presentation: catalog is honest, complete and never taken from persisted paid text", () => {
   for (const locale of ["en", "es"] as const) {
     assert.equal(readingPreviews(locale).filter(p => p.availability === "not_included").length, 7);
-    assert.match(PREVIEW_COPY.notice[locale], locale === "es" ? /no las desbloquea ahora/ : /does not unlock them now/);
+    assert.match(PREVIEW_COPY.notice[locale], locale === "es" ? /nunca genera una interpretación automáticamente/ : /never generates an interpretation automatically/);
+    assert.match(PREVIEW_COPY.notice[locale], locale === "es" ? /disponibilidad/ : /availability/);
     assert.match(PREVIEW_COPY.planned[locale], locale === "es" ? /cálculos adicionales/ : /additional chart calculations/);
+  }
+});
+
+test("pricing copy: a flag is not an offer and a missing chart is not proof of global unavailability", () => {
+  for (const locale of ["en", "es"] as const) {
+    const disabled = paidPricingNotice(false, false, locale);
+    assert.equal(paidPricingNotice(true, false, locale), disabled, "disablement wins over a stale available offer");
+    assert.match(disabled, locale === "es" ? /aún no están disponibles/ : /not available yet/);
+    const unverified = paidPricingNotice(false, true, locale);
+    assert.match(unverified, locale === "es" ? /disponibilidad verificada, consentimiento y una solicitud explícita/ : /verified availability, consent and an explicit request/);
+    assert.doesNotMatch(unverified, /not available yet|aún no están disponibles|allowance per|cupo por/);
+    const available = paidPricingNotice(true, true, locale);
+    assert.match(available, locale === "es" ? /Un cupo por mes UTC/ : /One allowance per UTC month/);
+    assert.match(available, locale === "es" ? /El pago no solicita una interpretación/ : /Checkout does not request an interpretation/);
   }
 });
 

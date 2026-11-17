@@ -76,7 +76,8 @@ const presentationMutations = [
   mutation("section-heading-overflow", [change(component, "if (headingHeight > PDF_FIXED_LAYOUT_LIMITS.sectionHeadingPt)", "if (false && headingHeight > PDF_FIXED_LAYOUT_LIMITS.sectionHeadingPt)")], pdf, "multiline section titles"),
   mutation("table-title-overflow", [change(component, "if (!inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines)", "if (false && !inline && repeatedTitle.length > PDF_FIXED_LAYOUT_LIMITS.tableTitleLines)")], pdf, "oversized repeated table headings"),
   { ...mutation("chart-selector-propagation", [change("src/app/reading/[id]/page.tsx", "selector={selector}", 'selector={{ kind: "auto" }}')], []), builtBrowser: true },
-  { ...mutation("premium-plans-promise", [change("src/app/pricing/page.tsx", "Full AI interpretations are not available yet; a subscription does not unlock them.", "Premium unlocks all nine generated topics now.")], []), builtBrowser: true },
+  { ...mutation("premium-plans-promise", [change(catalog, "Full AI interpretations are not available yet; a subscription does not unlock them.", "Premium unlocks all nine generated topics now.")], []), builtBrowser: true },
+  mutation("paid-pricing-flag-not-offer", [change(catalog, "if (!available) return locale", "if (false && !available) return locale")], ["tests/readings-presentation.test.ts"], "pricing copy:"),
   { ...mutation("raw-client-rsc-prop", [change("src/app/reading/[id]/page.tsx", "<ReadingGenerationControls key=", '<ReadingGenerationControls {...{ rawDocument: { models: { overview: "fixture-only" } } }} key=')], []), builtBrowser: true },
 ];
 const paidTests = ["tests/paid-readings.test.ts"], annualTests = ["tests/annual-facts.test.ts"], evaluationTests = ["tests/paid-evaluation.test.ts"];
