@@ -70,6 +70,7 @@
     "eslint": "9.39.4",
     "eslint-config-next": "16.4.6",
     "pdfjs-dist": "6.5.438",
+    "picomatch": "file:vendor/solara-picomatch-v4-4.0.7-solara.2.tgz",
     "playwright-core": "1.65.1",
     "postcss": "^8.5.32",
     "tailwindcss": "4.1.17",
@@ -79,6 +80,7 @@
   "overrides": {
     "@esbuild-kit/core-utils": {
       "esbuild": "0.25.12"
-    }
+    },
+    "picomatch": "$picomatch"
   }
 }

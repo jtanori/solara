@@ -19,6 +19,7 @@ solara/
 │   └── db/                     # Drizzle schema, pg client
 ├── drizzle/                    # versioned migrations + meta (never push to prod)
 ├── tests/                      # tsx --test suites (usage-guide-access, passwords, billing, geocoding, solar)
+├── vendor/                     # source-pinned private Picomatch security backport + npm archive (vendor/README.md)
 ├── scripts/
 │   ├── check-setup.mjs         # secret-safe format check: node scripts/check-setup.mjs [local|staging|production] [--strict]
 │   ├── db-run.ts               # env-explicit migrate/status/verify; rejects wrong targets
@@ -29,6 +30,7 @@ solara/
 │   ├── local/seed-users.ts     # local-only guarded seed: 9 accounts + subscriptions (ALLOW_LOCAL_SEED)
 │   ├── build-pdf.mjs / check-pdf-package.mjs # isolated worker build and production trace guard (setup/04-pdf.md)
 │   ├── verify-reading-browser.ts / verify-reading-mutations.mjs # synthetic generation-off presentation/paid checks
+│   ├── verify-dependency-mutations.mjs # local dependency-security negative controls and restoration
 │   ├── paid-reading-worker.ts  # dedicated database executor; deployment binding is a release gate
 │   ├── evaluate-paid-readings.ts / approve-paid-reading-evaluation.ts # offline corpus/diffs + explicit exact-version editorial record
 │   ├── benchmark-reading-pdf.ts # isolated synthetic resource samples; not hosted qualification

@@ -1,0 +1,53 @@
+{
+  "advisory": "GHSA-fc5q-39xc-vjpf",
+  "policy": "repeated-star-literal-v1",
+  "packages": [
+    {
+      "name": "@solara/picomatch-v4",
+      "version": "4.0.7-solara.2",
+      "path": "vendor/picomatch-v4",
+      "upstreamVersion": "4.0.7",
+      "upstreamGitHead": "6bb40679c218cefba5d4e9662408c5fdf699a8bb",
+      "upstreamTarball": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
+      "upstreamIntegrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
+      "files": {
+        "LICENSE": {
+          "upstream": "d0cd141b0c322fded5dfad1d4645bb2fedfc05b7321fe1009469638190d59ef9",
+          "vendored": "d0cd141b0c322fded5dfad1d4645bb2fedfc05b7321fe1009469638190d59ef9"
+        },
+        "index.js": {
+          "upstream": "02ae26406508e28f9ba0865be16cf77f0b33de6c4d4d49c212c4176df1d5625a",
+          "vendored": "02ae26406508e28f9ba0865be16cf77f0b33de6c4d4d49c212c4176df1d5625a"
+        },
+        "lib/constants.js": {
+          "upstream": "c28f952d2758261fe5428a121add485cc25b03e0193633f649de903dc0e5e222",
+          "vendored": "c28f952d2758261fe5428a121add485cc25b03e0193633f649de903dc0e5e222"
+        },
+        "lib/parse.js": {
+          "upstream": "4e1e05447668aa1e94366c5516a2bcd8f5fff800cc92b1d0cd7d77703b8618c4",
+          "vendored": "e62dc126fcc5e6fd5407a685134997915a00eef3f481440198c1e46b89bc5ba2"
+        },
+        "lib/picomatch.js": {
+          "upstream": "fdd249d7ffff853f3bb1c77eafc8baa1a437bea85a94c35877b83c6a40d9ca94",
+          "vendored": "fdd249d7ffff853f3bb1c77eafc8baa1a437bea85a94c35877b83c6a40d9ca94"
+        },
+        "lib/scan.js": {
+          "upstream": "6457a1764e5c2e543cc3a0c00ce12ebb3764097628868198370b64d4e642aaae",
+          "vendored": "6457a1764e5c2e543cc3a0c00ce12ebb3764097628868198370b64d4e642aaae"
+        },
+        "lib/utils.js": {
+          "upstream": "f04604f70cd1a3f6ace80b84766468674ff38b4bb83818d2ef1d81fc6355f935",
+          "vendored": "f04604f70cd1a3f6ace80b84766468674ff38b4bb83818d2ef1d81fc6355f935"
+        },
+        "posix.js": {
+          "upstream": "5695ff5dfcd5a338a40630bd506056f2950bcb08fe1cc068519cbbfe60add480",
+          "vendored": "5695ff5dfcd5a338a40630bd506056f2950bcb08fe1cc068519cbbfe60add480"
+        }
+      },
+      "archive": {
+        "path": "vendor/solara-picomatch-v4-4.0.7-solara.2.tgz",
+        "integrity": "sha512-8OZbASYf+6SH9mxth3H7kdRO+zYl8CsWIBofyJG1E6T9YoRvlZAwD5mm1T7xWrbskDoImW7HRKIEa8ZBuJzeNA=="
+      }
+    }
+  ]
+}
