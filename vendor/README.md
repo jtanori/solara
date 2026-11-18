@@ -62,8 +62,9 @@ works in CI and previews. It is dev-only, not part of the PDF runtime trace.
   integrity, and **each archive member's exact correspondence to readable source**.
 - Dangerous patterns become literals through the matcher, `makeRe`, and
   `parse`/`compileRe`; capture and the former recursion opt-out do not bypass it.
-- Hostile long-input cases run in a separate, memory-limited process with an
-  external deadline; a hung regex cannot hang the whole suite.
+- Hostile long-input cases run in a separate process with a 64 MiB V8 old-space
+  limit and five-second external wall deadline (not an OS/RSS guarantee); a hung
+  regex cannot hang the whole suite.
 - Positive/negative ordinary matches plus real Fast-glob and synchronous/
   asynchronous Tinyglobby filesystem discovery retain their expected behavior.
 - The separately updated Minimatch bounds `**/..` expansion, and the updated

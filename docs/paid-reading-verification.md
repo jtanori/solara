@@ -42,22 +42,23 @@ shared paid control was **disabled** and the approval table contained **0 rows**
 | Synthetic report + blank review with approval CLI `--record` | refused, exit 1; no approval created or control enabled |
 | `git diff --check` | pass; generated `next-env.d.ts` development/build path churn restored, not committed |
 
-**Audit caveat:** the additional unrestricted `npm audit --json` was **not clean**:
-19 findings (9 high, 10 moderate), in the existing development-tooling graph
-(ESLint/glob dependencies and Drizzle Kit's nested esbuild stack). No dependency
-versions, dependency declarations or `package-lock.json` changed in this feature.
-The zero-vulnerability claim above is production-only, not a waiver of those
-advisories or an assertion that all dependencies are safe. Each reported package
-path was independently checked as `dev: true` in the unchanged lockfile. Dependency
-upgrades remain separate; no audit command, CI threshold or workflow was weakened.
+**Historical audit caveat at the feature-only revision:** the additional
+unrestricted `npm audit --json` was **not clean**: 19 findings (9 high, 10 moderate)
+in development tooling (ESLint/glob dependencies and Drizzle Kit's nested esbuild).
+No dependency declarations or lockfile changed in that feature revision. The
+zero-vulnerability row above is production-only; every affected path was separately
+checked as `dev: true`. Those historical results are not rewritten or treated as
+a waiver. The later, separately committed remediation and both clean audits are
+recorded in [dependency-remediation.md](dependency-remediation.md); no audit
+command, CI threshold or workflow was weakened.
 
-**PR handoff hold:** `docs/PR_WORKFLOW.md` §1.10 requires a clean audit before filing.
-The CI-scoped production audit passes, but the unrestricted audit does not. This
-handoff therefore publishes the implementation/evidence on the existing branch
-without filing a new PR or inferring a waiver. Resolve the inherited development
-dependency findings in the separate dependency work, or have the operator explicitly
-decide their scope/exception, then refresh staging and re-run applicable gates.
-This does not require another reviewer identity and does not authorize activation.
+**Original PR handoff hold — now resolved by dependency cleanup:** under
+`docs/PR_WORKFLOW.md` §1.10, publication at `f4a5c8c` did not file a PR because its
+unrestricted audit was not clean. The operator subsequently authorized fixing
+all findings. The cleanup now has clean unrestricted/production audits, a refreshed
+staging check and full validation. Only that audit-related hold is lifted; normal
+PR review/CI and release gates remain. No waiver, separate reviewer identity,
+merge/deployment authority or generation activation is inferred.
 
 The final whole-suite run happened **after** both successful mutation groups and
 their restoration. Earlier failed harness targets and obsolete catalog snapshots
