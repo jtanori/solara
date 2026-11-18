@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { ReadingPdfRenderer } from "../src/readings/pdf-render";
 import { inspectPdf } from "./helpers/reading-pdf";
 import test, { after, afterEach, beforeEach } from "node:test";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { db, pool, coordinationPool } from "../src/db";
@@ -111,8 +111,17 @@ async function accept(a: Awaited<ReturnType<typeof account>>, f: ReturnType<type
   return { run: await accepted.json() as PaidRunView, intent, config, deps, offer };
 }
 async function ledger(id: string) {
-  return { run: (await db.select().from(runs).where(eq(runs.id, id)))[0], attempts: await db.select().from(attempts).where(eq(attempts.runId, id)),
-    checkpoints: await db.select().from(checkpoints).where(eq(checkpoints.runId, id)), snapshot: await db.select().from(snapshots).where(eq(snapshots.runId, id)),
+  // The two multi-row selects are ordered exactly as production orders its own ledger
+  // (`paid-store.ts`: `asc(createdAt), asc(id)`). Without an ORDER BY, PostgreSQL returns
+  // whatever order the plan yields, so two reads of *unchanged* rows can disagree once
+  // concurrent load shifts plan choice — and every `deepEqual(ledger(id), before)` here
+  // asserts that nothing was rewritten, which a reordering falsely contradicts.
+  // `snapshot` (PK `run_id`) and `editions` (unique on `run_id`) hold at most one row per
+  // run, so their order is fixed by constraint and needs no ORDER BY.
+  return { run: (await db.select().from(runs).where(eq(runs.id, id)))[0],
+    attempts: await db.select().from(attempts).where(eq(attempts.runId, id)).orderBy(asc(attempts.createdAt), asc(attempts.id)),
+    checkpoints: await db.select().from(checkpoints).where(eq(checkpoints.runId, id)).orderBy(asc(checkpoints.attemptId)),
+    snapshot: await db.select().from(snapshots).where(eq(snapshots.runId, id)),
     editions: await db.select().from(editions).where(eq(editions.runId, id)) };
 }
 function barrier() { let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; }); return { wait, release }; }
