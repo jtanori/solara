@@ -104,11 +104,11 @@ test("dependency security: vendored source, installed code and npm tarball have 
     if (header.every(byte => byte === 0)) break;
     assert.equal(header.length, 512);
     assert.equal(String.fromCharCode(header[156]), "0");
-    const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/s, "");
+    const name = header.subarray(0, 100).toString("utf8").split("\0", 1)[0];
     assert.ok(name.startsWith("package/"));
     const file = name.slice("package/".length);
     assert.ok(expected.delete(file), `unexpected or duplicate archive member: ${name}`);
-    const size = Number.parseInt(header.subarray(124, 136).toString("ascii").replace(/\0.*$/s, "").trim(), 8);
+    const size = Number.parseInt(header.subarray(124, 136).toString("ascii").split("\0", 1)[0].trim(), 8);
     assert.ok(Number.isSafeInteger(size) && size > 0 && size < 128 * 1024);
     assert.deepEqual(tar.subarray(offset + 512, offset + 512 + size), readFileSync(join(sourceRoot, file)), `archive ${file} is stale`);
     offset += 512 + Math.ceil(size / 512) * 512;
