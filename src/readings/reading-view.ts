@@ -67,19 +67,30 @@ type StoredFactsRow = {
  * Verify a stored facts row against the chart summary and return the facts, or a stable
  * rejection code. Never throws: reading a chart must not depend on a facts row being
  * readable.
+ *
+ * That promise is enforced rather than assumed. `@/readings/chart-facts` bounds nesting
+ * before it hashes or measures a payload, and this catch is the backstop for anything
+ * else a stored row could do: the call sits outside `storedFacts`'s query catch, so an
+ * escape would surface as a 500 on the chart and PDF routes instead of as a chart
+ * without its wheel. The code is stable and the payload is never logged, because it is
+ * derived personal data. (PR #156 review, Medium.)
  */
 function decodeStoredFacts(row: StoredFactsRow, summary: ReadingChart["result"]): ChartFacts | BaseFactsRejection {
-  const metadata = baseFactsRowRejection({
-    factsVersion: row.factsVersion,
-    calculationPolicy: row.factsCalculationPolicy,
-    houseSystem: row.factsHouseSystem,
-    chartVersion: row.factsChartVersion,
-    factsHash: row.factsHash,
-    facts: row.facts,
-  });
-  if (metadata) return metadata;
-  const decoded = readBaseFacts(row.facts, summary);
-  return "rejection" in decoded ? decoded.rejection : decoded.facts;
+  try {
+    const metadata = baseFactsRowRejection({
+      factsVersion: row.factsVersion,
+      calculationPolicy: row.factsCalculationPolicy,
+      houseSystem: row.factsHouseSystem,
+      chartVersion: row.factsChartVersion,
+      factsHash: row.factsHash,
+      facts: row.facts,
+    });
+    if (metadata) return metadata;
+    const decoded = readBaseFacts(row.facts, summary);
+    return "rejection" in decoded ? decoded.rejection : decoded.facts;
+  } catch {
+    return "invalid";
+  }
 }
 
 /**

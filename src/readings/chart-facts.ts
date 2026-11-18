@@ -64,6 +64,20 @@ export const BASE_FACTS_TOLERANCE_DEGREES = 0.0001;
  */
 export const RETURN_SUN_TOLERANCE_DEGREES = 0.002;
 export const BASE_FACTS_HOUSE_SYSTEM = "whole-sign" as const;
+/**
+ * Nesting bound on stored facts JSON, applied iteratively before anything recurses.
+ *
+ * `canonicalHash` and `JSON.stringify` both walk a value recursively, so an under-size
+ * but deeply nested payload overflows the stack. A real document nests five levels deep
+ * (measured), so 32 is over six times the honest depth while remaining three orders of
+ * magnitude below what the stack survives; anything past it is corruption or a
+ * privileged write, never a viewer's input, because the value comes from a row this
+ * account owns and no request path writes it.
+ */
+export const BASE_FACTS_MAX_DEPTH = 32;
+
+/** `SIGN_NAMES` widened for lookup: `ChartFacts` types a sign as a plain string. */
+const SIGN_INDEX: readonly string[] = SIGN_NAMES;
 
 const position = z.object({
   sign: z.enum(SIGN_NAMES),
@@ -136,8 +150,35 @@ export type BaseFactsRejection =
   | "calculation_failed"
   | "incoherent"
   | "oversize"
+  /**
+   * Not a document this contract can read at all: it fails the schema, or it nests
+   * deeper than `BASE_FACTS_MAX_DEPTH` and therefore cannot be hashed or measured
+   * without recursing over unvalidated JSON. Stable and payload-free, like every code
+   * here.
+   */
   | "invalid"
   | "hash_mismatch";
+
+/**
+ * Nesting depth of a JSON value, computed iteratively.
+ *
+ * Iterative on purpose: this guard exists to keep recursion off unvalidated stored
+ * JSON, so it must not be able to overflow the stack it is protecting. It also stops
+ * as soon as the bound is exceeded, so a pathological payload costs a bounded scan
+ * rather than a full walk.
+ */
+export function jsonNestingDepth(value: unknown): number {
+  let deepest = 0;
+  const pending: Array<{ entry: unknown; level: number }> = [{ entry: value, level: 1 }];
+  while (pending.length > 0) {
+    const { entry, level } = pending.pop()!;
+    if (level > deepest) deepest = level;
+    if (level > BASE_FACTS_MAX_DEPTH) return deepest;
+    if (Array.isArray(entry)) for (const child of entry) pending.push({ entry: child, level: level + 1 });
+    else if (entry !== null && typeof entry === "object") for (const child of Object.values(entry)) pending.push({ entry: child, level: level + 1 });
+  }
+  return deepest;
+}
 
 function serializedSize(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value) ?? "");
@@ -185,8 +226,20 @@ export function factsCoherenceRejection(result: ChartSummary, facts: ChartFacts)
     // an independent statement of the invariant is what makes it a check at all. Were
     // the convention ever to change, this gate rejects the row — facts go missing, the
     // chart still renders, and nothing wrong is drawn.
-    const ascendant = facts.angles.ascendant.longitude;
-    if (angularDelta(facts.houses[0]!, Math.floor(ascendant / 30) * 30) > BASE_FACTS_TOLERANCE_DEGREES) return "incoherent";
+    //
+    // The sign is the identity to derive that from, and it is the *unrounded* one:
+    // `castChart` rounds the stored longitude to 4 decimals but takes the sign from the
+    // value before rounding, so at the top of a sign the two disagree. An Ascendant of
+    // 119.99999042980204 is Cancer — house one starts at 90 — and stores as 120, so
+    // flooring the stored longitude demands a cusp at 120 and rejects a sound chart.
+    // Since the row is insert-only and never backfilled, that rejection would be
+    // permanent: the chart could never get its wheel even though its computation was
+    // correct. (PR #156 review, High.)
+    const signIndex = SIGN_INDEX.indexOf(facts.angles.ascendant.sign);
+    // Unreachable once the schema has validated the sign against `SIGN_NAMES`; kept as a
+    // stable rejection so a -1 can never silently demand a cusp at -30.
+    if (signIndex < 0) return "incoherent";
+    if (angularDelta(facts.houses[0]!, signIndex * 30) > BASE_FACTS_TOLERANCE_DEGREES) return "incoherent";
     if (facts.houses.some((cusp, index) => angularDelta(cusp, (facts.houses[0]! + index * 30) % 360) > BASE_FACTS_TOLERANCE_DEGREES)) return "incoherent";
   }
   const sun = facts.bodies.find(item => item.body === "Sun");
@@ -257,6 +310,10 @@ export function readBaseFacts(
   result: ChartSummary,
 ): { facts: ChartFacts } | { rejection: BaseFactsRejection } {
   if (value === null || value === undefined) return { rejection: "absent" };
+  // Before anything recursive: the size measurement below and the hash both walk the
+  // value, and a deeply nested payload would overflow the stack instead of being
+  // rejected. (PR #156 review, Medium.)
+  if (jsonNestingDepth(value) > BASE_FACTS_MAX_DEPTH) return { rejection: "invalid" };
   if (serializedSize(value) > BASE_FACTS_BYTES) return { rejection: "oversize" };
   const parsed = baseFactsSchema.safeParse(value);
   if (!parsed.success) return { rejection: "invalid" };
@@ -271,6 +328,10 @@ export function readBaseFacts(
  * SELECT applies an `octet_length` guard that yields `null` instead of an oversized
  * payload, so a row that exists but carries `null` facts can only mean "too large to
  * transfer" — reported as `oversize`, not as a hash mismatch.
+ *
+ * Total: whatever the row holds, this returns a code rather than throwing. Nesting is
+ * bounded before `canonicalHash` recurses over it, so a corrupt or privileged-write
+ * payload costs the viewer the wheel and never the chart. (PR #156 review, Medium.)
  */
 export function baseFactsRowRejection(row: {
   factsVersion: string; calculationPolicy: string; houseSystem: string;
@@ -279,6 +340,7 @@ export function baseFactsRowRejection(row: {
   if (row.factsVersion !== BASE_FACTS_VERSION || row.calculationPolicy !== BASE_CALCULATION_POLICY ||
       row.houseSystem !== BASE_FACTS_HOUSE_SYSTEM || row.chartVersion !== "chart/2") return "invalid";
   if (row.facts === null || row.facts === undefined) return "oversize";
+  if (jsonNestingDepth(row.facts) > BASE_FACTS_MAX_DEPTH) return "invalid";
   if (canonicalHash(row.facts) !== row.factsHash) return "hash_mismatch";
   return null;
 }

@@ -12,11 +12,13 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { db, pool, coordinationPool } from "../src/db";
 import { readings, readingChartFacts, readingGenerationConsents as consents, readingGenerationRuns as runs, users } from "../src/db/schema";
 import { calculateSolarReturn, solarReturnFacts } from "../src/lib/solar";
+import { SIGN_NAMES } from "../src/lib/astro";
 import { canonicalHash } from "../src/readings/canonical-hash";
 import {
-  BASE_CALCULATION_POLICY, BASE_FACTS_BYTES, BASE_FACTS_HOUSE_SYSTEM, BASE_FACTS_SAVE_BYTES,
-  BASE_FACTS_TOLERANCE_DEGREES, BASE_FACTS_VERSION, RETURN_SUN_TOLERANCE_DEGREES,
-  baseFactsRow, baseFactsRowRejection, readBaseFacts,
+  BASE_CALCULATION_POLICY, BASE_FACTS_BYTES, BASE_FACTS_HOUSE_SYSTEM, BASE_FACTS_MAX_DEPTH,
+  BASE_FACTS_SAVE_BYTES, BASE_FACTS_TOLERANCE_DEGREES, BASE_FACTS_VERSION,
+  RETURN_SUN_TOLERANCE_DEGREES, baseFactsRow, baseFactsRowRejection, factsCoherenceRejection,
+  jsonNestingDepth, readBaseFacts,
 } from "../src/readings/chart-facts";
 import { handleChartSave } from "../src/readings/chart-save";
 import { PDF_INPUT_BYTES, READING_LIMITS, ReadingViewError } from "../src/readings/presentation";
@@ -26,7 +28,7 @@ import { ReadingPdfError } from "../src/readings/pdf-contract";
 import { pdfFixture } from "./helpers/reading-pdf";
 import { readingChartInput } from "./helpers/reading-fixtures";
 import type { ChartFacts } from "../src/lib/chart";
-import type { ChartInput } from "../src/lib/types";
+import type { ChartInput, ChartResult } from "../src/lib/types";
 
 const enabled = process.env.RUN_INTEGRATION_TESTS === "1";
 const gated = { skip: !enabled ? "requires RUN_INTEGRATION_TESTS=1 and disposable local PostgreSQL" : false };
@@ -159,6 +161,11 @@ test("base facts: the coherence gate rejects every way the summary and the facts
   // the orientation is wrong, which would draw a wheel contradicting its own table.
   incoherent(draft => { draft.houses = draft.houses.map(cusp => (cusp + 30) % 360); });
   incoherent(draft => { draft.houses = [...draft.houses.slice(1), draft.houses[0]!]; });
+  // House one on the right cusp and the ring itself broken. Both mutations above rotate
+  // the whole ring, which the first-cusp check alone would catch; these are the ones that
+  // only the per-cusp check can see, so they are what makes it load-bearing.
+  incoherent(draft => { draft.houses[5] = (draft.houses[5]! + 1) % 360; });
+  incoherent(draft => { draft.houses = draft.houses.map(() => draft.houses[0]!); });
   // The summary's own Sun house and Moon must match the facts beside them.
   incoherent(draft => { sun(draft).house = (sun(draft).house ?? 1) % 12 + 1; });
   incoherent(draft => { sun(draft).house = null; });
@@ -187,6 +194,93 @@ test("base facts: rounding-level agreement passes and a different moment does no
   assert.ok("row" in sunShift(RETURN_SUN_TOLERANCE_DEGREES / 2), "the searched return instant is allowed");
   // Roughly three minutes of solar motion: still a chart nobody would call the same one.
   assert.equal(rowRejection(sunShift(0.05)), "incoherent", "0.05 degrees of solar motion is about three minutes");
+});
+
+test("base facts: an Ascendant rounded onto a sign boundary keeps its own sign's cusps, at every boundary", () => {
+  // `castChart` rounds the stored longitude to 4 decimals but takes the sign from the
+  // value before rounding, so at the top of a sign the two disagree: the honest value is
+  // a hair below the boundary, the stored one is the boundary itself, and the sign — and
+  // therefore house one's cusp — belongs to the sign below it. Flooring the rounded
+  // longitude demands the next sign's cusp and rejects a sound chart, which an
+  // insert-only row can never recover from. (PR #156 review, High.)
+  const boundary = (signIndex: number, storedLongitude: number, honestLongitude: number) => {
+    const start = signIndex * 30;
+    const sign = SIGN_NAMES[signIndex]!;
+    const draft = structuredClone(contractFacts);
+    draft.angles.ascendant = { ...draft.angles.ascendant!, sign, degree: 30, longitude: storedLongitude };
+    draft.houses = Array.from({ length: 12 }, (_, index) => (start + index * 30) % 360);
+    const summary: ChartResult = {
+      ...result,
+      ascendant: { ...result.ascendant!, sign, longitude: honestLongitude, degree: honestLongitude - start },
+    };
+    return { draft, summary, start, sign };
+  };
+
+  // All twelve upper boundaries. Pisces is the 0/360 wrap, which `toFixed` stores as 360.
+  for (let signIndex = 0; signIndex < 12; signIndex++) {
+    const upper = (signIndex + 1) * 30;
+    const { draft, summary, start, sign } = boundary(signIndex, upper, upper - 9.5702e-6);
+
+    const saved = baseFactsRow(() => draft, input, summary);
+    assert.ok("row" in saved, `save must succeed for ${sign}: ${JSON.stringify(saved)}`);
+    assert.equal(saved.row.facts.houses[0], start, `${sign}: house one starts at its own cusp`);
+    const read = readBaseFacts(saved.row.facts, summary);
+    assert.ok("facts" in read, `readback must succeed for ${sign}: ${JSON.stringify(read)}`);
+    assert.equal(canonicalHash(read.facts), saved.row.factsHash, `${sign}: what reads back is what was written`);
+
+    // The same document with the ring rotated into the next sign is still rejected: fixing
+    // the boundary must not turn the orientation check into a formality.
+    const rotated = structuredClone(draft);
+    rotated.houses = rotated.houses.map(cusp => (cusp + 30) % 360);
+    assert.equal(rowRejection(baseFactsRow(() => rotated, input, summary)), "incoherent", `${sign}: rotated save`);
+    assert.equal(readRejection(readBaseFacts(rotated, summary)), "incoherent", `${sign}: rotated readback`);
+  }
+
+  // The 0/360 wrap from both sides: the same Pisces Ascendant encoded as 0 rather than
+  // 360, and an Aries Ascendant just past 0. The ring comes from the sign, so the
+  // encoding of the longitude cannot change the answer.
+  const wrapped = boundary(11, 0, 359.99999042980204);
+  const wrappedSaved = baseFactsRow(() => wrapped.draft, input, wrapped.summary);
+  assert.ok("row" in wrappedSaved, "359.99999 stored as 0 is still Pisces");
+  assert.equal(wrappedSaved.row.facts.houses[0], 330);
+  const aries = boundary(0, 0, 9.5702e-6);
+  const ariesSaved = baseFactsRow(() => aries.draft, input, aries.summary);
+  assert.ok("row" in ariesSaved, "an Ascendant just past 0 is Aries");
+  assert.equal(ariesSaved.row.facts.houses[0], 0);
+
+  // A sign outside `SIGN_NAMES` cannot reach the gate through `baseFactsRow`, because the
+  // schema refuses it first. The gate is exported and callable on its own, so the guard is
+  // asserted where it can actually be reached: a lookup miss must reject rather than
+  // silently demand a cusp at -30.
+  // The ring starts at 330 on purpose: the lookup returns -1 for a sign it does not know,
+  // and -1 * 30 is 330 modulo 360, so without the guard a Pisces-shaped ring would look
+  // exactly right and this contradictory document would be accepted.
+  const unknownSign = structuredClone(contractFacts);
+  unknownSign.angles.ascendant = { ...unknownSign.angles.ascendant!, sign: "NotASign" };
+  unknownSign.houses = Array.from({ length: 12 }, (_, index) => (330 + index * 30) % 360);
+  assert.equal(factsCoherenceRejection(result, unknownSign), "incoherent", "an unknown sign is rejected, not read as Pisces");
+});
+
+test("base facts: a real chart whose Ascendant rounds onto a sign boundary saves and reads back", () => {
+  // The case from the review, reproduced through the real engine rather than a
+  // constructed document: one longitude changed in the shared fixture puts the Ascendant
+  // 9.6e-6 degrees below the Cancer/Leo boundary.
+  const boundaryInput: ChartInput = { ...input, returnPlace: { ...input.returnPlace, longitude: -37.1420 } };
+  const boundaryResult = calculateSolarReturn(boundaryInput);
+  const boundaryFacts = solarReturnFacts(boundaryInput, boundaryResult);
+  assert.ok(boundaryResult.ascendant, "this chart has an Ascendant");
+  assert.equal(boundaryResult.ascendant.sign, "Cancer", "the summary keeps the unrounded sign");
+  assert.ok(boundaryResult.ascendant.longitude < 120, "and the unrounded value is below the boundary");
+  assert.equal(boundaryFacts.angles.ascendant?.longitude, 120, "the stored longitude is rounded onto it");
+  assert.equal(boundaryFacts.angles.ascendant?.sign, "Cancer", "the stored sign is not");
+  assert.equal(boundaryFacts.houses[0], 90, "house one is Cancer's cusp");
+
+  const saved = baseFactsRow(solarReturnFacts, boundaryInput, boundaryResult);
+  assert.ok("row" in saved, `a sound chart must not lose its facts: ${JSON.stringify(saved)}`);
+  const read = readBaseFacts(saved.row.facts, boundaryResult);
+  assert.ok("facts" in read, `and they must read back: ${JSON.stringify(read)}`);
+  assert.equal(canonicalHash(read.facts), saved.row.factsHash);
+  assert.equal(read.facts.houses[0], 90, "the ring that reads back is the sign's own");
 });
 
 test("base facts: a chart with no Ascendant saves facts without a wheel instead of inventing one", () => {
@@ -247,6 +341,57 @@ test("base facts: a stored row is verified before it is rendered, and never trus
   const decoded = readBaseFacts(JSON.parse(JSON.stringify(row.row.facts)), result);
   assert.ok("facts" in decoded, "a JSONB round trip must still read back");
   assert.deepEqual(decoded.facts, row.row.facts, "byte-identically: no field is silently dropped on read");
+});
+
+test("base facts: nesting is bounded before anything recurses over stored JSON", () => {
+  // `canonicalHash` and `JSON.stringify` both walk a value recursively. A payload that is
+  // small in bytes but deep in nesting therefore overflowed the stack, and because the
+  // verification ran outside the query's catch it escaped a chart render as a 500 instead
+  // of costing the viewer the wheel. (PR #156 review, Medium.)
+  assert.ok("row" in row);
+  assert.ok(jsonNestingDepth(row.row.facts) <= BASE_FACTS_MAX_DEPTH, "an honest document nests five levels, far inside the bound");
+  assert.equal(jsonNestingDepth(7), 1, "a bare value is one level");
+
+  /** A value whose measured nesting depth is exactly `depth`: every container, plus the leaf. */
+  const nested = (depth: number) => {
+    let value: unknown = { leaf: "DEEP_PAYLOAD_SENTINEL" };
+    for (let level = 2; level < depth; level++) value = { x: value };
+    return value;
+  };
+  assert.equal(jsonNestingDepth(nested(2)), 2);
+  const metadata = {
+    factsVersion: BASE_FACTS_VERSION, calculationPolicy: BASE_CALCULATION_POLICY,
+    houseSystem: BASE_FACTS_HOUSE_SYSTEM, chartVersion: "chart/2",
+  };
+
+  // At the bound the guard stays out of the way: the row is judged on its hash, not its shape.
+  const atBound = nested(BASE_FACTS_MAX_DEPTH);
+  assert.equal(jsonNestingDepth(atBound), BASE_FACTS_MAX_DEPTH);
+  assert.equal(baseFactsRowRejection({ ...metadata, factsHash: canonicalHash(atBound), facts: atBound }), null,
+    "a payload at the bound is still verified normally");
+
+  // One level past it, and the exact payload from the review: 2000 nested `{"x": ...}`
+  // objects. Both are refused with a stable code, and both are well under the stored size
+  // bound — so it is the nesting guard that refuses them, not the size check arriving first.
+  let reviewed: unknown = { leaf: "DEEP_PAYLOAD_SENTINEL" };
+  for (let level = 0; level < 2000; level++) reviewed = { x: reviewed };
+  for (const [label, deep] of [["one past the bound", nested(BASE_FACTS_MAX_DEPTH + 1)], ["the review's 2000 nested objects", reviewed]] as const) {
+    assert.ok(jsonNestingDepth(deep) > BASE_FACTS_MAX_DEPTH, `${label} is seen without walking all of it`);
+    assert.ok(Buffer.byteLength(JSON.stringify(deep)) < BASE_FACTS_BYTES, `${label} is under the stored bound`);
+    assert.equal(baseFactsRowRejection({ ...metadata, factsHash: "0".repeat(64), facts: deep }), "invalid", label);
+    assert.equal(readRejection(readBaseFacts(deep, result)), "invalid", `${label} on the read path`);
+  }
+
+  // And the deepest payload the stored bound actually permits. About 7000 nested objects
+  // weigh 49 KiB compact and 63 KiB as `jsonb` — under the 65536-octet constraint, so
+  // PostgreSQL keeps the row — yet `JSON.stringify` cannot serialize them at all. Without
+  // the guard running first, the size measurement in `readBaseFacts` is what throws, so
+  // this is the case that makes the ordering load-bearing rather than belt-and-braces.
+  let storable: unknown = { leaf: "DEEP_PAYLOAD_SENTINEL" };
+  for (let level = 0; level < 7000; level++) storable = { x: storable };
+  assert.throws(() => JSON.stringify(storable), RangeError, "the size measurement itself cannot serialize this payload");
+  assert.equal(readRejection(readBaseFacts(storable, result)), "invalid", "so the guard must run before it");
+  assert.equal(baseFactsRowRejection({ ...metadata, factsHash: "0".repeat(64), facts: storable }), "invalid");
 });
 
 test("base facts: derived positions only, never the birth identity they were derived from", () => {
@@ -436,6 +581,100 @@ test("a tampered stored row renders as absent, not as a wrong wheel or a 500", g
   assert.equal(rejected!.code, "hash_mismatch");
   assert.equal(rejected!.readingId, id);
   assert.ok(!JSON.stringify(rejected).includes(JSON.stringify(tampered).slice(0, 40)), "the payload is not logged");
+});
+
+test("a chart whose Ascendant rounds onto a sign boundary saves its facts and renders them", gated, async t => {
+  // The review's boundary chart end to end, through the real route and the real database.
+  // Both halves matter: the row is insert-only, so a chart rejected here can never get its
+  // wheel later, and a row that will not read back is equally permanent.
+  const user = await account();
+  const boundaryInput: ChartInput = { ...input, returnPlace: { ...input.returnPlace, longitude: -37.1420 } };
+  const boundaryResult = calculateSolarReturn(boundaryInput);
+  const saved = await handleChartSave(request(boundaryInput), saveDeps(user));
+  assert.equal(saved.status, 200, "the save itself is unaffected either way");
+  const { id } = await saved.json() as { id: string };
+
+  const rows = await storedFacts(id);
+  assert.equal(rows.length, 1, "the boundary chart wrote its facts row");
+  assert.equal(rows[0]!.facts.houses[0], 90, "house one is Cancer's cusp, not the rounded longitude's");
+  assert.equal(rows[0]!.facts.angles.ascendant?.sign, "Cancer", "the sign the ring was derived from");
+  assert.equal(rows[0]!.facts.angles.ascendant?.longitude, 120, "the longitude that used to be floored");
+
+  const store = new ReadingViewStore();
+  const logs = await captured(t, async () => {
+    const view = await loadReadingPresentation({ id: user.id, emailVerifiedAt: new Date(), plan: "free" }, id, "en", { kind: "chart" }, { store });
+    const rendered = view.chart.baseFacts;
+    assert.ok(rendered, "and the saved facts render");
+    assert.equal(canonicalHash(rendered), rows[0]!.factsHash, "what renders is what was written");
+    assert.deepEqual(view.chart.result.ascendant, boundaryResult.ascendant, "the summary is untouched");
+  });
+  assert.ok(!logs.some(entry => entry.event === "readings.facts_rejected"), "a sound chart is not a defect");
+});
+
+test("a deeply nested malformed row renders the chart without facts instead of throwing", gated, async t => {
+  // 2000 nested objects: about 12 KiB compact and 14 KiB as `jsonb`, so the stored size
+  // bound and the `chart_facts_size_check` constraint both accept it and PostgreSQL keeps
+  // the row. Only the nesting guard can refuse it. Reaching this state takes corruption or
+  // a privileged write, not a viewer's input: the value comes from a row this account owns
+  // and no request path writes it.
+  const user = await account();
+  const saved = await handleChartSave(request(input), saveDeps(user));
+  const { id } = await saved.json() as { id: string };
+
+  let deep: unknown = { leaf: "DEEP_PAYLOAD_SENTINEL" };
+  for (let level = 0; level < 2000; level++) deep = { x: deep };
+  assert.ok(Buffer.byteLength(JSON.stringify(deep)) < BASE_FACTS_BYTES, "under the stored bound, so size is not what refuses it");
+  // The cast is the point: this row is deliberately not a document of this contract.
+  await db.update(readingChartFacts)
+    .set({ facts: deep as unknown as ChartFacts, factsHash: canonicalHash({ unrelated: true }) })
+    .where(eq(readingChartFacts.readingId, id));
+
+  const [stored] = await db.select({ size: sql<number>`octet_length(${readingChartFacts.facts}::text)` })
+    .from(readingChartFacts).where(eq(readingChartFacts.readingId, id));
+  assert.ok(stored!.size < BASE_FACTS_BYTES, `PostgreSQL held the row (${stored!.size} octets), so the guard sees a real payload`);
+
+  // One decode boundary serves every selector, so the chart and the PDF stay available alike.
+  const store = new ReadingViewStore();
+  const logs = await captured(t, async () => {
+    const view = await loadReadingPresentation({ id: user.id, emailVerifiedAt: new Date(), plan: "free" }, id, "en", { kind: "chart" }, { store });
+    assert.equal(view.chart.id, id, "the chart itself still renders");
+    assert.equal(view.chart.baseFacts, undefined, "with no facts exposed");
+    assert.deepEqual(view.chart.result.moon, result.moon, "and the summary is untouched");
+  });
+  const rejected = logs.find(entry => entry.event === "readings.facts_rejected");
+  assert.ok(rejected, "the defect is recorded");
+  assert.equal(rejected!.code, "invalid", "as a stable code, not a thrown RangeError");
+  assert.equal(rejected!.readingId, id);
+  assert.ok(!JSON.stringify(rejected).includes("DEEP_PAYLOAD_SENTINEL"), "the payload is not logged");
+});
+
+test("a facts row that fails at the driver boundary costs the wheel, never the chart", gated, async t => {
+  // The nesting guard handles the cause found in review; this pins the promise itself.
+  // `decodeStoredFacts` is documented never to throw, and it once did, so the backstop is
+  // exercised with a failure no driver produces today: a row whose payload throws when it
+  // is read. Whatever the boundary can be made to do, the chart must survive it.
+  const user = await account();
+  const saved = await handleChartSave(request(input), saveDeps(user));
+  const { id } = await saved.json() as { id: string };
+
+  const store = new ReadingViewStore();
+  const hostile = {
+    factsVersion: BASE_FACTS_VERSION, factsCalculationPolicy: BASE_CALCULATION_POLICY,
+    factsHouseSystem: BASE_FACTS_HOUSE_SYSTEM, factsChartVersion: "chart/2",
+    factsHash: "0".repeat(64),
+    get facts(): unknown { throw new Error("DRIVER_LEVEL_FAILURE_SENTINEL"); },
+  };
+  store.facts = (async () => hostile) as unknown as typeof store.facts;
+
+  const logs = await captured(t, async () => {
+    const view = await loadReadingPresentation({ id: user.id, emailVerifiedAt: new Date(), plan: "free" }, id, "en", { kind: "chart" }, { store });
+    assert.equal(view.chart.id, id, "the chart still renders");
+    assert.equal(view.chart.baseFacts, undefined, "with no facts exposed");
+  });
+  const rejected = logs.find(entry => entry.event === "readings.facts_rejected");
+  assert.equal(rejected?.code, "invalid", "a stable code, not an escaped throw");
+  assert.ok(!JSON.stringify(rejected ?? {}).includes("DRIVER_LEVEL_FAILURE_SENTINEL"),
+    "and no error text, which is where calculation coordinates would leak from");
 });
 
 test("an unknown facts version is ignored, so old code keeps reading the row it understands", gated, async t => {
