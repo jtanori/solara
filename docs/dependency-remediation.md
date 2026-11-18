@@ -1,4 +1,11 @@
-# Dependency security remediation
+# Dependency security remediation — historical first pass
+
+> **Superseded by the [PR #151 review-remediation record](pr151-review-remediation.md).**
+> Review demonstrated a star-free repeated-extglob hang in the `.2` backport
+> despite its clean audit and the tests recorded here. The current `.3` grammar
+> restriction, 13 dependency mutations, 737-test suite and 24 browser cases are
+> documented there. Results below remain historical evidence at `c236718`, not
+> proof that `.2` was sufficient or that the current review threads are resolved.
 
 ## Evidence boundary
 

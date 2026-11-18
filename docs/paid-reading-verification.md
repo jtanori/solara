@@ -1,5 +1,11 @@
 # Paid editions — local implementation verification
 
+> **Current follow-up:** [PR #151 five-finding remediation](pr151-review-remediation.md)
+> records the worker, entitlement, identity, backport and pagination fixes at
+> `14c368e`: 737 tests, 24 browser cases, 35 paid and 13 dependency assertion kills.
+> The 707-test and 85-mutation figures below remain pinned to their original
+> feature revision; they are not a reviewer verdict on the later fixes.
+
 ## Evidence boundary
 
 Code/test revision: **`7d5549c6d918d18b0e8703dee0d198e1218512cd`** on

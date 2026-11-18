@@ -7,7 +7,9 @@ editorial approval is supplied by test fixtures. The approved product contract i
 [reading generation safety](09-reading-generation-safety.md). The SHA-pinned
 [local verification record](../paid-reading-verification.md) records test/mutation
 results, the development-dependency audit caveat, and the still-unverified release
-gates; it is not live-provider/editorial approval.
+gates. The [PR #151 remediation record](../pr151-review-remediation.md) contains
+the current five-finding fixes and refreshed verification. Neither record is
+live-provider/editorial approval.
 
 ## Customer contract
 

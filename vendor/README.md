@@ -91,8 +91,10 @@ works in CI and previews. It is dev-only, not part of the PDF runtime trace.
 **Audit limitation:** npm's advisory database does not independently review
 private forks. A zero audit count is therefore accompanied by source,
 behavioral, mutation and clean-install evidence; the private name alone is not
-the remediation. See [the dependency verification record](../docs/dependency-remediation.md)
-for actual runs and the distinction between historical and refreshed checks.
+the remediation. See [the current review-remediation record](../docs/pr151-review-remediation.md)
+for the `.3` runs and [the historical first pass](../docs/dependency-remediation.md)
+for the superseded `.2` evidence. Upstream replacement is tracked in
+[#150](https://github.com/jtanori/solara/issues/150).
 
 ## Maintenance and removal
 
