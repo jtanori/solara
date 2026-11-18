@@ -20,6 +20,19 @@ import { readStoredDocument } from "@/readings/stored-document";
 export type PaidRun = typeof runs.$inferSelect;
 type TimedRun = PaidRun & { leaseExpired: boolean; expired: boolean; queueExpired: boolean; currentPeriod: string };
 type Attempt = typeof attempts.$inferSelect;
+type PaidOutcome = { attempt: Attempt; checkpoint: typeof checkpoints.$inferSelect | null };
+
+/** Recovery may advance only past a settled, checkpointed success/validation
+ * result. Receipt errors and positive no-send proofs are durable halts too. */
+export function paidRecoveryHalt(rows: PaidOutcome[]): string | null {
+  if (rows.some(({ attempt }) => attempt.state === "reserved" || attempt.state === "unknown")) return "paid_uncertain_attempt";
+  if (rows.some(({ attempt, checkpoint }) => attempt.state !== "measured" || attempt.code !== "measured" || !checkpoint)) return "paid_attempt_halted";
+  return null;
+}
+function attemptOutcomes(database: Pick<typeof db, "select">, runId: string) {
+  return database.select({ attempt: attempts, checkpoint: checkpoints }).from(attempts)
+    .leftJoin(checkpoints, eq(checkpoints.attemptId, attempts.id)).where(eq(attempts.runId, runId));
+}
 const periodSql = sql<string>`to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM')`;
 const runColumns = { ...getTableColumns(runs),
   leaseExpired: sql<boolean>`${runs.leaseExpiresAt} is null or ${runs.leaseExpiresAt} <= clock_timestamp()`,
@@ -121,13 +134,16 @@ export class PaidReadingStore {
       (select 1 from paid_reading_attempts a where a.run_id = ${runs.id} and a.state in ('reserved','unknown')))`)).limit(1);
     const [approval] = config ? await this.database.select({ id: approvals.profile }).from(approvals).where(and(eq(approvals.profile, config.editionProfile),
       eq(approvals.contentVersion, config.contentVersion), eq(approvals.configHash, config.fingerprint), eq(approvals.locale, locale), isNull(approvals.revokedAt))).limit(1) : [];
-    let before: PaidRun | undefined;
     if (cursor) {
-      [before] = await this.database.select().from(runs).where(and(eq(runs.id, cursor), eq(runs.userId, userId), eq(runs.readingId, readingId))).limit(1);
+      const [before] = await this.database.select({ id: runs.id }).from(runs).where(and(eq(runs.id, cursor), eq(runs.userId, userId), eq(runs.readingId, readingId))).limit(1);
       if (!before) throw new GenerationBlocked("invalid_request");
     }
+    // Keep the full native microseconds in SQL: a JavaScript Date truncates
+    // them and can skip the rest of the cursor's millisecond. Scope BOTH sides.
     const page = await this.database.select({ run: runs, editionId: editions.id }).from(runs).leftJoin(editions, and(eq(editions.runId, runs.id), eq(editions.readingId, readingId)))
-      .where(and(eq(runs.userId, userId), eq(runs.readingId, readingId), before ? sql`(${runs.createdAt}, ${runs.id}) < (${before.createdAt}, ${before.id}::uuid)` : undefined))
+      .where(and(eq(runs.userId, userId), eq(runs.readingId, readingId), cursor ? sql`(${runs.createdAt}, ${runs.id}) <
+        (select boundary.created_at, boundary.id from paid_reading_runs boundary
+          where boundary.id = ${cursor}::uuid and boundary.user_id = ${userId}::uuid and boundary.reading_id = ${readingId}::uuid)` : undefined))
       .orderBy(desc(runs.createdAt), desc(runs.id)).limit(21);
     const available = Boolean(enabled && config && control?.enabled && control.alive && control.workerConfigHash === config.fingerprint && approval);
     return { profile: config?.editionProfile ?? PAID_PROFILE, sections: [...paidSections(config?.editionProfile ?? PAID_PROFILE)], houseSystem: "Placidus", locale, period,
@@ -265,14 +281,13 @@ export class PaidReadingStore {
   }
   async heartbeat(run: PaidRun, config: PaidGenerationConfig, current: () => boolean) {
     await this.scope(run.userId, async tx => {
-      await this.authorized(tx, run, config, current);
+      // Entitlement loss blocks the NEXT permit, not settlement of an already
+      // authorized call. Every non-entitlement abort/publication fence remains.
+      await this.authorized(tx, run, config, current, false);
       await tx.update(runs).set({ leaseExpiresAt: sql`clock_timestamp() + ${PAID_LEASE_MS} * interval '1 millisecond'` }).where(eq(runs.id, run.id));
     });
   }
-  async outcomes(run: PaidRun) {
-    return this.database.select({ attempt: attempts, checkpoint: checkpoints }).from(attempts)
-      .leftJoin(checkpoints, eq(checkpoints.attemptId, attempts.id)).where(eq(attempts.runId, run.id));
-  }
+  async outcomes(run: PaidRun) { return attemptOutcomes(this.database, run.id); }
 
   execution(run: PaidRun, config: PaidGenerationConfig, signal: AbortSignal, current: () => boolean): GenerationExecution {
     const admitsModel = (requested: string, reported: string) => Object.hasOwn(config.profile.servedModels, requested) && config.profile.servedModels[requested].includes(reported);
@@ -286,6 +301,8 @@ export class PaidReadingStore {
         this.validSnapshot(snapshot, saved);
         const ledger = await this.ledger(tx, run.id);
         if (unresolved(ledger) || ledger.length >= saved.expectedSections.length * 2) throw new GenerationBlocked("paid_uncertain_attempt");
+        const halt = paidRecoveryHalt(await attemptOutcomes(tx, run.id));
+        if (halt) throw new GenerationBlocked(halt);
         if (ledger.some(row => row.section === permit.section && row.phase === permit.phase)) throw new GenerationBlocked("attempt_already_admitted");
         if (permit.phase === "repair") {
           const primary = ledger.find(row => row.section === permit.section && row.phase === "primary" && row.state === "measured");

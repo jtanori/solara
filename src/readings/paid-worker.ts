@@ -5,7 +5,7 @@ import { sectionJsonSchema, validateSectionOutput } from "@/readings/schemas";
 import { PAID_HEARTBEAT_MS, PAID_RUN_MS } from "@/readings/paid-contract";
 import { calculatePaidSnapshot, paidDigest } from "@/readings/paid-chart";
 import { paidGenerationConfig, paidGenerationEnabled, paidModel, type PaidGenerationConfig } from "@/readings/paid-policy";
-import { PaidReadingStore, type PaidRun } from "@/readings/paid-store";
+import { PaidReadingStore, paidRecoveryHalt, type PaidRun } from "@/readings/paid-store";
 import { log } from "@/lib/log";
 
 export type PaidWorkerDeps = { store?: PaidReadingStore; config?: () => PaidGenerationConfig | null; enabled?: () => boolean };
@@ -51,8 +51,10 @@ export async function executePaidRun(run: PaidRun, store: PaidReadingStore, conf
       if (controller.signal.aborted) throw new GenerationBlocked(stopCode);
       // Each outcome and receipt were committed together. Never redispatch a
       // slot simply because this process has no in-memory result for it.
-      const rows = (await store.outcomes(run)).filter(row => row.attempt.section === key);
-      if (rows.some(row => row.attempt.state === "reserved" || row.attempt.state === "unknown")) throw new GenerationBlocked("paid_uncertain_attempt");
+      const outcomes = await store.outcomes(run);
+      const halt = paidRecoveryHalt(outcomes);
+      if (halt) throw new GenerationBlocked(halt);
+      const rows = outcomes.filter(row => row.attempt.section === key);
       if (rows.some(row => row.checkpoint?.kind === "valid")) continue;
       const schema = sectionJsonSchema(key, "paid");
       const prompt = assembleSectionPrompt(key, run.locale, JSON.stringify(digest, null, 1), JSON.stringify(schema), "paid");
@@ -77,7 +79,7 @@ export async function executePaidRun(run: PaidRun, store: PaidReadingStore, conf
     // A measured provider failure or subscription expiry may leave usable
     // recorded sections. Unknown/reserved work, withdrawal, stop, disablement
     // and expired leases still fail the durable publication fences.
-    if (["paid_entitlement_required", "provider_error", "cost_ceiling", "accounting_unavailable", "paid_uncertain_attempt"].includes(code)) {
+    if (["paid_entitlement_required", "provider_error", "paid_attempt_halted", "cost_ceiling", "accounting_unavailable", "paid_uncertain_attempt"].includes(code)) {
       try { return await store.finish(run, config, current); }
       catch (finishError) { stopCode = failureCode(finishError); }
     } else stopCode = code;

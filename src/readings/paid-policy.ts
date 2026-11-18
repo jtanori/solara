@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { generationEnabled, MAX_OUTPUT_TOKENS_PER_SECTION, SECTION_MODEL_TIER } from "@/readings/config";
 import { costMicros } from "@/readings/execution";
-import { canonicalHash, liveGenerationConfig, RICH_PAYLOAD_POLICY_REVISION, type LiveGenerationConfig } from "@/readings/policy";
+import { CANONICAL_HASH_SCHEME, canonicalHash, liveGenerationConfig, RICH_PAYLOAD_POLICY_REVISION, type LiveGenerationConfig } from "@/readings/policy";
 import { contentVersionFromSources } from "@/readings/content-version";
 import { PAID_SECTION_TITLES, PAID_SECTION_SUBTITLES } from "@/readings/copy";
 import { sectionJsonSchema } from "@/readings/schemas";
@@ -41,7 +41,10 @@ export function paidGenerationConfig(fetchImpl?: typeof fetch): PaidGenerationCo
   const worstCase = sections.reduce((sum, key) => sum + 2 * quotes[base.settings.models[SECTION_MODEL_TIER[key]]], 0);
   if (!Number.isSafeInteger(worstCase) || worstCase > PAID_CEILING_MICROS) return null;
   try {
-    const fingerprint = canonicalHash({ base: base.fingerprint, profile: editionProfile, sections,
+    // Version the paid identity without re-signing old approvals/runs. Do not
+    // reuse the free path's insertion-sensitive fingerprint as a paid input.
+    const fingerprint = canonicalHash({ hashScheme: CANONICAL_HASH_SCHEME,
+      base: { profile: base.profile, settings: base.settings, payload: base.profile.payloadPolicy }, profile: editionProfile, sections,
       calculation: paidCalculationPolicy(editionProfile), allowance: PAID_ALLOWANCE_POLICY, quotes, ceiling: PAID_CEILING_MICROS });
     return { ...base, fingerprint, quotes, editionProfile, sections, contentVersion: paidContentVersion(fingerprint, editionProfile) };
   } catch { return null; }
@@ -57,7 +60,7 @@ export function paidContentVersion(configHash: string, profile: PaidProfile = PA
     files[file] = readFileSync(path.join(root, file), "utf8");
   }
   const schemas = Object.fromEntries(sections.map(key => [key, sectionJsonSchema(key, "paid")]));
-  return contentVersionFromSources(files, schemas, JSON.stringify({ revision: "paid-editorial/1", configHash,
+  return contentVersionFromSources(files, schemas, JSON.stringify({ revision: "paid-editorial/2", hashScheme: CANONICAL_HASH_SCHEME, configHash,
     profile, sections, copy: sections.map(key => [PAID_SECTION_TITLES[key], PAID_SECTION_SUBTITLES[key]]), models: SECTION_MODEL_TIER, calculation: paidCalculationPolicy(profile) }));
 }
 export function paidOfferHash(config: PaidGenerationConfig, revision: number, period: string, locale: Locale): string {

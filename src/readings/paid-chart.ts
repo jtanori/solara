@@ -8,7 +8,7 @@ import { outboundDigest } from "@/readings/outbound-digest";
 import { PAID_PROFILE, PAID_RICH_PROFILE, type PaidProfile } from "@/readings/paid-contract";
 import { annualFactsSchema } from "@/readings/annual-schema";
 import { enrichAnnualFacts, annualProfection, angularDistance, TRANSIT_DISPLAY_LIMIT, type AnnualFacts } from "@/lib/annual-facts";
-import { canonicalHash } from "@/readings/policy";
+import { canonicalHash, hash } from "@/readings/policy";
 import { readChart } from "@/readings/chart-presentation";
 import type { ReadingChart } from "@/readings/presentation";
 
@@ -37,15 +37,15 @@ const factsSchema = z.object({
   warnings: z.array(z.string().max(512)).max(20),
 });
 const snapshotSchema = z.discriminatedUnion("version", [z.object({
-  version: z.literal("paid-snapshot/1"), profile: z.literal(PAID_PROFILE), calculationPolicy: z.literal(PAID_CALCULATION_POLICY),
+  version: z.enum(["paid-snapshot/1", "paid-snapshot/3"]), profile: z.literal(PAID_PROFILE), calculationPolicy: z.literal(PAID_CALCULATION_POLICY),
   chart: z.unknown(), facts: factsSchema,
 }), z.object({
-  version: z.literal("paid-snapshot/2"), profile: z.literal(PAID_RICH_PROFILE), calculationPolicy: z.literal(PAID_RICH_CALCULATION_POLICY),
+  version: z.enum(["paid-snapshot/2", "paid-snapshot/4"]), profile: z.literal(PAID_RICH_PROFILE), calculationPolicy: z.literal(PAID_RICH_CALCULATION_POLICY),
   chart: z.unknown(), facts: factsSchema, annual: annualFactsSchema,
 })]);
 export type PaidSnapshot = { chart: ReadingChart; facts: ChartFacts } & (
-  | { version: "paid-snapshot/1"; profile: typeof PAID_PROFILE; calculationPolicy: typeof PAID_CALCULATION_POLICY }
-  | { version: "paid-snapshot/2"; profile: typeof PAID_RICH_PROFILE; calculationPolicy: typeof PAID_RICH_CALCULATION_POLICY; annual: AnnualFacts }
+  | { version: "paid-snapshot/1" | "paid-snapshot/3"; profile: typeof PAID_PROFILE; calculationPolicy: typeof PAID_CALCULATION_POLICY }
+  | { version: "paid-snapshot/2" | "paid-snapshot/4"; profile: typeof PAID_RICH_PROFILE; calculationPolicy: typeof PAID_RICH_CALCULATION_POLICY; annual: AnnualFacts }
 );
 
 /** Called only after paid entitlement and consent fences, never by chart saving. */
@@ -59,8 +59,8 @@ export function calculatePaidSnapshot(readingId: string, input: ChartInput, prof
     const sun = facts.bodies.find(item => item.body === "Sun")!;
     const moon = facts.bodies.find(item => item.body === "Moon")!;
     return readPaidSnapshot({
-      ...(rich ? { version: "paid-snapshot/2", profile: PAID_RICH_PROFILE, calculationPolicy: PAID_RICH_CALCULATION_POLICY, annual: rich.annual }
-        : { version: "paid-snapshot/1", profile: PAID_PROFILE, calculationPolicy: PAID_CALCULATION_POLICY }),
+      ...(rich ? { version: "paid-snapshot/4", profile: PAID_RICH_PROFILE, calculationPolicy: PAID_RICH_CALCULATION_POLICY, annual: rich.annual }
+        : { version: "paid-snapshot/3", profile: PAID_PROFILE, calculationPolicy: PAID_CALCULATION_POLICY }),
       chart: {
         id: readingId, year: input.year, name: input.name, returnPlace: input.returnPlace.name, timezone: input.returnPlace.timezone,
         result: { ...result, natalSun: sun, moon, ascendant: facts.angles.ascendant, sunHouse: sun.house, houseSystem: "Placidus", warnings: [...result.warnings, ...facts.warnings] },
@@ -109,7 +109,19 @@ export function readPaidSnapshot(value: unknown): PaidSnapshot {
   paidDigest(snapshot);
   return snapshot;
 }
-export function paidSnapshotHash(snapshot: PaidSnapshot): string { return canonicalHash(snapshot); }
+export function paidSnapshotHash(snapshot: PaidSnapshot): string {
+  if (snapshot.version === "paid-snapshot/3" || snapshot.version === "paid-snapshot/4") return canonicalHash(snapshot);
+  // Read-only v1/v2 compatibility. These validated schemas have fixed ASCII
+  // letter-only keys, no case-colliding keys or integer properties. Their old
+  // ICU ordering is reproduced by ASCII case-folded order, without consulting
+  // ICU or the process locale. Never apply this legacy rule to arbitrary JSON,
+  // new configurations/approvals, or silently rewrite immutable saved hashes.
+  const ordered = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(ordered)
+    : entry !== null && typeof entry === "object"
+      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0).map(([key, child]) => [key, ordered(child)]))
+      : entry;
+  return hash(ordered(snapshot));
+}
 export function paidDigest(snapshot: PaidSnapshot) {
   const base = chartDigest(snapshot.facts);
   if (snapshot.profile === PAID_PROFILE) return outboundDigest(base);

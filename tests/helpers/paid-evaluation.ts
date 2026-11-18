@@ -6,7 +6,7 @@ import { SECTION_MODEL_TIER, MAX_OUTPUT_TOKENS_PER_SECTION, DEFAULT_MODEL_PRICES
 import { assembleSectionPrompt } from "../../src/readings/generate";
 import { sectionJsonSchema, validateSectionOutput } from "../../src/readings/schemas";
 import { canonicalHash } from "../../src/readings/policy";
-import { paidEvaluationSchema, PAID_CORPUS_VERSION, type EvaluationAttempt, type EvaluationSample } from "../../src/readings/evaluation";
+import { paidEvaluationSchema, PAID_CORPUS_VERSION, PAID_EVALUATION_VERSION, type EvaluationAttempt, type EvaluationSample } from "../../src/readings/evaluation";
 import { PAID_SECTION_TITLES } from "../../src/readings/copy";
 import { memoryExecution } from "./reading-execution";
 import { loadPaidEvaluationCorpus } from "../../scripts/lib/paid-evaluation-corpus";
@@ -38,7 +38,7 @@ export async function syntheticPaidEvaluation(profile: PaidProfile) {
     }
     samples.push({ caseId: entry.id, locale, factsHash: canonicalHash(digest), sections, attempts: [...rows.values()] });
   }
-  return paidEvaluationSchema.parse({ version: "paid-evaluation/1", corpusVersion: PAID_CORPUS_VERSION, corpusHash: corpus.corpusHash,
+  return paidEvaluationSchema.parse({ version: PAID_EVALUATION_VERSION, corpusVersion: PAID_CORPUS_VERSION, corpusHash: corpus.corpusHash,
     source: "synthetic", profile, contentVersion: paidContentVersion(configHash, profile), configHash, processor: "Synthetic fixture provider (not editorial approval)",
     models: settings.models, schemaHash: corpus.schemaHash, promptHashes: corpus.promptHashes, facts: corpus.facts, samples });
 }

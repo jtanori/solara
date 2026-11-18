@@ -23,7 +23,7 @@ export async function syntheticPaidEdition(owner: Awaited<ReturnType<typeof synt
   });
   const document = { ...buildReadingDocument({ readingId: owner.chart.id, locale, tier: "paid", digest: paidDigest(snapshot), contentVersion: "synthetic-paid-render-v1", results }),
     generatedAt: "2026-01-01T12:00:00.000Z", lockedSections: [], edition: { profile, expectedSections: [...sections], snapshotHash } };
-  await db.transaction(async tx => {
+  const runId = await db.transaction(async tx => {
     const [run] = await tx.insert(paidReadingRuns).values({ userId: owner.viewer.id, readingId: owner.chart.id, intentId: randomUUID(), period: "2026-01", allowancePolicy: PAID_ALLOWANCE_POLICY,
       locale, profile, expectedSections: [...sections], contentVersion: document.contentVersion, configHash: "a".repeat(64),
       settings: { models: { cheap: "fixture-only", strong: "fixture-only" }, prices: null }, policyHash: "b".repeat(64), consentRevision: 1, consentReceiptId: randomUUID(),
@@ -31,6 +31,7 @@ export async function syntheticPaidEdition(owner: Awaited<ReturnType<typeof synt
       status: partial ? "partial" : "completed", consumedAt: new Date("2026-01-01"), finishedAt: new Date(document.generatedAt), completedSections: partial ? 2 : sections.length }).returning();
     await tx.insert(paidReadingEditions).values({ id: document.id, runId: run.id, readingId: owner.chart.id, locale, profile,
       expectedSections: [...sections], contentVersion: document.contentVersion, chartVersion: document.chartVersion, snapshotHash, snapshot, document });
+    return run.id;
   });
-  return { document, snapshot };
+  return { document, snapshot, runId };
 }

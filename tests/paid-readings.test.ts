@@ -71,7 +71,7 @@ async function account(options: { entitled?: boolean; verified?: boolean; input?
     stripePriceId: "price_synthetic", status: options.status ?? "active", currency: "mxn", grantsAccess: true, currentPeriodEnd: new Date(Date.now() + 86_400_000) });
   return { user, chart, viewer: { id: user.id, emailVerifiedAt: user.emailVerifiedAt, plan: "free" as const } };
 }
-const output = { blocks: [{ kind: "prose", text: "A synthetic complete section. Not an evaluated live interpretation." }] };
+const output = { blocks: [{ kind: "prose" as const, text: "A synthetic complete section. Not an evaluated live interpretation." }] };
 function response(model: string, changes: Record<string, unknown> = {}) {
   return Response.json({ model, usage: { prompt_tokens: 100, completion_tokens: 100 }, choices: [{ message: { content: JSON.stringify(output) } }], ...changes });
 }
@@ -256,7 +256,7 @@ test("foreign and legacy paid rows are not authorized editions; free canonical d
 async function claimed(a: Awaited<ReturnType<typeof account>>, f: ReturnType<typeof fake>) {
   const accepted = await accept(a, f);
   const run = await store.claimNext(accepted.config, () => true); assert.ok(run); assert.equal(run.id, accepted.run.id);
-  await store.saveSnapshot(run, calculatePaidSnapshot(a.chart.id, a.chart.input), accepted.config, () => true);
+  await store.saveSnapshot(run, calculatePaidSnapshot(a.chart.id, a.chart.input, accepted.config.editionProfile), accepted.config, () => true);
   return { ...accepted, claimed: run, execution: store.execution(run, accepted.config, new AbortController().signal, () => true) };
 }
 const permit = { section: "overview" as const, phase: "primary" as const, model: "paid-cheap", reservedMicros: 210000 };
@@ -675,5 +675,257 @@ test("paid read rejects an otherwise valid frozen snapshot with a mismatching ha
     const changed = structuredClone(original); mutate(changed);
     const source = new ReadingViewStore(); source.paidSnapshot = async () => changed;
     await assert.rejects(() => loadReadingPresentation(a.viewer, a.chart.id, "en", { kind: "paid", id: finished.editionId! }, { store: source }), /document_unavailable/);
+  }
+});
+
+for (const phase of ["primary", "repair"] as const) for (const failure of ["provider_error", "missing_checkpoint", "not_dispatched"] as const) {
+  test(`recovery never spends after settled ${phase} ${failure}, with or without prior output`, gated, async () => {
+    for (const priorOutput of [false, true]) {
+      const a = await account();
+      const f = fake((_call, wire) => response(String(wire.model), { error: { message: "PRIVATE_CRASH_PROVIDER_ERROR" } }));
+      const c = await claimed(a, f);
+      if (priorOutput) {
+        const good = await c.execution.admit(permit);
+        await c.execution.settle(good, { ...measured, outcome: { kind: "valid", output } });
+      }
+      const section = priorOutput ? "sun" : "overview";
+      if (phase === "repair") {
+        const primary = await c.execution.admit({ ...permit, section });
+        await c.execution.settle(primary, { ...measured, outcome: { kind: "invalid" } });
+      }
+      if (failure === "provider_error") {
+        const { dispatchAttempt } = await import("../src/readings/execution");
+        const { paidDigest } = await import("../src/readings/paid-chart");
+        const { sectionJsonSchema, validateSectionOutput } = await import("../src/readings/schemas");
+        const frozen = (await ledger(c.run.id)).snapshot[0].snapshot;
+        const result = await dispatchAttempt(c.execution, c.config.provider, { section, locale: "en", model: permit.model, maxOutputTokens: 2000,
+          prompt: "Synthetic crash-boundary request", digest: paidDigest(readPaidSnapshot(frozen)), jsonSchema: sectionJsonSchema(section, "paid") }, phase,
+        value => validateSectionOutput(section, value, "paid"));
+        assert.equal(result.halt, "provider_error"); // Simulate death before handling it.
+      } else {
+        const halted = await c.execution.admit({ ...permit, section, phase });
+        await c.execution.settle(halted, failure === "not_dispatched"
+          ? { basis: "not_dispatched", costMicros: 0, model: null, usage: null, latencyMs: 0, code: "generation_cancelled" }
+          : measured);
+      }
+      const before = await ledger(c.run.id); const sentBeforeCrash = f.payloads.length;
+      assert.equal(JSON.stringify(before).includes("PRIVATE_CRASH_PROVIDER_ERROR"), false, "raw provider errors are not persisted");
+      // The receipt committed, but the original process never handled its halt.
+      await db.update(runs).set({ leaseExpiresAt: new Date(0) }).where(eq(runs.id, c.run.id));
+      const finished = await workOnePaidReading({ store, config: f.config });
+      assert.equal(f.payloads.length, sentBeforeCrash, "a recovered halt must never authorize later sections or repairs");
+      assert.equal(finished?.status, priorOutput ? "partial" : "failed");
+      assert.equal(finished?.reason, priorOutput ? "paid_partial" : "paid_no_output");
+      const after = await ledger(c.run.id);
+      assert.deepEqual(after.attempts, before.attempts, "all original receipts and spend remain exactly intact");
+      assert.equal(after.editions.length, priorOutput ? 1 : 0);
+      assert.equal(after.checkpoints.length, 0); assert.equal(after.snapshot.length, 0);
+      assert.ok(after.run.consumedAt);
+      assert.ok((await db.select().from(allowances).where(eq(allowances.runId, c.run.id)))[0]?.consumedAt);
+      if (priorOutput) {
+        assert.equal(after.editions[0].document.sections.filter(s => s.status === "generated").length, 1);
+        assert.equal(after.editions[0].document.accounting?.measuredMxn, before.attempts.reduce((sum, row) => sum + row.costMicros!, 0) / 1_000_000);
+      }
+      assert.equal(await workOnePaidReading({ store, config: f.config }), null);
+    }
+  });
+}
+
+test("permit admission independently fences a settled error, missing checkpoint or no-send halt", gated, async () => {
+  for (const failure of ["provider_error", "missing_checkpoint", "not_dispatched"] as const) {
+    const a = await account(); const f = fake(); const c = await claimed(a, f);
+    const id = await c.execution.admit(permit);
+    await c.execution.settle(id, failure === "not_dispatched"
+      ? { basis: "not_dispatched", costMicros: 0, model: null, usage: null, latencyMs: 0, code: "generation_cancelled" }
+      : { ...measured, code: failure === "provider_error" ? failure : "measured" });
+    await assert.rejects(() => c.execution.admit({ ...permit, section: "sun" }), /paid_attempt_halted/);
+    assert.equal((await ledger(c.run.id)).attempts.length, 1); assert.equal(f.payloads.length, 0);
+    await store.fail(c.claimed, "synthetic_cleanup");
+  }
+});
+
+for (const loss of ["expiry", "revocation", "withdrawal", "owner_loss"] as const) test(`in-flight heartbeat: ${loss} preserves the correct settlement and publication boundary`, { ...gated, timeout: 25000 }, async () => {
+  process.env.READINGS_REQUEST_TIMEOUT_MS = "15000";
+  const a = await account(); const entered = barrier(); const release = barrier(); const beat = barrier();
+  let changed = false; let aborted = false;
+  class ObservedStore extends PaidReadingStore {
+    override async heartbeat(...args: Parameters<PaidReadingStore["heartbeat"]>) {
+      const observe = changed;
+      try { await super.heartbeat(...args); }
+      // Let the worker's rejection handler signal its transport before the
+      // test releases the response; observing only super's finally races it.
+      finally { if (observe) setImmediate(beat.release); }
+    }
+  }
+  const observed = new ObservedStore();
+  const f = fake(async (call, wire, signal) => {
+    if (call === 2) {
+      entered.release();
+      await new Promise<void>((resolve, reject) => {
+        const stop = () => { aborted = true; reject(new Error("synthetic in-flight abort")); };
+        signal?.addEventListener("abort", stop, { once: true });
+        if (signal?.aborted) stop();
+        void release.wait.then(() => { signal?.removeEventListener("abort", stop); resolve(); });
+      });
+    }
+    return response(String(wire.model));
+  });
+  const c = await accept(a, f); const pending = workOnePaidReading({ store: observed, config: f.config });
+  try {
+    await entered.wait;
+    if (loss === "expiry") await db.update(subscriptions).set({ currentPeriodEnd: new Date(0) }).where(eq(subscriptions.userId, a.user.id));
+    if (loss === "revocation") await db.update(subscriptions).set({ status: "canceled", grantsAccess: false }).where(eq(subscriptions.userId, a.user.id));
+    if (loss === "withdrawal") await free.withdraw(a.user.id, "en");
+    if (loss === "owner_loss") await db.update(runs).set({ owner: randomUUID() }).where(eq(runs.id, c.run.id));
+    changed = true;
+    // Wait for a REAL five-second lease heartbeat after the change; no timer mock.
+    await beat.wait;
+  } finally { release.release(); }
+  const finished = await pending; const state = await ledger(c.run.id);
+  const entitlementOnly = loss === "expiry" || loss === "revocation";
+  assert.equal(aborted, !entitlementOnly, "only non-entitlement fences abort an authorized in-flight transport");
+  assert.equal(f.payloads.length, 2, "never send a third section after the loss");
+  assert.equal(state.attempts.length, 2); assert.equal(state.attempts.filter(row => row.state === "measured").length, entitlementOnly ? 2 : 1);
+  assert.equal(state.attempts.filter(row => row.state === "unknown").length, entitlementOnly ? 0 : 1);
+  assert.equal(state.editions.length, entitlementOnly ? 1 : 0); assert.ok(state.run.consumedAt);
+  if (!entitlementOnly) {
+    const uncertain = state.attempts.find(row => row.state === "unknown")!;
+    assert.equal(uncertain.costMicros, uncertain.reservedMicros); assert.equal(state.checkpoints.length, 0);
+    return;
+  }
+  assert.equal(finished?.status, "partial"); assert.ok(finished.editionId);
+  assert.equal(state.run.completedSections, 2); assert.equal(state.editions[0].document.accounting?.measuredMxn, 0.015);
+  assert.equal(state.editions[0].document.accounting?.uncertainMxn, 0);
+  const view = await loadReadingPresentation(a.viewer, a.chart.id, "es", { kind: "paid", id: finished.editionId });
+  assert.equal(view.content.kind, "saved-reading"); assert.equal(view.content.locale, "en");
+  assert.equal(view.content.sections.filter(section => section.status === "generated").length, 2);
+  execFileSync(process.execPath, ["scripts/build-pdf.mjs"], { stdio: "pipe" });
+  const renderer = new ReadingPdfRenderer();
+  const pdf = await handleReadingPdf(new Request(`https://app.invalid/api/readings/${a.chart.id}/pdf?paidEdition=${finished.editionId}`), a.chart.id, {
+    user: async () => a.viewer, locale: "es", throttle: async () => null, renderer: { render: async projected => {
+      assert.deepEqual(projected, { chart: view.chart, content: view.content }); return renderer.render(projected);
+    } },
+  });
+  assert.equal(pdf.status, 200);
+  const rendered = await inspectPdf(Buffer.from(await pdf.arrayBuffer()));
+  assert.equal(rendered.metadata.Language, "en"); assert.equal((rendered.text.match(/A synthetic complete section/g) ?? []).length, 2);
+  assert.equal(f.payloads.length, 2);
+});
+
+for (const loss of ["expiry", "revocation"] as const) test(`between-call ${loss} blocks both a next primary and a repair without discarding measured receipts`, gated, async () => {
+  for (const needsRepair of [false, true]) {
+    const a = await account();
+    const f = fake(async (_call, wire) => {
+      await db.update(subscriptions).set(loss === "expiry" ? { currentPeriodEnd: new Date(0) } : { grantsAccess: false, status: "canceled" }).where(eq(subscriptions.userId, a.user.id));
+      return response(String(wire.model), needsRepair ? { choices: [{ message: { content: "{}" } }] } : {});
+    });
+    const c = await accept(a, f); const finished = await workOnePaidReading({ store, config: f.config });
+    assert.equal(finished?.status, needsRepair ? "failed" : "partial"); assert.equal(f.payloads.length, 1);
+    const state = await ledger(c.run.id); assert.equal(state.attempts.length, 1); assert.equal(state.attempts[0].state, "measured");
+    assert.equal(state.attempts[0].costMicros, 7500); assert.equal(state.editions.length, needsRepair ? 0 : 1);
+  }
+});
+
+for (const precision of ["microseconds", "equal_timestamp"] as const) test(`paid history ${precision} pagination preserves every owned edition exactly once`, gated, async () => {
+  const { syntheticReadingAccount } = await import("./helpers/reading-account");
+  const { syntheticPaidEdition } = await import("./helpers/paid-edition");
+  const owner = await syntheticReadingAccount("en", "none");
+  const otherChart = await db.insert(readings).values({ userId: owner.viewer.id, year: owner.chart.year, input: owner.chart.input, result: owner.chart.result }).returning();
+  const outsider = await account(); const f = fake();
+  const deps: PaidHttpDeps = { user: async () => owner.viewer, locale: "en", store, config: f.config, throttle: async () => null };
+  const editionIds: string[] = [];
+  try {
+    for (let i = 0; i < 41; i++) {
+      const saved = await syntheticPaidEdition(owner, "en"); editionIds.push(saved.document.id);
+      // Every timestamp lies in ONE millisecond. Also cover exact equality and
+      // the descending UUID tie-breaker with IDs generated independently of time.
+      const at = precision === "equal_timestamp" ? "2026-01-01 12:00:00.100100+00" : `2026-01-01 12:00:00.${100900 - i * 10}+00`;
+      await db.update(runs).set({ createdAt: sql`${at}::timestamptz` }).where(eq(runs.id, saved.runId));
+    }
+    const native = await pool.query<{ id: string; edition_id: string }>(`select r.id, e.id as edition_id from paid_reading_runs r
+      join paid_reading_editions e on e.run_id = r.id where r.user_id = $1 and r.reading_id = $2 order by r.created_at desc, r.id desc`, [owner.viewer.id, owner.chart.id]);
+    const received: PaidRunView[] = []; const sizes: number[] = []; let cursor: string | null = null;
+    for (let page = 0; page < 4; page++) {
+      const result = await handlePaidReading(req("GET", undefined, cursor ? `?cursor=${cursor}` : ""), owner.chart.id, deps);
+      assert.equal(result.status, 200); const offer: PaidOffer = await result.json();
+      sizes.push(offer.runs.length); received.push(...offer.runs); cursor = offer.nextCursor;
+      if (!cursor) break;
+    }
+    assert.deepEqual(sizes, [20, 20, 1]);
+    assert.deepEqual(received.map(row => row.id), native.rows.map(row => row.id));
+    assert.deepEqual(received.map(row => row.editionId), native.rows.map(row => row.edition_id));
+    assert.deepEqual([...new Set(received.map(row => row.editionId))].sort(), editionIds.sort());
+    for (const bad of [randomUUID(), native.rows[0].id]) {
+      const foreignDeps = { ...deps, user: async () => outsider.viewer };
+      assert.equal((await handlePaidReading(req("GET", undefined, `?cursor=${bad}`), outsider.chart.id, foreignDeps)).status, 400);
+      assert.equal((await handlePaidReading(req("GET", undefined, `?cursor=${bad}`), otherChart[0].id, deps)).status, 400);
+    }
+    assert.equal(f.payloads.length, 0);
+  } finally { await owner.cleanup(); }
+});
+
+test("paid identity readback: another process locale accepts exact approvals and reads the same JSONB edition", gated, async () => {
+  const { identityEnvironment } = await import("./helpers/paid-identity");
+  Object.assign(process.env, identityEnvironment());
+  const a = await account(); const f = fake(); const c = await accept(a, f);
+  const finished = await workOnePaidReading({ store, config: f.config }); assert.ok(finished?.editionId);
+  const before = await ledger(c.run.id);
+  const view = await loadReadingPresentation(a.viewer, a.chart.id, "en", { kind: "paid", id: finished.editionId });
+  const probe = `
+    const assert = require('node:assert/strict');
+    const { paidGenerationConfig } = require('./src/readings/paid-policy.ts');
+    const { PaidReadingStore } = require('./src/readings/paid-store.ts');
+    const { loadReadingPresentation } = require('./src/readings/reading-view.ts');
+    const { pool, coordinationPool } = require('./src/db/index.ts');
+    (async () => {
+      const config = paidGenerationConfig(() => { throw Error('no transport in reader'); }); assert.ok(config);
+      const offer = await new PaidReadingStore().offer(${JSON.stringify(a.user.id)}, ${JSON.stringify(a.chart.id)}, 'en', config, true);
+      const view = await loadReadingPresentation({id:${JSON.stringify(a.user.id)},emailVerifiedAt:new Date(),plan:'free'}, ${JSON.stringify(a.chart.id)}, 'en', {kind:'paid',id:${JSON.stringify(finished.editionId)}});
+      process.stdout.write(JSON.stringify({config:config.fingerprint,available:offer.available,edition:offer.runs[0].editionId,view}));
+    })().finally(() => Promise.all([pool.end(),coordinationPool.end()]));
+  `;
+  for (const locale of ["en_US.UTF-8", "tr_TR.UTF-8"]) {
+    await store.announceWorker(c.config);
+    const observed = JSON.parse(execFileSync(process.execPath, ["--import", "tsx", "--eval", probe], {
+      env: { ...process.env, ...identityEnvironment(true), LANG: locale, LC_ALL: locale, DOTENV_CONFIG_PATH: "/dev/null" }, encoding: "utf8", timeout: 20000,
+    }));
+    assert.equal(observed.config, c.config.fingerprint); assert.equal(observed.available, true, "the exact synthetic editorial approval is recognized");
+    assert.equal(observed.edition, finished.editionId); assert.deepEqual(observed.view, view);
+  }
+  assert.deepEqual(await ledger(c.run.id), before, "cross-locale reads never rewrite identity or provenance");
+});
+
+test("legacy snapshot editions keep original hashes and immutable read access without adopting old approvals", gated, async () => {
+  const { originalSnapshotHash } = await import("./helpers/paid-identity");
+  const { paidContentVersion } = await import("../src/readings/paid-policy");
+  const { paidCalculationPolicy } = await import("../src/readings/paid-chart");
+  const { PAID_ALLOWANCE_POLICY, PAID_CEILING_MICROS } = await import("../src/readings/paid-contract");
+  for (const profile of [PAID_PROFILE, PAID_RICH_PROFILE]) {
+    process.env.READINGS_PAID_PROFILE = profile;
+    const a = await account(); const f = fake(); const c = await claimed(a, f);
+    // Historical v1/v2 hashes were captured before this fix. Recreate only the
+    // OLD identity at fixture insertion; never mutate a published edition.
+    const currentSnapshot = calculatePaidSnapshot(a.chart.id, a.chart.input, profile);
+    const legacy = readPaidSnapshot({ ...currentSnapshot, version: profile === PAID_PROFILE ? "paid-snapshot/1" : "paid-snapshot/2" });
+    await db.delete(snapshots).where(eq(snapshots.runId, c.run.id));
+    await db.insert(snapshots).values({ runId: c.run.id, readingId: a.chart.id, snapshot: legacy, hash: originalSnapshotHash(legacy) });
+    const id = await c.execution.admit(permit); await c.execution.settle(id, { ...measured, outcome: { kind: "valid", output } });
+    const finished = await store.finish(c.claimed, c.config, () => true); assert.ok(finished.editionId);
+    const state = await ledger(c.run.id); assert.equal(state.editions[0].snapshotHash, originalSnapshotHash(legacy));
+    assert.equal(paidSnapshotHash(legacy), originalSnapshotHash(legacy));
+    assert.equal((await loadReadingPresentation(a.viewer, a.chart.id, "es", { kind: "paid", id: finished.editionId })).content.kind, "saved-reading");
+    assert.deepEqual(await ledger(c.run.id), state);
+    // Old/incompatible config signatures are never re-approved just because
+    // the immutable snapshot remains readable under its explicit legacy scheme.
+    const obsolete = originalSnapshotHash({ base: liveGenerationConfig(f.transport)!.fingerprint,
+      profile, sections: c.config.sections, calculation: paidCalculationPolicy(profile), allowance: PAID_ALLOWANCE_POLICY,
+      quotes: c.config.quotes, ceiling: PAID_CEILING_MICROS });
+    assert.notEqual(obsolete, c.config.fingerprint, "the new hash scheme explicitly invalidates old config bindings");
+    await db.delete(approvals).where(eq(approvals.configHash, c.config.fingerprint));
+    await db.insert(approvals).values({ profile, configHash: obsolete, contentVersion: paidContentVersion(obsolete, profile), locale: "en",
+      sampleCount: 6, reviewer: "Synthetic obsolete signature, NOT approval", evidence: "local compatibility test" });
+    approvalHashes.add(obsolete);
+    assert.equal((await store.offer(a.user.id, a.chart.id, "en", c.config, true)).available, false);
+    assert.equal((await loadReadingPresentation(a.viewer, a.chart.id, "en", { kind: "paid", id: finished.editionId })).content.kind, "saved-reading");
   }
 });

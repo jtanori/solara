@@ -6,9 +6,9 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, pool, coordinationPool } from "../src/db";
-import { readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, subscriptions } from "../src/db/schema";
+import { readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, subscriptions, paidReadingRuns } from "../src/db/schema";
 import { AVAILABILITY_COPY } from "../src/readings/presentation-copy";
 import { createSession } from "../src/lib/auth";
 import { launchReadingTestBrowser } from "../tests/helpers/browser";
@@ -188,6 +188,34 @@ async function main() {
         const redirect = await loggedOut.context.request.get(`${origin}${path}`, { maxRedirects: 0 });
         assert.equal(redirect.status(), 307); assert.equal(new URL(redirect.headers().location, origin).searchParams.get("next"), path); await loggedOut.context.close();
         cases.push(`${profile}-${locale}/${partial ? "partial" : "complete"}/pinned-page+RSC+PDF+locale+390px+reflow+foreign-owner+sign-in-return`);
+      } finally { await visit.context.close(); }
+    }
+
+    // Native timestamp cursor boundaries, exercised through actual client
+    // earlier/recent navigation while generation and server fetches remain off.
+    for (const locale of ["en", "es"] as const) {
+      const owner = await account(locale, "none"); const expected: string[] = [];
+      for (let i = 0; i < 21; i++) {
+        const saved = await syntheticPaidEdition(owner, locale); expected.push(saved.document.id);
+        const at = `2026-01-01 12:00:00.${100900 - i * 10}+00`;
+        await db.update(paidReadingRuns).set({ createdAt: sql`${at}::timestamptz` }).where(eq(paidReadingRuns.id, saved.runId));
+      }
+      const visit = await context(owner, locale);
+      try {
+        const before = await readingLedgerSnapshot(owner.viewer.id);
+        await visit.page.goto(`${origin}/reading/${owner.chart.id}`);
+        const section = visit.page.getByRole("region", { name: locale === "es" ? "Ediciones de pago" : "Paid editions", exact: true });
+        const links = section.getByRole("link", { name: locale === "es" ? "Abrir esta edición guardada" : "Open this saved edition", exact: true });
+        await links.first().waitFor();
+        const hrefs = () => links.evaluateAll(nodes => nodes.map(node => node.getAttribute("href")));
+        const paths = expected.map(id => `/reading/${owner.chart.id}?paidEdition=${id}`);
+        assert.deepEqual(await hrefs(), paths.slice(0, 20));
+        await section.getByRole("button", { name: locale === "es" ? "Solicitudes anteriores" : "Earlier requests", exact: true }).click();
+        await section.locator(`a[href="${paths[20]}"]`).waitFor(); assert.deepEqual(await hrefs(), paths.slice(20));
+        await section.getByRole("button", { name: locale === "es" ? "Volver a recientes" : "Back to recent", exact: true }).click();
+        await section.locator(`a[href="${paths[0]}"]`).waitFor(); assert.deepEqual(await hrefs(), paths.slice(0, 20));
+        assert.equal(await readingLedgerSnapshot(owner.viewer.id), before);
+        cases.push(`paid-history-${locale}/microsecond-boundary+earlier+recent+no-writes`);
       } finally { await visit.context.close(); }
     }
 

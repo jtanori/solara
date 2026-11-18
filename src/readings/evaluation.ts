@@ -11,6 +11,10 @@ import { MAX_OUTPUT_TOKENS_PER_SECTION, SECTION_MODEL_TIER } from "@/readings/co
 import { costMicros, validateAttemptSettlement, type GenerationSettings } from "@/readings/execution";
 
 export const PAID_CORPUS_VERSION = "paid-corpus/1";
+// v2 binds the locale-independent json-utf16-v1 hashes. Old report signatures
+// are not silently reinterpreted as new editorial approval.
+export const PAID_EVALUATION_VERSION = "paid-evaluation/2";
+export const PAID_EDITORIAL_REVIEW_VERSION = "paid-editorial-review/2";
 export const PAID_EDITORIAL_MINIMUM = 6;
 export const EDITORIAL_CRITERIA = ["specificity", "factualAgreement", "crossSectionConsistency", "language", "completeness", "noUpsell", "honestLimitations"] as const;
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -24,7 +28,7 @@ const evaluationSectionSchema = z.strictObject({ key: z.enum(SECTION_KEYS), titl
   status: z.enum(["generated", "failed"]), blocks: z.array(readingBlockSchema).max(30), closingQuestion: z.string().max(500).optional() });
 const sampleSchema = z.strictObject({ caseId: z.string().regex(/^[a-z0-9-]{1,80}$/), locale: z.enum(["en", "es"]), factsHash: hash,
   sections: z.array(evaluationSectionSchema).max(11), attempts: z.array(evaluationAttemptSchema).max(22) });
-export const paidEvaluationSchema = z.strictObject({ version: z.literal("paid-evaluation/1"), corpusVersion: z.literal(PAID_CORPUS_VERSION), corpusHash: hash,
+export const paidEvaluationSchema = z.strictObject({ version: z.literal(PAID_EVALUATION_VERSION), corpusVersion: z.literal(PAID_CORPUS_VERSION), corpusHash: hash,
   source: z.enum(["synthetic", "provider"]), profile: z.enum(PAID_PROFILES), contentVersion: z.string().min(1).max(128), configHash: hash,
   processor: z.string().min(1).max(100), models: z.strictObject({ cheap: model, strong: model }),
   schemaHash: hash, promptHashes: z.record(z.string().max(80), hash),
@@ -37,7 +41,7 @@ export type EvaluationFacts = Record<string, ChartDigest>;
 export type EditorialReview = z.infer<typeof editorialReviewSchema>;
 const criterionScores = z.strictObject({ specificity: z.literal(2), factualAgreement: z.literal(2), crossSectionConsistency: z.literal(2), language: z.literal(2),
   completeness: z.literal(2), noUpsell: z.literal(2), honestLimitations: z.literal(2) });
-export const editorialReviewSchema = z.strictObject({ version: z.literal("paid-editorial-review/1"), locale: z.enum(["en", "es"]), reportHash: hash,
+export const editorialReviewSchema = z.strictObject({ version: z.literal(PAID_EDITORIAL_REVIEW_VERSION), locale: z.enum(["en", "es"]), reportHash: hash,
   reviewer: z.string().trim().min(1).max(200), evidence: z.string().trim().min(1).max(1800), attestation: z.literal("I reviewed the complete provider-generated reports against the frozen facts and bilingual rubric"),
   samples: z.array(z.strictObject({ caseId: z.string().max(80), sampleHash: hash, scores: criterionScores, notes: z.string().trim().min(1).max(2000) })).min(PAID_EDITORIAL_MINIMUM).max(24) });
 
@@ -147,7 +151,7 @@ export function validateEditorialApproval(reportValue: unknown, reviewValue: unk
 
 export function editorialReviewTemplate(report: PaidEvaluationReport, locale: Locale) {
   // Deliberately invalid until a real editor fills it in; no prechecked scores.
-  return { version: "paid-editorial-review/1", locale, reportHash: evaluationHash(report), reviewer: "", evidence: "", attestation: "",
+  return { version: PAID_EDITORIAL_REVIEW_VERSION, locale, reportHash: evaluationHash(report), reviewer: "", evidence: "", attestation: "",
     samples: report.samples.filter(sample => sample.locale === locale).map(sample => ({ caseId: sample.caseId, sampleHash: evaluationSampleHash(sample),
       scores: Object.fromEntries(EDITORIAL_CRITERIA.map(key => [key, null])), notes: "" })) };
 }

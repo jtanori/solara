@@ -85,11 +85,15 @@ export function liveGenerationConfig(fetchImpl?: typeof fetch): LiveGenerationCo
   } catch { return null; }
 }
 
-/** Stable across JSONB's object-key ordering; array order remains significant. */
+export const CANONICAL_HASH_SCHEME = "json-utf16-v1";
+
+/** JSON normalization, then recursive UTF-16 code-unit key order; arrays retain
+ * order. Serialize keys directly so integer-like keys are NOT re-enumerated by
+ * JSON.stringify's object rules. No host locale, ICU collation or normalization. */
 export function canonicalHash(value: unknown): string {
-  const ordered = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(ordered)
+  const ordered = (entry: unknown): string => Array.isArray(entry) ? `[${entry.map(ordered).join(",")}]`
     : entry !== null && typeof entry === "object"
-      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, ordered(child)]))
-      : entry;
-  return hash(ordered(value));
+      ? `{${Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, child]) => `${JSON.stringify(key)}:${ordered(child)}`).join(",")}}`
+      : JSON.stringify(entry);
+  return createHash("sha256").update(ordered(JSON.parse(JSON.stringify(value)))).digest("hex");
 }

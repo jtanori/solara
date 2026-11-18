@@ -26,8 +26,11 @@ gates; it is not live-provider/editorial approval.
    stops after 60 seconds/20 GETs; checking again does not submit again.
 5. Open a specific edition through `?paidEdition=<uuid>` on either the page or
    PDF URL. Prose, locale, facts and expected-section manifest remain frozen.
-   Subscription expiry does not remove saved editions. A translation or refresh
-   is a new funded request; interface-language changes never generate.
+   Subscription expiry does not remove saved editions. History uses an owned
+   run-ID cursor and a native PostgreSQL `(created_at, id)` boundary, preserving
+   microseconds and deterministic ties; earlier/recent navigation never dispatches.
+   A translation or refresh is a new funded request; interface-language changes
+   never generate.
 
 The allowance is **one per verified account per UTC calendar month**, without
 rollover or subscription stacking. Acceptance reserves it; the first committed
@@ -41,8 +44,37 @@ including later months and chart deletion. There is no ad-hoc credited retry.
 
 | Profile | Sections | Snapshot / calculation policy |
 | --- | --- | --- |
-| `paid-core-v1` (default) | overview, sun, moon, ascendant, aspects, houses, planets, nodes, guidance | `paid-snapshot/1`, `placidus-return-v1` |
-| `paid-rich-v1` | the core list with planetaryYear and transits inserted before guidance | `paid-snapshot/2`, `placidus-return-annual-v1` |
+| `paid-core-v1` (default) | overview, sun, moon, ascendant, aspects, houses, planets, nodes, guidance | `paid-snapshot/3`, `placidus-return-v1` |
+| `paid-rich-v1` | the core list with planetaryYear and transits inserted before guidance | `paid-snapshot/4`, `placidus-return-annual-v1` |
+
+### Identity and compatibility
+
+Paid identities use **`json-utf16-v1`**: JSON normalization, recursively ordered
+object keys by UTF-16 code units, original array order, no locale/ICU collation or
+Unicode normalization. Keys are serialized directly (including integer-like
+keys), rather than re-enumerated through JavaScript objects. Paid config hashes
+include the scheme and canonicalize the actual profile/settings, not the free
+path's insertion-sensitive fingerprint. Free identity/content-version behavior
+is unchanged.
+
+Snapshot versions 3/4 select this new ordering; their calculation policies and
+nine/eleven-section profiles are unchanged. **Versions 1/2 remain readable with
+their original hashes** via a locale-independent compatibility ordering for
+those validated, fixed ASCII-field schemas. The original hashes, snapshot/prose,
+and edition IDs are never rewritten or re-signed. Legacy hashes have captured
+pre-fix golden vectors and cross-locale/JSONB read tests.
+
+New paid config/content identities and evaluation/review format versions
+`paid-evaluation/2` / `paid-editorial-review/2` intentionally invalidate older
+editorial signatures and queued-generation authority. Regenerate evidence and
+obtain exact-version approval; do not relabel an old report or revive a prior
+run. A consumed/uncertain allowance is not refunded/reset. There is no schema
+migration or hosted data rewrite for this transition. Only the disposable local
+DB was inspected (no paid runs/editions/approvals at the remediation baseline);
+**hosted absence is not assumed or claimed**. Before any later authorized rollout,
+keep controls off, inspect existing state using the aggregate diagnostics below,
+and drain/reconcile pending attempts under the existing no-replay policy.
+
 
 Overview and Sun are regenerated using paid prompts and Placidus facts; existing
 free whole-sign prose and `readings.result` are never overwritten. Unsupported
@@ -89,8 +121,13 @@ may show the owner's frozen return reference; that is not the provider payload.
   share the user fence, after their subscription advisory lock; workers never
   acquire that advisory lock.
 - Receipt and validated checkpoint commit together. Invalid raw output is neither
-  stored in the financial ledger nor sent to the repair prompt. Only settled
-  checkpoints can resume; reserved/unknown attempts are never replayed.
+  stored in the financial ledger nor sent to the repair prompt. The **whole**
+  recovered ledger is checked before any new permit: only measured success
+  receipts with a valid/invalid checkpoint can advance. Primary/repair provider
+  errors, no-send halts and measured receipts lacking a checkpoint stop further
+  spending even if a worker dies immediately after settlement. Eligible prior
+  sections may finalize as partial; no output fails without a replacement
+  allowance. Reserved/unknown attempts are never replayed.
 - Explicit stop fences new dispatch and heartbeat aborts in-flight transport.
   Already authorized exposure remains. Withdrawal/deletion prevents publication;
   account deletion cascades paid rows, chart deletion retains consumed accounting.

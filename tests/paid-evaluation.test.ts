@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PAID_PROFILES, PAID_RICH_PROFILE, paidSections } from "../src/readings/paid-contract";
 import { syntheticPaidEvaluation } from "./helpers/paid-evaluation";
-import { comparePaidEvaluations, editorialReviewTemplate, EDITORIAL_CRITERIA, evaluationHash, evaluationMetrics, evaluationSampleChecks, evaluationSampleHash, validateEditorialApproval, type PaidEvaluationReport } from "../src/readings/evaluation";
+import { comparePaidEvaluations, editorialReviewTemplate, PAID_EDITORIAL_REVIEW_VERSION, EDITORIAL_CRITERIA, evaluationHash, evaluationMetrics, evaluationSampleChecks, evaluationSampleHash, validateEditorialApproval, type PaidEvaluationReport } from "../src/readings/evaluation";
 
 function current(report: PaidEvaluationReport) {
   const models = Object.values(report.models);
@@ -10,7 +10,7 @@ function current(report: PaidEvaluationReport) {
     inputTokenLimits: Object.fromEntries(models.map(model => [model, 6000])), servedModels: Object.fromEntries(models.map(model => [model, [model, `${model}-served`]])) };
 }
 function signed(report: PaidEvaluationReport, locale: "en" | "es" = "en") {
-  return { version: "paid-editorial-review/1", locale, reportHash: evaluationHash(report), reviewer: "Protocol fixture only; not a real editorial approval", evidence: "Synthetic assertion of the approval interface; never recorded in the database",
+  return { version: PAID_EDITORIAL_REVIEW_VERSION, locale, reportHash: evaluationHash(report), reviewer: "Protocol fixture only; not a real editorial approval", evidence: "Synthetic assertion of the approval interface; never recorded in the database",
     attestation: "I reviewed the complete provider-generated reports against the frozen facts and bilingual rubric",
     samples: report.samples.filter(sample => sample.locale === locale).map(sample => ({ caseId: sample.caseId, sampleHash: evaluationSampleHash(sample),
       scores: Object.fromEntries(EDITORIAL_CRITERIA.map(key => [key, 2])), notes: "Protocol fixture to exercise validation, not an editorial verdict." })) };
