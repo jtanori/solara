@@ -292,3 +292,60 @@ two-argument lock, so a cutover gap existed between old and new instances.
   the default path does not use that connection.
 - A migration that old code does not know makes readiness-based automatic rollback unavailable;
   operators must forward-fix.
+
+---
+
+## ADR 011 — Solar Return first and a shared four-product offer
+
+**Date:** 2026-11-11
+
+**Status:** Accepted product direction; implementation and release qualification pending
+
+**Context:** Operator's revised development priorities and answers to the product choices
+
+### Context
+The core Solar implementation is substantial, but a decorative wheel and synthetic
+LLM evidence do not constitute a completed chart product. The operator wants core
+product delivery ahead of low-risk edge cases and a detailed user-system inventory
+before deciding which account conveniences belong in the initial release.
+
+### Decision
+- Complete **Solar Return → payments → Free/Premium**, in that order. This supersedes
+  the earlier recommendation to finish payments before Solar completion.
+- Lunar Return, Natal Chart and Synastry remain pre-production requirements, but
+  discussion of their detail waits until Solar is complete. Payments still precede
+  those three additions; do not begin designing them as part of the Solar slice.
+- Defer auth/mail acceptance testing until the other critical features are complete;
+  do not confuse deferral with verified readiness or removal of launch qualification.
+- Include a factual visualization in Solar completion: saved positions, houses,
+  angles and aspects, consistent with the selected report and PDF. The decorative
+  wheel must not be relabeled as factual. Preserve legacy snapshot/prose identity.
+- The lifetime Free introduction may be used on **any one of the four products**.
+  This is one account-wide offer, not a separate free offer for every product.
+- Use **one Premium subscription and a larger bounded shared generation allowance**
+  across products, not four subscriptions, four independent allowances or unlimited
+  generation. Decide the exact quantity and product-specific Free sections in the
+  Free/Premium phase after payments; they do not block Solar development.
+- Require known birth times for chart subjects (both subjects for future Synastry).
+  Do not implement unknown-time mode or silently supply a guessed time.
+- Keep checkout pagination (#143) as the **first post-production follow-up**. Its
+  earlier pre-purchase-gate wording is superseded, not evidence that it was fixed.
+  Prioritize material security/privacy/money risks over low-risk scale edge cases.
+- User-system launch/post-launch recommendations remain proposals until the
+  operator chooses them; this decision does not approve every missing feature.
+
+### Consequences
+- [Solar completion](plan-solar-return-completion.md) defines the focused delivery
+  outcome. GitHub Issues track execution; this ADR is not a duplicate backlog.
+- Current Solar-only Free and one-paid-edition-per-UTC-month code remain unchanged
+  until an explicit versioned implementation of the expanded offer. Preserve
+  consumed allowances, unknown exposure, saved editions and immutable history.
+- Explicit consent/generation, deterministic calculations, genuine provider/editorial
+  evidence and truthful progress remain required. Existing tools can support content
+  review without first building an editorial queue or CMS.
+- Auth testing is later, not omitted. Public signup/recovery, ordinary Stripe
+  lifecycle and the necessary runtime/privacy qualification still need evidence
+  before accepting customers. Do not restore every stale historical blocker as a
+  new feature dependency without assessing its current code and material risk.
+- No provider/Stripe spending, hosted data changes, activation, deployment or
+  production promotion follows automatically from this product decision.

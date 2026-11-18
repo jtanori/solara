@@ -2,6 +2,17 @@
 
 A bilingual solar-return prototype with Stripe subscriptions, city search and map selection, private editorial PDFs, and role-based content editing.
 
+## Current product direction
+
+Finish **Solar Return**, including a factual chart wheel and genuine LLM interpretations,
+then **payments**, then **Free/Premium**. Lunar Return, Natal Chart and Synastry remain
+pre-production scope; discuss their detail after Solar is complete. The eventual offer
+is one account-wide Free introduction usable on any one product and one Premium
+subscription with a larger shared allowance (quantity to be decided). Known birth
+times are required. These decisions do not change current limits or enable generation.
+See the [Solar completion plan](docs/plan-solar-return-completion.md) and
+[ADR 011](docs/decisions.md#adr-011--solar-return-first-and-a-shared-four-product-offer).
+
 ## Setup and deployment guides
 
 Start with the [setup guide index](docs/setup/README.md), or in development (`npm run dev`) open `/setup` in the running application for a bilingual, environment-specific checklist. Detailed guides cover local development, staging and production for:

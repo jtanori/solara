@@ -1,15 +1,21 @@
 # Paid reading editions — approved implementation contract
 
 The operator approved the product-development plan in this session. This document
-records the contract, not deployment approval or evidence that live generation is
-ready. The existing lifetime-free offer and its saved documents remain unchanged.
+records the implemented Solar contract, not deployment approval or evidence that
+live generation is ready. [ADR 011](decisions.md#adr-011--solar-return-first-and-a-shared-four-product-offer)
+and the [Solar completion plan](plan-solar-return-completion.md) amend the development
+order and future offer: Solar first, payments next, then any-product lifetime Free
+and a larger shared Premium allowance. Those offer changes are not implemented by
+this baseline; existing limits and saved documents remain unchanged until a
+versioned transition is delivered.
 
 ## Product and funding
 
 - A verified owner with an eligible, synchronized subscription explicitly requests
   an edition. Payment success, webhooks, GETs and navigation never generate.
-- Initially one edition per account per **UTC calendar month**, including eligible
-  trials. No rollover, stacking of subscriptions, or reset on chart deletion.
+- Implemented baseline: one edition per account per **UTC calendar month**,
+  including eligible trials. No rollover, stacking of subscriptions, or reset on
+  chart deletion. The approved larger shared allowance is a later tier change.
 - Reserve the monthly allowance at acceptance; consume it at the first committed
   provider permit, even if the result fails. Release only a wholly pre-permit
   reservation that has been fenced against subsequent dispatch. This is not a
@@ -91,10 +97,12 @@ financial receipts contain no raw provider bodies.
   locale. Approval is pinned to profile/contentVersion/locale/provider-model
   configuration and fails closed on changes. No fabricated approval, and no
   additional-human or independent-GitHub-identity gate.
-- #143 remains a separate checkout-pagination fix before real purchase
-  acceptance. #10 Stripe test lifecycle, live-provider evaluation/privacy,
-  migration/runtime qualification and production executor binding remain release
-  gates, not substitutes for core product development. Email testing is deferred.
+- Development order is now Solar completion → payments → Free/Premium (ADR 011).
+  #143 is explicitly the **first post-production follow-up**, not a pre-purchase
+  gate and not a fixed defect. #10 ordinary Stripe test lifecycle, genuine-provider
+  evaluation/privacy and necessary migration/runtime/executor qualification remain
+  release work. Auth/mail acceptance testing waits until the other critical
+  features are complete; working signup/recovery is still needed before launch.
 
 ## Verification and rollout
 

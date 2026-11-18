@@ -11,6 +11,13 @@ gates. The [PR #151 remediation record](../pr151-review-remediation.md) contains
 the current five-finding fixes and refreshed verification. Neither record is
 live-provider/editorial approval.
 
+[ADR 011](../decisions.md#adr-011--solar-return-first-and-a-shared-four-product-offer)
+and the [Solar completion plan](../plan-solar-return-completion.md) set the current
+development order: Solar Return (including a factual wheel), then payments, then
+Free/Premium. The agreed future any-product Free offer and larger shared Premium
+allowance are **not implemented yet**. The customer contract below describes the
+existing Solar/one-per-UTC-month baseline, not the final four-product offer.
+
 ## Customer contract
 
 1. Save a chart without AI work or allowance use. A paid-first customer need not
@@ -282,8 +289,12 @@ Follow mutations with the full restored-tree validation before claiming readines
   exact-SHA staging migrations with `db-remote`, then follow the existing deploy
   procedure. Old code cannot safely roll back past a journal it does not recognize;
   disable and forward-fix or use a rehearsed restore. Never rewrite applied SQL.
-- Before purchase acceptance: separate checkout pagination #143, real Stripe test
-  lifecycle #10, genuine model/privacy/editorial evidence, hosted PDF/resource
-  qualification, supervisor binding and generation-off browser/readiness QA.
-  Email testing is deferred. Production promotion and provider activation require
-  explicit separate authorization. Local green tests do not waive these gates.
+- Before purchase acceptance: real Stripe test lifecycle #10, genuine
+  model/privacy/editorial evidence, hosted PDF/resource qualification, supervisor
+  binding and generation-off browser/readiness QA. Development order is Solar
+  completion → payments → Free/Premium; auth/mail acceptance testing waits until
+  the other critical features are complete, not indefinitely past public signup.
+- Checkout pagination #143 is explicitly the **first post-production follow-up**
+  under ADR 011, not a current purchase-acceptance gate and not a fixed defect.
+- Production promotion and provider activation require explicit separate
+  authorization. Local green tests do not waive the remaining release gates.

@@ -188,7 +188,7 @@ Do not call `completed` proof of a rendered document. The server's selected pres
 
 ## 8. Page integration, accessibility and refresh
 
-- Keep the saved placements, privacy label, warnings, decorative-wheel disclosure, chart details and deletion controls. Do not relabel the wheel as a computed chart.
+- Keep the saved placements, privacy label, warnings, decorative-wheel disclosure, chart details and deletion controls. Do not relabel the wheel as a computed chart. The later [Solar completion plan](plan-solar-return-completion.md) adds a genuinely factual page/PDF visualization; retain the disclosure until that implementation exists, and never silently recast or rewrite an old edition to fill missing wheel data.
 - Wire `ReadingSectionView`/`ReadingBlockView` into a saved-reading container. Use proper section headings and IDs; subtitle absence is allowed. Use semantic lists, `dl` for key/value data where appropriate, and table captions/column headers with responsive overflow.
 - Preserve paragraph/newline meaning without interpreting markup. Long words/JSON-like values must wrap without breaking mobile layouts. Test reading order at narrow width, zoom, keyboard navigation and sufficient contrast; locked state cannot rely on blur/color alone.
 - Put `lang={document.locale}` on the saved-reading subtree. Display a localized mismatch explanation, generation date and version information without exposing private accounting/provider metadata.
