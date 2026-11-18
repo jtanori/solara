@@ -1,6 +1,9 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { readings, readingDocuments as documents, readingGenerationRuns as runs } from "@/db/schema";
+import { readings, readingDocuments as documents, readingGenerationRuns as runs, paidReadingRuns as paidRuns, paidReadingEditions as paidEditions } from "@/db/schema";
+import { isPaidProfile, paidSections } from "@/readings/paid-contract";
+import { paidSnapshotHash, readPaidSnapshot, PAID_SNAPSHOT_BYTES } from "@/readings/paid-chart";
+import { paidCalculationBlocks } from "@/readings/paid-presentation";
 import { getReadingNotes } from "@/lib/reading-content";
 import { log } from "@/lib/log";
 import type { Locale } from "@/lib/i18n";
@@ -51,9 +54,29 @@ export class ReadingViewStore {
       .where(and(eq(readings.id, readingId), eq(readings.userId, userId))).limit(1)).at(0) ?? null;
   }
 
+  async paidSnapshot(userId: string, readingId: string, editionId: string) {
+    return (await this.database.select({
+      run: { id: paidRuns.id, readingId: paidRuns.readingId, locale: paidRuns.locale, profile: paidRuns.profile,
+        expectedSections: paidRuns.expectedSections, contentVersion: paidRuns.contentVersion, status: paidRuns.status, consumedAt: paidRuns.consumedAt },
+      edition: { id: paidEditions.id, runId: paidEditions.runId, readingId: paidEditions.readingId, locale: paidEditions.locale,
+        profile: paidEditions.profile, expectedSections: paidEditions.expectedSections, contentVersion: paidEditions.contentVersion,
+        chartVersion: paidEditions.chartVersion, snapshotHash: paidEditions.snapshotHash,
+        snapshot: sql<unknown>`case when octet_length(${paidEditions.snapshot}::text) <= ${PAID_SNAPSHOT_BYTES} then ${paidEditions.snapshot} else null end`,
+        serialized: sql<string | null>`case when octet_length(${paidEditions.document}::text) <= ${READING_LIMITS.documentBytes} then ${paidEditions.document}::text else null end`,
+      },
+    }).from(readings)
+      .innerJoin(paidRuns, and(eq(paidRuns.userId, readings.userId), eq(paidRuns.readingId, readings.id)))
+      .innerJoin(paidEditions, and(eq(paidEditions.runId, paidRuns.id), eq(paidEditions.readingId, readings.id)))
+      .where(and(eq(readings.id, readingId), eq(readings.userId, userId), eq(paidEditions.id, editionId))).limit(1)).at(0) ?? null;
+  }
+
   /** Last check before sending an expensive PDF; not a promise to recall delivered bytes. */
-  async stillOwned(userId: string, readingId: string, documentId?: string): Promise<boolean> {
+  async stillOwned(userId: string, readingId: string, documentId?: string, paid = false): Promise<boolean> {
     if (!documentId) return Boolean(await this.chart(userId, readingId));
+    if (paid) {
+      const selected = await this.paidSnapshot(userId, readingId, documentId);
+      return Boolean(selected && selected.run.consumedAt && ["completed", "partial"].includes(selected.run.status));
+    }
     const rows = await this.database.select({ id: documents.id }).from(readings)
       .innerJoin(runs, and(eq(runs.userId, readings.userId), eq(runs.readingId, readings.id), eq(runs.kind, "lifetime_free")))
       .innerJoin(documents, and(eq(documents.id, runs.documentId), eq(documents.readingId, readings.id)))
@@ -71,8 +94,9 @@ export async function loadReadingPresentation(
 ): Promise<ReadingPresentation> {
   if (!user?.emailVerifiedAt) throw new ReadingViewError("unauthorized");
   if (!isReadingId(readingId)) throw new ReadingViewError("not_found");
-  if (selector.kind === "document" && !isReadingId(selector.id)) throw new ReadingViewError("invalid_selection");
+  if ((selector.kind === "document" || selector.kind === "paid") && !isReadingId(selector.id)) throw new ReadingViewError("invalid_selection");
   const store = deps.store ?? new ReadingViewStore();
+  if (selector.kind === "paid") return loadPaidPresentation(store, user.id, readingId, selector.id);
   let snapshot: Awaited<ReturnType<ReadingViewStore["snapshot"]>> = null;
   let chartRow: Awaited<ReturnType<ReadingViewStore["chart"]>> = null;
   let availability: ReadingAvailability = "chart_only";
@@ -125,7 +149,32 @@ export async function loadReadingPresentation(
     availability = "history_unavailable";
   }
   let notes: Awaited<ReturnType<typeof getReadingNotes>> | null = null;
-  try { notes = await (deps.notes ?? getReadingNotes)(chart.result, locale); }
+  try { notes = await (deps.notes ?? getReadingNotes)({ ...chart.result, houseSystem: "Whole sign" }, locale); }
   catch { log.warn("readings.view_unavailable", { userId: user.id, code: "notes_unavailable" }); }
   return { chart, content: chartNotes(chart, notes, locale, user.plan === "paid"), generation, availability };
+}
+
+/** Explicit paid selection never consults today's subscription, notes or chart result. */
+async function loadPaidPresentation(store: ReadingViewStore, userId: string, readingId: string, editionId: string): Promise<ReadingPresentation> {
+  let selected: Awaited<ReturnType<ReadingViewStore["paidSnapshot"]>>;
+  try { selected = await store.paidSnapshot(userId, readingId, editionId); }
+  catch { throw new ReadingViewError("service_unavailable"); }
+  if (!selected) throw new ReadingViewError("not_found");
+  const { run, edition } = selected;
+  try {
+    if (!isPaidProfile(run.profile)) throw new Error("invalid profile");
+    const manifest = JSON.stringify(paidSections(run.profile));
+    if (!run.consumedAt || !["completed", "partial"].includes(run.status) || edition.profile !== run.profile ||
+      edition.locale !== run.locale || edition.contentVersion !== run.contentVersion || JSON.stringify(run.expectedSections) !== manifest ||
+      JSON.stringify(edition.expectedSections) !== manifest || !edition.serialized) throw new Error("invalid edition");
+    const snapshot = readPaidSnapshot(edition.snapshot);
+    if (snapshot.chart.id !== readingId || snapshot.profile !== run.profile || snapshot.facts.chartVersion !== edition.chartVersion || paidSnapshotHash(snapshot) !== edition.snapshotHash) throw new Error("invalid snapshot");
+    const document = JSON.parse(edition.serialized);
+    if (document.edition?.profile !== run.profile || document.edition?.snapshotHash !== edition.snapshotHash || JSON.stringify(document.edition?.expectedSections) !== manifest) throw new Error("invalid provenance");
+    const decoded = readStoredDocument(edition.serialized, { ...edition, tier: "paid" }, { allowPaid: true, expectedSections: run.expectedSections });
+    if (!decoded.ok) throw new Error("invalid document");
+    return { chart: { ...snapshot.chart, calculation: paidCalculationBlocks(snapshot, edition.locale) }, content: decoded.value, generation: null, availability: "ready" };
+  } catch {
+    throw new ReadingViewError("document_unavailable");
+  }
 }

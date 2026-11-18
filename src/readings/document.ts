@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ChartDigest } from "@/lib/chart";
 import type { Locale } from "@/lib/i18n";
 import { availableSections, sectionDefinition } from "@/readings/registry";
-import { FALLBACK_PROSE, LOCKED_TEASERS, SECTION_SUBTITLES, SECTION_TITLES } from "@/readings/copy";
+import { FALLBACK_PROSE, LOCKED_TEASERS, SECTION_SUBTITLES, SECTION_TITLES, PAID_SECTION_TITLES, PAID_SECTION_SUBTITLES } from "@/readings/copy";
 import type { ProviderUsage } from "@/readings/provider";
 import { SECTION_KEYS, type LockedSection, type ReadingDocument, type ReadingSection, type SectionKey, type SectionTier } from "@/readings/types";
 
@@ -51,9 +51,9 @@ function sectionFacts(digest: ChartDigest, key: SectionKey): Record<string, unkn
     case "nodes":
       return { nodes: digest.nodes };
     case "planetaryYear":
-      return { profections: (digest as unknown as Record<string, unknown>).profections ?? null };
+      return { profections: digest.profections ?? null };
     case "transits":
-      return { transits: (digest as unknown as Record<string, unknown>).transits ?? null };
+      return { transits: digest.transits ?? null };
     case "guidance":
       return { sun: digest.sun, moon: digest.moon, nodes: digest.nodes, crossAspects: digest.crossAspects.slice(0, 5) };
   }
@@ -107,8 +107,8 @@ export function buildReadingDocument(args: {
       sections.push({
         key,
         tier: definition.tier,
-        title: SECTION_TITLES[key][locale],
-        subtitle: SECTION_SUBTITLES[key][locale],
+        title: (tier === "paid" ? PAID_SECTION_TITLES : SECTION_TITLES)[key][locale],
+        subtitle: (tier === "paid" ? PAID_SECTION_SUBTITLES : SECTION_SUBTITLES)[key][locale],
         blocks: result.output.blocks,
         facts,
         status: "generated",
@@ -119,8 +119,8 @@ export function buildReadingDocument(args: {
       sections.push({
         key,
         tier: definition.tier,
-        title: SECTION_TITLES[key][locale],
-        subtitle: SECTION_SUBTITLES[key][locale],
+        title: (tier === "paid" ? PAID_SECTION_TITLES : SECTION_TITLES)[key][locale],
+        subtitle: (tier === "paid" ? PAID_SECTION_SUBTITLES : SECTION_SUBTITLES)[key][locale],
         blocks: fallbackBlocks(digest, key, locale),
         facts,
         status: "failed",

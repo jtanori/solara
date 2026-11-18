@@ -2,26 +2,63 @@
 
 ## Current calculation
 
-The prototype uses Astronomy Engine for apparent geocentric Sun and Moon positions. It finds the instant the Sun reaches its natal longitude, applies the return location to the Ascendant, and uses **whole-sign houses**. In whole-sign houses, the sign containing the Ascendant is house 1 and each successive sign is a house. A return location at absolute latitude 66° or greater omits the Ascendant and houses pending verification.
+The engine uses Astronomy Engine's apparent geocentric positions for ten bodies.
+It resolves the birth instant in the selected time zone and finds the Sun's return
+to its natal longitude. The return location determines return angles and houses;
+it does not change that instant. Deterministic chart saving defaults to **whole-sign**:
+the Ascendant's sign is house 1, followed by the other signs in order.
 
-**Placidus is not implemented.** It is a time-based quadrant house system whose cusps can be unequal and depend on location and time; some cusps can be unavailable at extreme latitudes. Different house systems can assign a planet to a different house, but they do not change the Sun's exact return instant. There is no environment variable or UI switch that enables Placidus today.
+Placidus is implemented as time-based quadrant cusps and compared against Swiss
+Ephemeris reference fixtures in `tests/ephemeris.test.ts`. It is calculated for an
+authorized paid job, not silently substituted into a free saved chart. At absolute
+return latitude >=66°, or when the solver cannot produce all cusps, a paid job
+stops **before any provider permit**. There is no fallback advertised as Placidus.
+Whole-sign charts retain their explicit high-latitude angle/house limitation.
 
-## Local setup
+The separately frozen `paid-rich-v1` profile adds natal angles at the resolved
+birth instant, traditional whole-sign annual profections and transits referenced
+to the frozen return instant. Natal angles use the **birth** coordinates/zone,
+not the return place. Missing natal Ascendant means unavailable profection, not a
+substituted return Ascendant. Profection age is selected return year minus birth
+year; traditional rulers are Mars for Scorpio, Saturn for Aquarius and Jupiter
+for Pisces. These natal whole-sign houses remain distinct from Placidus return
+houses. Exact orbs, ordering and motion rules are in the [paid runbook](10-paid-readings.md).
+The transit section is not an annual calendar or a promise of future events.
 
-1. No external ephemeris key is needed for the current prototype. Run `npx tsx --test tests/solar.test.ts` for regression, DST gap/fold and high-latitude checks.
-2. Enter an exact known birth time, birth coordinates/zone, return location and year. Verify the UTC instant and local time. The caller can choose the earlier or later occurrence of an ambiguous DST time; non-existent local times are rejected.
-3. Treat these tests as regression tests, **not** independent professional validation. Historical time-zone databases and map-derived current zone boundaries may be inaccurate for a birth location/date.
+## Local reference checks
 
-## Staging setup
+```bash
+npx tsx --test tests/solar.test.ts tests/chart.test.ts tests/ephemeris.test.ts tests/annual-facts.test.ts
+```
 
-1. Before exposing results to customers, agree on zodiac/reference frame, ephemeris, house system, precision, high-latitude behavior and accepted tolerances with a qualified reviewer.
-2. Compare a documented set of independent reference fixtures: leap days, birthdays near year boundaries, DST gaps/folds, historical zone changes, southern hemisphere and high latitudes. Record source, input, expected UTC instant/placements and tolerance.
-3. If Placidus is required, evaluate a validated engine and licensing separately. Swiss Ephemeris is dual-licensed under AGPL and commercial terms; obtain legal review before use. Implement and compare cusp calculations and an explicit high-latitude fallback before exposing a selector.
+Birth-time gaps are rejected; a fold requires the earlier/later occurrence. The
+annual fixture includes both fold occurrences, a leap-day birth, southern
+hemisphere and polar-natal limitation. It is independently generated with Python
+zoneinfo and Swiss Moshier calculations, not Solara imports. Annual longitude
+comparisons use 0.05° and return-time comparisons 120 seconds; those engineering
+tolerances do not replace a professional acceptance threshold.
 
-## Production setup
+Reference refresh is optional dev-only work: `scripts/gen-ephemeris-fixtures.py`
+and `scripts/gen-annual-facts-fixtures.py` require `pyswisseph==2.10.3.2`. Swiss is
+**not a runtime/npm dependency**. Review its AGPL/commercial licensing before
+redistributing it or using it in production. Preserve source/version/policy in
+fixtures, examine numerical changes and rerun tests; never regenerate fixtures
+to hide a calculation regression.
 
-1. Do not claim professional accuracy or sell a complete professional horoscope until the calculation, time zones, house system and content pass independent validation. Keep the reflective/entertainment disclaimer.
-2. Version the calculation engine, inputs, time-zone data and content used for each report. Plan for reproducibility when dependencies or interpretations change; immutable report snapshots are not yet implemented.
-3. Monitor error rates and protect personal birth data. Roll out any new house system behind a controlled release and verify it against approved fixtures in staging before production.
+## Staging and production qualification
 
-References: [Astronomy Engine](https://github.com/cosinekitty/astronomy), [Swiss Ephemeris licensing information](https://www.astro.com/swisseph/swephinfo_e.htm).
+- Agree on zodiac/reference frame, precision, solver policy and professional
+  acceptance tolerances before serving paying customers. Numerical regression
+  evidence is not editorial sign-off or scientific validation of interpretations.
+- Independently qualify historical zones and map-derived boundaries, especially
+  pre-1970 transitions; current zone lookup cannot prove historical civil time.
+- Paid editions preserve derived facts/display snapshot, content version and
+  explicit calculation policy, so page/PDF do not recompute with today's engine.
+  An exact historical runtime/TZ-data image is still a separate reproducibility
+  and release concern; do not claim snapshots pin every external database.
+- Keep generation off pending genuine provider/editorial evidence and the other
+  release gates. No professional-accuracy claim, deterministic outcome or
+  medical/financial guarantee is justified by passing these tests.
+
+References: [Astronomy Engine](https://github.com/cosinekitty/astronomy),
+[Swiss Ephemeris licensing](https://www.astro.com/swisseph/swephinfo_e.htm).

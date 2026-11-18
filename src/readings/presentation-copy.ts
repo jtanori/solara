@@ -1,5 +1,5 @@
 import type { Locale } from "@/lib/i18n";
-import { LOCKED_TEASERS, SECTION_TITLES, type LocalizedText } from "@/readings/copy";
+import { LOCKED_TEASERS, PAID_SECTION_TITLES, PAID_SECTION_SUBTITLES, type LocalizedText } from "@/readings/copy";
 import { sectionDefinition } from "@/readings/registry";
 import { SECTION_KEYS } from "@/readings/types";
 import type { ReadingAvailability, ReadingContent, ReadingNotice, SectionPreview } from "@/readings/presentation";
@@ -23,15 +23,30 @@ export const AVAILABILITY_COPY: Record<ReadingAvailability, LocalizedText> = {
 };
 export const PREVIEW_COPY = {
   title: { en: "Beyond this free interpretation", es: "Más allá de esta interpretación gratuita" },
-  notice: { en: "These are topic previews, not generated content. Full AI interpretations are not available yet; a subscription does not unlock them now.", es: "Estas son descripciones de temas, no contenido generado. Las interpretaciones completas con IA aún no están disponibles; una suscripción no las desbloquea ahora." },
+  notice: { en: "These are topic previews, not generated content. Check your saved chart for the availability of separately requested full editions. A subscription or language change never generates an interpretation automatically.", es: "Estas son descripciones de temas, no contenido generado. Consulta tu carta guardada para conocer la disponibilidad de ediciones completas solicitadas por separado. Una suscripción o un cambio de idioma nunca genera una interpretación automáticamente." },
   not_included: { en: "Not included in this free interpretation", es: "No incluido en esta interpretación gratuita" },
-  planned: { en: "Planned — requires additional chart calculations", es: "Planeado; requiere cálculos adicionales de la carta" },
+  planned: { en: "Separate expanded edition — requires additional chart calculations", es: "Edición ampliada por separado; requiere cálculos adicionales de la carta" },
 } satisfies Record<string, LocalizedText>;
+
+/** A flag alone is not a verified offer. Generic pricing cannot promise access,
+ * nor deny all availability merely because no owned chart was selected. */
+export function paidPricingNotice(available: boolean, enabled: boolean, locale: Locale): string {
+  if (!enabled) return locale === "es"
+    ? "Las interpretaciones completas con IA aún no están disponibles; una suscripción no las desbloquea. El precio y la frecuencia dependen de la moneda elegida. Administra o cancela tu suscripción desde tu cuenta."
+    : "Full AI interpretations are not available yet; a subscription does not unlock them. Price and billing frequency are shown for your chosen currency. Manage or cancel your subscription from your account.";
+  if (!available) return locale === "es"
+    ? "Consulta tu carta guardada para conocer la disponibilidad de ediciones completas. Una suscripción no inicia generación: se requieren disponibilidad verificada, consentimiento y una solicitud explícita. El precio y la frecuencia dependen de la moneda elegida. Administra o cancela desde tu cuenta."
+    : "Check your saved chart for full-edition availability. A subscription does not start generation: verified availability, consent and an explicit request are required. Price and billing frequency are shown for your chosen currency. Manage or cancel from your account.";
+  return locale === "es"
+    ? "El pago no solicita una interpretación. Después de la confirmación verificada, vuelve a tu carta para dar consentimiento y solicitarla. Un cupo por mes UTC; no se acumula. Las ediciones guardadas permanecen después de cancelar."
+    : "Checkout does not request an interpretation. After verified confirmation, return to your chart to consent and request it. One allowance per UTC month; no rollover. Saved editions remain after cancellation.";
+}
 
 /** Current product catalog, NOT a rewrite of the frozen document's lockedSections. */
 export function readingPreviews(locale: Locale): SectionPreview[] {
   return SECTION_KEYS.filter(key => sectionDefinition(key).tier === "paid").map(key => ({
-    key, title: SECTION_TITLES[key][locale], teaser: LOCKED_TEASERS[key][locale],
+    key, title: PAID_SECTION_TITLES[key][locale],
+    teaser: (sectionDefinition(key).requiresFacts ? PAID_SECTION_SUBTITLES : LOCKED_TEASERS)[key][locale],
     availability: sectionDefinition(key).requiresFacts ? "planned" : "not_included",
   }));
 }

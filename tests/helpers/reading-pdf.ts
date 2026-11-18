@@ -1,3 +1,4 @@
+import { SECTION_KEYS } from "../../src/readings/types";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -10,7 +11,7 @@ import { documentIdentity, frozenReading, readingChartInput } from "./reading-fi
 
 export function pdfFixture(locale: "en" | "es" = "en", edition: Parameters<typeof frozenReading>[1] = "free"): ReadingPdfInput {
   const document = frozenReading(locale, edition);
-  const decoded = readStoredDocument(JSON.stringify(document), documentIdentity(document), { allowPaid: true });
+  const decoded = readStoredDocument(JSON.stringify(document), documentIdentity(document), { allowPaid: true, expectedSections: SECTION_KEYS });
   assert.ok(decoded.ok);
   return { content: decoded.value, chart: { id: document.readingId!, name: readingChartInput.name, year: readingChartInput.year, returnPlace: readingChartInput.returnPlace.name, timezone: readingChartInput.returnPlace.timezone, result: calculateSolarReturn(readingChartInput) } };
 }

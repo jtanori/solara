@@ -78,6 +78,8 @@ export type ReadingDocument = {
    */
   costMxn: number;
   wastedCostMxn: number;
+  /** Paid edition provenance; the enclosing authorized run is still required. */
+  edition?: { profile: string; expectedSections: SectionKey[]; snapshotHash: string };
   /** New documents label uncertain exposure explicitly. Absent on legacy rows. */
   accounting?: {
     measuredMxn: number;

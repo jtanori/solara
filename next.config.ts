@@ -13,6 +13,8 @@ const nextConfig: NextConfig = {
   // without prompts and generation fails closed.
   outputFileTracingIncludes: {
     "/api/readings/*/generate": ["./src/readings/prompts/**/*"],
+    "/api/readings/*/paid": ["./src/readings/prompts/**/*"],
+    "/pricing": ["./src/readings/prompts/**/*"],
     "/api/readings/*/pdf": ["./.pdf/**/*"],
   },
   async headers() {

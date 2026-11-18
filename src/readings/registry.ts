@@ -41,10 +41,9 @@ export const SECTION_REGISTRY: Record<SectionKey, SectionDefinition> = {
 
 /** Sections whose grounding facts the digest actually carries. */
 export function availableSections(digest: ChartDigest): SectionKey[] {
-  const carried = digest as unknown as Record<string, unknown>;
   return (Object.keys(SECTION_REGISTRY) as SectionKey[]).filter(key => {
     const required = SECTION_REGISTRY[key].requiresFacts;
-    return !required || carried[required] !== undefined;
+    return !required || digest[required] !== undefined;
   });
 }
 

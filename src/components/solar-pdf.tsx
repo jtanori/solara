@@ -1,7 +1,7 @@
 import React from "react";
 import type { DocumentProps, PageProps } from "@react-pdf/renderer";
 import { localeName } from "@/lib/i18n";
-import { READING_LIMITS, sectionText, type DisplaySection } from "@/readings/presentation";
+import { READING_LIMITS, blockText, sectionText, type DisplaySection } from "@/readings/presentation";
 import type { ReadingBlock } from "@/readings/types";
 import { AVAILABILITY_COPY, NOTICE_COPY, PREVIEW_COPY, aspectHeadings, editionTitle } from "@/readings/presentation-copy";
 import { chartDetails, chartDisclaimer, chartPlacements, returnDate, savedDate } from "@/readings/presentation-format";
@@ -41,6 +41,7 @@ export function SolarReturnDocument({ chart, content, renderer, onPageCount }: R
   const strings = [chart.name, chart.returnPlace, returnDate(chart, locale), title, chartDisclaimer(chart, locale),
     ...chartDetails(chart, locale).flatMap(entry => [entry.key, entry.value]),
     ...chartPlacements(chart, locale).flatMap(entry => [entry.label, entry.value, entry.detail]),
+    ...(chart.calculation ?? []).flatMap(blockText),
     ...content.sections.flatMap(sectionText), ...content.notices.map(code => NOTICE_COPY[code][locale]),
     ...content.sections.flatMap(section => section.notices.map(code => NOTICE_COPY[code][locale])),
     ...(saved ? [content.contentVersion, content.chartVersion, ...content.previews.flatMap(preview => [preview.title, preview.teaser, PREVIEW_COPY[preview.availability][locale]])] : []),
@@ -115,6 +116,15 @@ export function SolarReturnDocument({ chart, content, renderer, onPageCount }: R
     ...chartDetails(chart, locale).map(entry => <View key={entry.key} style={s.keyRow}><Text style={s.key}>{entry.key}</Text><Text style={s.value}>{wrap(entry.value, 275)}</Text></View>),
     <Text key="disclaimer" style={{ ...s.small, marginTop: 18 }}>{wrap(chartDisclaimer(chart, locale), 499, 9)}</Text>,
   ]);
+  let calculation: React.ReactNode[] = [];
+  (chart.calculation ?? []).forEach((block, index) => {
+    if (block.kind === "aspectTable") {
+      const layout = table(block, `calculation-table-${index}`);
+      if (layout.inline) calculation.push(layout.node);
+      else { flowPage(`calculation-${index}`, calculation); calculation = []; pages.push(layout.node); }
+    } else calculation.push(blockView(block, `calculation-${index}`));
+  });
+  flowPage("calculation-end", calculation);
   let narrative: React.ReactNode[] = [];
   const renderSection = (section: DisplaySection) => {
     const beforeHeading = narrative.length;

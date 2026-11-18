@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { ArrowLeft, Download, LockKeyhole } from "lucide-react";
 import { AstroWheel } from "@/components/astro-wheel";
-import { ReadingContentView } from "@/components/reading-sections";
+import { ReadingBlockView, ReadingContentView } from "@/components/reading-sections";
 import { localeName, type Locale } from "@/lib/i18n";
 import { readingEditionQuery, type ReadingPresentation, type ReadingSelector } from "@/readings/presentation";
 import { AVAILABILITY_COPY, editionTitle } from "@/readings/presentation-copy";
@@ -34,8 +34,12 @@ export function ReadingPageView({ view, locale, selector, controls, deleteContro
       {/* Explicit notes bypass the generation store for availability, not to
           infer a fresh offer. Use canonical navigation above for all AI controls. */}
       {selector.kind !== "chart" && controls}
+      {chart.calculation && <details className="panel" lang={content.locale}>
+        <summary>{content.locale === "es" ? "Cálculo guardado de esta edición · Placidus" : "This edition’s saved calculation · Placidus"}</summary>
+        <div style={{ marginTop: 20 }}>{chart.calculation.map((block, index) => <ReadingBlockView key={index} block={block} locale={content.locale} />)}</div>
+      </details>}
       <ReadingContentView content={content} />
-      {!saved && <p className="small muted">{es ? "Una suscripción puede incluir notas ilustrativas adicionales; no concede una interpretación completa generada con IA." : "A subscription may include additional illustrative notes; it does not grant a full AI-generated interpretation."} <Link href="/pricing" className="plain-link">{es ? "Funciones actuales" : "Current features"}</Link></p>}
+      {!saved && <p className="small muted">{es ? "Una suscripción puede incluir notas ilustrativas adicionales. Las ediciones completas, cuando estén disponibles, requieren una solicitud explícita desde tu carta." : "A subscription may include additional illustrative notes. Full editions, when available, require an explicit request from your chart."} <Link href="/pricing" className="plain-link">{es ? "Funciones actuales" : "Current features"}</Link></p>}
     </div><section className="panel" style={{ minWidth: 0 }} aria-labelledby="chart-details-title">
       <h2 id="chart-details-title">{es ? "Tu momento en el tiempo." : "Your moment in time."}</h2>
       <dl className="detail-list">{chartDetails(chart, locale).map(entry => <div className="detail-row" key={entry.key} style={{ gap: 16 }}><dt>{entry.key}</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}>{entry.value}</dd></div>)}</dl>

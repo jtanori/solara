@@ -53,7 +53,7 @@ export async function handleReadingPdf(request: Request, readingId: string, deps
     const rendered = await (deps.renderer ?? readingPdfRenderer).render({ chart, content }, request.signal);
     // No transaction spans rendering. Recheck immediately before delivery; bytes
     // already delivered cannot be recalled after the unavoidable final-check race.
-    if (!await store.stillOwned(user.id, readingId, content.kind === "saved-reading" ? content.id : undefined)) return failure("not_found", 404);
+    if (!await store.stillOwned(user.id, readingId, content.kind === "saved-reading" ? content.id : undefined, content.kind === "saved-reading" && content.tier === "paid")) return failure("not_found", 404);
     if (request.signal.aborted) return failure("pdf_aborted", 503);
     return privateResponse(new Response(new Uint8Array(rendered.buffer), { headers: responseHeaders }));
   } catch (error) {

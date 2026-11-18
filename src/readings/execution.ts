@@ -1,6 +1,7 @@
 import type { Completion, CompletionRequest, PreparedCompletion, ReadingProvider, ProviderUsage } from "@/readings/provider";
 import { approxTokens, validUsage } from "@/readings/provider";
 import { modelPrices, modelForTier, type ModelPrice, type ModelTier } from "@/readings/config";
+import type { SectionOutput, SectionValidation } from "@/readings/schemas";
 import type { SectionKey } from "@/readings/types";
 
 export type GenerationSettings = {
@@ -38,6 +39,8 @@ export type AttemptSettlement = {
   usage: ProviderUsage | null;
   latencyMs: number;
   code: string;
+  /** Validated private checkpoint; only paid workers request atomic output settlement. */
+  outcome?: { kind: "valid"; output: SectionOutput } | { kind: "invalid" };
 };
 
 /**
@@ -73,6 +76,7 @@ export async function dispatchAttempt(
   provider: ReadingProvider,
   request: CompletionRequest,
   phase: AttemptAdmission["phase"],
+  validate?: (output: unknown) => SectionValidation,
 ): Promise<AttemptResult> {
   const empty = { measuredMicros: 0, uncertainMicros: 0 };
   let prepared: PreparedCompletion;
@@ -127,6 +131,13 @@ export async function dispatchAttempt(
     settlement = validReceipt
       ? { basis: "measured", costMicros: measured!, model: completion.model, usage: completion.usage, latencyMs: elapsedMs(), code }
       : { basis: "unknown", costMicros: quote, model: null, usage: null, latencyMs: elapsedMs(), code };
+    // A crash after settlement must not lose a validated paid section and cause
+    // an unsafe replay. Never checkpoint output from a bad/beyond-bound receipt.
+    if (validate && settlement.basis === "measured" && code === "measured" &&
+      completion.usage.inputTokens <= prepared.upperUsage.inputTokens && completion.usage.outputTokens <= prepared.upperUsage.outputTokens) {
+      const checked = validate(completion.output);
+      settlement.outcome = checked.ok ? { kind: "valid", output: checked.value } : { kind: "invalid" };
+    }
   } catch {
     // The adapter might have incurred a charge. Neither a thrown error, HTTP
     // status, timeout nor abort proves zero billing. #129: stop, never continue free.
@@ -154,4 +165,16 @@ export async function dispatchAttempt(
   }
   if (completion?.providerError) return { ...amounts, failure: "provider_error", halt: "provider_error" };
   return { ...amounts, completion };
+}
+
+/** Both ledgers validate receipts independently of the transport caller. */
+export function validateAttemptSettlement(
+  result: AttemptSettlement, reserved: number, settings: GenerationSettings | null,
+  requestedModel: string, admitsModel: GenerationExecution["admitsModel"],
+) {
+  if (!["measured", "unknown", "not_dispatched"].includes(result.basis) || !/^[a-z][a-z0-9_]{0,99}$/.test(result.code) ||
+    !Number.isSafeInteger(result.costMicros) || result.costMicros < 0 || !Number.isSafeInteger(result.latencyMs) || result.latencyMs < 0) throw new GenerationBlocked("accounting_invalid");
+  if (result.basis === "unknown" && (result.costMicros !== reserved || result.model || result.usage)) throw new GenerationBlocked("accounting_invalid");
+  if (result.basis === "not_dispatched" && (result.costMicros !== 0 || result.model || result.usage)) throw new GenerationBlocked("accounting_invalid");
+  if (result.basis === "measured" && (!settings || !result.model || !admitsModel(requestedModel, result.model) || !validUsage(result.usage) || costMicros(settings.prices, result.model, result.usage) !== result.costMicros)) throw new GenerationBlocked("accounting_invalid");
 }

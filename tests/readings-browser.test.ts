@@ -1,32 +1,13 @@
 import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
-import { createServer, type Server } from "node:http";
-import { readFileSync, mkdirSync } from "node:fs";
-import { build } from "esbuild";
 import type { Browser, Page, Route } from "playwright-core";
-import { launchReadingTestBrowser } from "./helpers/browser";
+import { startControlBrowser } from "./helpers/control-browser";
 
 const readingId = "22222222-2222-4222-8222-222222222222";
 const documentId = "33333333-3333-4333-8333-333333333333";
-let browser: Browser; let server: Server; let origin: string;
-before(async () => {
-  mkdirSync(".venv/reading-browser", { recursive: true });
-  await build({ entryPoints: ["tests/browser/reading-controls.tsx"], outfile: ".venv/reading-browser/controls.js", bundle: true, platform: "browser", format: "iife", jsx: "automatic", define: { "process.env.NODE_ENV": '"production"' }, plugins: [{ name: "test-next-boundary", setup(b) {
-    b.onResolve({ filter: /^next\/(navigation|link)$/ }, args => ({ path: args.path, namespace: "test-next" }));
-    b.onLoad({ filter: /.*/, namespace: "test-next" }, args => ({ loader: "js", contents: args.path.endsWith("navigation")
-      ? "globalThis.readingRefreshes=0;const router={refresh(){globalThis.readingRefreshes++}};export function useRouter(){return router}"
-      : "import React from 'react';export default function Link({href,children,...props}){return React.createElement('a',{href,...props},children)}", resolveDir: process.cwd() }));
-  } }] });
-  const bundle = readFileSync(".venv/reading-browser/controls.js");
-  server = createServer((request, response) => {
-    if (request.url === "/controls.js") { response.setHeader("Content-Type", "application/javascript"); response.end(bundle); }
-    else { response.setHeader("Content-Type", "text/html"); response.end('<!doctype html><html lang="en"><head><meta charset="UTF-8"></head><body><main id="root"></main><script src="/controls.js"></script></body></html>'); }
-  });
-  await new Promise<void>(resolve => server.listen(0, "0.0.0.0", resolve));
-  const address = server.address(); assert.ok(address && typeof address === "object"); origin = `http://127.0.0.1:${address.port}`;
-  browser = await launchReadingTestBrowser();
-});
-after(async () => { await browser?.close(); await new Promise<void>(resolve => server?.close(() => resolve())); });
+let browser: Browser; let origin: string; let site: Awaited<ReturnType<typeof startControlBrowser>>;
+before(async () => { site = await startControlBrowser("tests/browser/reading-controls.tsx"); browser = site.browser; origin = site.origin; });
+after(async () => { await site?.close(); });
 const view = (status: string, id: string | null = null, chart = readingId) => ({ status, readingId: chart, documentId: id, locale: "en" });
 const policy = { policyHash: "a".repeat(64), policyVersion: "synthetic/1", disclosure: "Synthetic processor disclosure", providerName: "Synthetic Provider" };
 async function fixture(props: Record<string, unknown>, reply: (route: Route, calls: { path: string; method: string }[]) => Promise<void>, nativeTimers = false) {

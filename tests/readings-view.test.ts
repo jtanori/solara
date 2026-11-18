@@ -239,9 +239,14 @@ test("reader: cross-owner run pointer is not exposed as another account's link/c
 
 test("reader: paid or malformed free rows are unavailable even to a paid account", async () => {
   const paid = await account("en", "paid");
-  const view = await loadReadingPresentation({ ...paid.viewer, plan: "paid" }, paid.chart.id, "en", { kind: "auto" }, deps);
-  assert.equal(view.availability, "document_unavailable");
-  assert.equal(view.content.kind, "chart-notes");
+  // Neither the legacy eleven-section shape nor a valid nine-section core
+  // manifest makes a free-run pointer into an authorized paid edition.
+  for (const sections of [paid.document.sections, paid.document.sections.filter(section => !["planetaryYear", "transits"].includes(section.key))]) {
+    await db.update(readingDocuments).set({ document: { ...paid.document, sections } }).where(eq(readingDocuments.id, paid.document.id));
+    const view = await loadReadingPresentation({ ...paid.viewer, plan: "paid" }, paid.chart.id, "en", { kind: "auto" }, deps);
+    assert.equal(view.availability, "document_unavailable");
+    assert.equal(view.content.kind, "chart-notes");
+  }
   const free = await account();
   free.document.sections.push(frozenReading("en", "paid").sections[2]);
   await db.update(readingDocuments).set({ document: free.document }).where(eq(readingDocuments.id, free.document.id));

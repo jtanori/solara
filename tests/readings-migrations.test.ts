@@ -91,6 +91,28 @@ test("migration: current-schema upgrade, PR148 R7 legacy locales, idempotence, F
     assert.equal(adopted[0].status, "legacy"); assert.ok(adopted[0].consumedAt);
     assert.equal(adopted[0].settings, null, "no historical receipt or pricing snapshot invented");
     assert.equal((await database.select().from(consents)).length, 0, "migration never grants consent");
+    // Independent SQL catalog/data assertions, not the runtime manifest's own
+    // expected arrays. The additive paid migrations must not adopt legacy prose
+    // or preapprove/enable a processor while upgrading the free cutover.
+    for (const table of ["paid_reading_allowances", "paid_reading_approvals", "paid_reading_attempts", "paid_reading_checkpoints", "paid_reading_editions", "paid_reading_runs", "paid_reading_snapshots"]) {
+      assert.equal((await upgraded.query(`SELECT count(*)::integer AS count FROM ${table}`)).rows[0].count, 0, table);
+    }
+    assert.deepEqual((await upgraded.query("SELECT id, enabled, revision, worker_heartbeat_at, worker_config_hash FROM paid_reading_control")).rows,
+      [{ id: "paid", enabled: false, revision: 0, worker_heartbeat_at: null, worker_config_hash: null }]);
+    const triggers = await upgraded.query("SELECT tgname, tgenabled FROM pg_trigger WHERE NOT tgisinternal AND tgrelid IN ('paid_reading_editions'::regclass, 'paid_reading_snapshots'::regclass) ORDER BY tgname");
+    assert.deepEqual(triggers.rows, [{ tgname: "paid_editions_immutable", tgenabled: "O" }, { tgname: "paid_snapshots_immutable", tgenabled: "O" }]);
+    const paidConstraints = await upgraded.query("SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid = 'paid_reading_runs'::regclass");
+    const definition = (name: string) => paidConstraints.rows.find(row => row.conname === name)?.definition ?? "";
+    assert.match(definition("paid_runs_manifest_check"), /paid-core-v1[\s\S]*paid-rich-v1/);
+    assert.match(definition("paid_runs_manifest_check"), /planetaryYear[\s\S]*transits/);
+    assert.match(definition("paid_runs_state_check"), /jsonb_array_length/);
+    assert.match(definition("paid_reading_runs_reading_id_readings_id_fk"), /ON DELETE SET NULL/);
+    assert.match(definition("paid_reading_runs_user_id_users_id_fk"), /ON DELETE CASCADE/);
+    const indexes = await upgraded.query("SELECT indexname, indexdef FROM pg_indexes WHERE tablename IN ('paid_reading_runs','paid_reading_attempts')");
+    for (const name of ["paid_runs_intent_key", "paid_runs_active_user_key", "paid_attempts_slot_key", "paid_attempts_outstanding_key"]) {
+      assert.match(indexes.rows.find(row => row.indexname === name)?.indexdef ?? "", /CREATE UNIQUE INDEX/, name);
+    }
+    assert.match(indexes.rows.find(row => row.indexname === "paid_attempts_outstanding_key")?.indexdef ?? "", /WHERE.*reserved/);
     for (const account of [fixture, chartOnly, deleted, emptyModel, malformedModel, mixedCaseFixture, ...unsupported]) assert.equal(adopted.some(run => run.userId === account.user.id), false, "approved cutover exception");
     const preserved = await database.select().from(readingDocuments);
     assert.equal(preserved.length, 10, "legacy documents are preserved");

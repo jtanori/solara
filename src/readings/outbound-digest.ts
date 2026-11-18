@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SIGN_NAMES } from "@/lib/astro";
 import type { ChartDigest } from "@/lib/chart";
+import { profectionSchema, transitsSchema, transitAspectSchema } from "@/readings/annual-schema";
 
 const sign = z.enum(SIGN_NAMES);
 const body = z.enum(["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune", "Pluto", "TrueNode", "SouthNode", "Ascendant", "Midheaven"]);
@@ -17,6 +18,10 @@ const schema = z.object({
   nodes: z.object({ north: sign, south: sign }),
   aspects: z.array(aspect).max(150), crossAspects: z.array(aspect).max(24),
   balance: z.object({ fire: count, earth: count, air: count, water: count, cardinal: count, fixed: count, mutable: count }),
+  natal: z.object({ houseSystem: z.literal("whole-sign"), ascendant: sign.nullable(), midheaven: sign.nullable(),
+    bodies: z.array(placement.extend({ body, retrograde: z.boolean().nullable() })).length(10) }).optional(),
+  profections: profectionSchema.optional(),
+  transits: transitsSchema.extend({ aspects: z.array(transitAspectSchema).max(24), total: z.number().int().min(0).max(120) }).optional(),
 });
 
 export function outboundDigest(value: ChartDigest): ChartDigest {

@@ -6,13 +6,15 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, pool, coordinationPool } from "../src/db";
-import { readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, subscriptions } from "../src/db/schema";
+import { readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, subscriptions, paidReadingRuns } from "../src/db/schema";
 import { AVAILABILITY_COPY } from "../src/readings/presentation-copy";
 import { createSession } from "../src/lib/auth";
 import { launchReadingTestBrowser } from "../tests/helpers/browser";
 import { syntheticReadingAccount, readingLedgerSnapshot } from "../tests/helpers/reading-account";
+import { PAID_PROFILES, paidSections } from "../src/readings/paid-contract";
+import { syntheticPaidEdition } from "../tests/helpers/paid-edition";
 import { inspectPdf } from "../tests/helpers/reading-pdf";
 
 async function main() {
@@ -149,6 +151,94 @@ async function main() {
       } catch (error) { writeFileSync(".venv/reading-browser/failure.html", await page.content()); await page.screenshot({path: ".venv/reading-browser/failure.png", fullPage:true}); throw error; }
       finally { await ctx.close(); }
     }
+    // Same immutable paid selection in real Next HTML/RSC, mobile layout, locale
+    // navigation and the isolated PDF endpoint; no worker or approval is enabled.
+    for (const profile of PAID_PROFILES) for (const locale of ["en", "es"] as const) for (const partial of [false, true]) {
+      const owner = await account("en"); const edition = await syntheticPaidEdition(owner, locale, partial, profile);
+      const uiLocale = locale === "en" ? "es" : "en";
+      const visit = await context(owner, uiLocale, true);
+      try {
+        const before = await readingLedgerSnapshot(owner.viewer.id);
+        const path = `/reading/${owner.chart.id}?paidEdition=${edition.document.id}`;
+        assert.equal((await visit.page.goto(`${origin}${path}`))?.status(), 200);
+        const article = visit.page.locator(`article[data-document-id="${edition.document.id}"]`); await article.waitFor();
+        assert.equal(await article.getAttribute("lang"), locale); assert.equal(await article.locator("[data-section]").count(), paidSections(profile).length);
+        assert.equal(await visit.page.locator("[data-locked]").count(), 0);
+        assert.equal(await visit.page.getByRole("button", { name: /Generate my free|Generar mi interpretación|Request my paid|Solicitar mi edición/ }).count(), 0);
+        await visit.page.getByText(locale === "es" ? "Cálculo guardado de esta edición · Placidus" : "This edition’s saved calculation · Placidus", { exact: true }).click();
+        assert.equal(await visit.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2), true, "paid fact tables fit at 390px");
+        await visit.page.screenshot({ path: `.venv/reading-browser/paid-${profile}-${locale}-${partial ? "partial" : "complete"}.png`, fullPage: true });
+        const text = await article.innerText();
+        const download = visit.page.locator(`a[href="/api/readings/${owner.chart.id}/pdf?paidEdition=${edition.document.id}"]`);
+        const pendingDownload = visit.page.waitForEvent("download"); await download.focus(); await download.press("Enter");
+        const artifact = await pendingDownload; const downloaded = await artifact.path(); assert.ok(downloaded);
+        const pdf = await inspectPdf(readFileSync(downloaded)); assert.equal(pdf.metadata.Language, locale); assert.ok(pdf.text.includes("Placidus"));
+        for (const section of edition.document.sections) assert.ok(pdf.text.includes(section.title));
+        await visit.page.locator('select[name="language"]').selectOption(locale);
+        await visit.page.getByRole("heading", { name: locale === "es" ? "Tu interpretación con IA" : "Your AI interpretation", exact: true }).waitFor();
+        assert.equal(await article.innerText(), text); assert.ok(visit.page.url().includes(`paidEdition=${edition.document.id}`));
+        const flight = await (await visit.context.request.get(`${origin}${path}`, { headers: { RSC: "1" } })).text();
+        for (const secret of ["fixture-only", "PRIVATE_SYNTHETIC_FAILURE", "birthDate", "policyHash", "accounting"]) assert.equal(flight.includes(secret), false, secret);
+        await visit.page.setViewportSize({ width: 682, height: 500 });
+        assert.equal(await visit.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2), true, "paid facts reflow");
+        assert.equal(await readingLedgerSnapshot(owner.viewer.id), before);
+        const outsider = await context(other, "en");
+        assert.equal((await outsider.context.request.get(`${origin}/api/readings/${owner.chart.id}/pdf?paidEdition=${edition.document.id}`)).status(), 404); await outsider.context.close();
+        const loggedOut = await context(null, locale);
+        const redirect = await loggedOut.context.request.get(`${origin}${path}`, { maxRedirects: 0 });
+        assert.equal(redirect.status(), 307); assert.equal(new URL(redirect.headers().location, origin).searchParams.get("next"), path); await loggedOut.context.close();
+        cases.push(`${profile}-${locale}/${partial ? "partial" : "complete"}/pinned-page+RSC+PDF+locale+390px+reflow+foreign-owner+sign-in-return`);
+      } finally { await visit.context.close(); }
+    }
+
+    // Native timestamp cursor boundaries, exercised through actual client
+    // earlier/recent navigation while generation and server fetches remain off.
+    for (const locale of ["en", "es"] as const) {
+      const owner = await account(locale, "none"); const expected: string[] = [];
+      for (let i = 0; i < 21; i++) {
+        const saved = await syntheticPaidEdition(owner, locale); expected.push(saved.document.id);
+        const at = `2026-01-01 12:00:00.${100900 - i * 10}+00`;
+        await db.update(paidReadingRuns).set({ createdAt: sql`${at}::timestamptz` }).where(eq(paidReadingRuns.id, saved.runId));
+      }
+      const visit = await context(owner, locale);
+      try {
+        const before = await readingLedgerSnapshot(owner.viewer.id);
+        await visit.page.goto(`${origin}/reading/${owner.chart.id}`);
+        const section = visit.page.getByRole("region", { name: locale === "es" ? "Ediciones de pago" : "Paid editions", exact: true });
+        const links = section.getByRole("link", { name: locale === "es" ? "Abrir esta edición guardada" : "Open this saved edition", exact: true });
+        await links.first().waitFor();
+        const hrefs = () => links.evaluateAll(nodes => nodes.map(node => node.getAttribute("href")));
+        const paths = expected.map(id => `/reading/${owner.chart.id}?paidEdition=${id}`);
+        assert.deepEqual(await hrefs(), paths.slice(0, 20));
+        await section.getByRole("button", { name: locale === "es" ? "Solicitudes anteriores" : "Earlier requests", exact: true }).click();
+        await section.locator(`a[href="${paths[20]}"]`).waitFor(); assert.deepEqual(await hrefs(), paths.slice(20));
+        await section.getByRole("button", { name: locale === "es" ? "Volver a recientes" : "Back to recent", exact: true }).click();
+        await section.locator(`a[href="${paths[0]}"]`).waitFor(); assert.deepEqual(await hrefs(), paths.slice(0, 20));
+        assert.equal(await readingLedgerSnapshot(owner.viewer.id), before);
+        cases.push(`paid-history-${locale}/microsecond-boundary+earlier+recent+no-writes`);
+      } finally { await visit.context.close(); }
+    }
+
+    const journeyOwner = await account("en", "none"); const journey = await context(journeyOwner, "en");
+    try {
+      const before = await readingLedgerSnapshot(journeyOwner.viewer.id);
+      await journey.page.goto(`${origin}/pricing?reading=${journeyOwner.chart.id}`);
+      assert.equal(await journey.page.getByRole("link", { name: "Return to your saved chart", exact: true }).getAttribute("href"), `/reading/${journeyOwner.chart.id}`);
+      assert.ok((await journey.page.locator("body").innerText()).includes("Full AI interpretations are not available yet"));
+      await journey.page.goto(`${origin}/dashboard?billing=success&reading=${journeyOwner.chart.id}`);
+      await journey.page.getByText("Waiting for verified subscription confirmation. No interpretation has been requested.", { exact: false }).waitFor();
+      assert.equal(await journey.page.getByRole("link", { name: "Return to the selected chart", exact: true }).getAttribute("href"), `/reading/${journeyOwner.chart.id}`);
+      assert.equal((await journey.context.request.get(`${origin}/pricing?reading=${other.chart.id}`)).status(), 404);
+      const forgedDashboard = await journey.context.request.get(`${origin}/dashboard?reading=${other.chart.id}`);
+      assert.equal((await forgedDashboard.text()).includes(`href=\"/reading/${other.chart.id}\"`), false);
+      const loggedOut = await context(null, "en");
+      const redirected = await loggedOut.context.request.get(`${origin}/pricing?reading=${journeyOwner.chart.id}`, { maxRedirects: 0 });
+      assert.equal(redirected.status(), 307); assert.equal(new URL(redirected.headers().location, origin).searchParams.get("next"), `/pricing?reading=${journeyOwner.chart.id}`);
+      await loggedOut.context.close();
+      assert.equal(await readingLedgerSnapshot(journeyOwner.viewer.id), before, "checkout return is neither entitlement, consent nor a generation request");
+      cases.push("owned-chart-pricing+sign-in+unverified-checkout-return+no-generation");
+    } finally { await journey.context.close(); }
+
     const anonymous = await context(null, "en");
     assert.equal((await anonymous.context.request.get(`${origin}/api/readings/${first.chart.id}/pdf`)).status(), 401); await anonymous.context.close();
     const foreign = await context(other, "en"); assert.equal((await foreign.page.goto(`${origin}/reading/${first.chart.id}`))?.status(), 404);

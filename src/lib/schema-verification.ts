@@ -15,6 +15,14 @@ export const REQUIRED_TABLES = [
   "public.reading_generation_consents",
   "public.reading_generation_runs",
   "public.reading_generation_attempts",
+  "public.paid_reading_allowances",
+  "public.paid_reading_approvals",
+  "public.paid_reading_attempts",
+  "public.paid_reading_checkpoints",
+  "public.paid_reading_control",
+  "public.paid_reading_editions",
+  "public.paid_reading_runs",
+  "public.paid_reading_snapshots",
 ] as const;
 
 export const REQUIRED_INDEXES = [
@@ -27,6 +35,19 @@ export const REQUIRED_INDEXES = [
   "reading_runs_document_idx",
   "reading_attempts_slot_key",
   "reading_attempts_outstanding_key",
+  "paid_allowances_run_key",
+  "paid_attempts_slot_key",
+  "paid_attempts_outstanding_key",
+  "paid_checkpoints_run_idx",
+  "paid_checkpoints_reading_idx",
+  "paid_editions_run_key",
+  "paid_editions_reading_idx",
+  "paid_runs_intent_key",
+  "paid_runs_active_user_key",
+  "paid_runs_queue_idx",
+  "paid_runs_reading_idx",
+  "paid_runs_attention_idx",
+  "paid_snapshots_reading_idx",
 ] as const;
 
 export type RequiredColumn = {
@@ -72,6 +93,14 @@ for (const [table, names] of Object.entries({
   reading_generation_consents: ["user_id", "receipt_id", "revision", "processor_id", "policy_version", "policy_hash", "locale", "granted_at", "withdrawn_at"],
   reading_generation_runs: ["id", "user_id", "kind", "reading_id", "document_id", "locale", "status", "owner", "deadline", "consumed_at", "consent_revision", "policy_hash", "config_hash", "content_version", "settings", "ceiling_micros", "failure_code", "created_at", "finished_at"],
   reading_generation_attempts: ["id", "run_id", "owner", "section", "phase", "state", "requested_model", "reported_model", "reserved_micros", "cost_micros", "usage", "latency_ms", "code", "created_at", "settled_at"],
+  paid_reading_allowances: ["user_id", "period", "run_id", "reserved_at", "consumed_at"],
+  paid_reading_approvals: ["profile", "content_version", "locale", "config_hash", "sample_count", "reviewer", "evidence", "approved_at", "revoked_at"],
+  paid_reading_attempts: ["id", "run_id", "owner", "section", "phase", "state", "requested_model", "reported_model", "reserved_micros", "cost_micros", "usage", "latency_ms", "code", "created_at", "settled_at"],
+  paid_reading_checkpoints: ["attempt_id", "run_id", "reading_id", "kind", "output"],
+  paid_reading_control: ["id", "enabled", "revision", "worker_heartbeat_at", "worker_config_hash"],
+  paid_reading_editions: ["id", "run_id", "reading_id", "locale", "profile", "expected_sections", "content_version", "chart_version", "snapshot_hash", "snapshot", "document", "created_at"],
+  paid_reading_runs: ["id", "user_id", "reading_id", "intent_id", "period", "allowance_policy", "locale", "profile", "expected_sections", "content_version", "config_hash", "settings", "policy_hash", "consent_revision", "consent_receipt_id", "entitlement_id", "entitlement_until", "control_revision", "ceiling_micros", "status", "completed_sections", "owner", "lease_expires_at", "deadline", "queue_expires_at", "consumed_at", "stop_requested_at", "failure_code", "created_at", "finished_at"],
+  paid_reading_snapshots: ["run_id", "reading_id", "hash", "snapshot"],
 })) {
   for (const column of names) REQUIRED_COLUMNS.push({ table, column });
 }

@@ -9,6 +9,7 @@ import type { Locale } from "@/lib/i18n";
 export const GENERATION_RUN_MS = 45_000;
 export const GENERATION_DISPATCH_MS = 40_000;
 export const PAYLOAD_POLICY_REVISION = "derived-chart-v1";
+export const RICH_PAYLOAD_POLICY_REVISION = "derived-chart-annual-v2";
 const modelId = z.string().regex(/^[a-zA-Z0-9._:/-]{1,128}$/).refine(value => value !== "__proto__");
 const profileSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{1,63}$/),
@@ -17,7 +18,7 @@ const profileSchema = z.strictObject({
   inputTokenLimits: z.record(modelId, z.number().int().min(1).max(2_000_000)),
   servedModels: z.record(modelId, z.array(modelId).min(1).max(10)),
 });
-export type ProcessorProfile = z.infer<typeof profileSchema> & { baseUrl: string; policyHash: string };
+export type ProcessorProfile = z.infer<typeof profileSchema> & { baseUrl: string; policyHash: string; payloadPolicy: typeof PAYLOAD_POLICY_REVISION | typeof RICH_PAYLOAD_POLICY_REVISION };
 export type ConsentDescriptor = { processorId: string; providerName: string; policyVersion: string; policyHash: string; disclosure: string };
 export type LiveGenerationConfig = { profile: ProcessorProfile; settings: GenerationSettings; provider: ReadingProvider; fingerprint: string };
 
@@ -28,8 +29,11 @@ export function processorProfile(env: Record<string, string | undefined> = proce
     const url = new URL(env.READINGS_API_BASE_URL ?? "");
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) return null;
     const baseUrl = url.href.replace(/\/+$/, "");
-    const policyHash = hash({ id: parsed.id, name: parsed.name, version: parsed.policyVersion, baseUrl, payload: PAYLOAD_POLICY_REVISION });
-    return { ...parsed, baseUrl, policyHash };
+    // Selecting richer facts materially broadens the disclosure and invalidates
+    // old consent receipts. Unknown paid configuration never breaks free setup.
+    const payloadPolicy = env.READINGS_PAID_PROFILE === "paid-rich-v1" ? RICH_PAYLOAD_POLICY_REVISION : PAYLOAD_POLICY_REVISION;
+    const policyHash = hash({ id: parsed.id, name: parsed.name, version: parsed.policyVersion, baseUrl, payload: payloadPolicy });
+    return { ...parsed, baseUrl, policyHash, payloadPolicy };
   } catch { return null; }
 }
 
@@ -37,8 +41,8 @@ export function consentDescriptor(profile: ProcessorProfile, locale: Locale): Co
   return {
     processorId: profile.id, providerName: profile.name, policyVersion: profile.policyVersion, policyHash: profile.policyHash,
     disclosure: locale === "es"
-      ? `Para generar tu interpretación, Solara enviará a ${profile.name} posiciones, signos, casas y aspectos derivados de tu carta. No enviará tu nombre, correo, fecha u hora de nacimiento, lugar ni coordenadas. Los datos derivados no son necesariamente anónimos. Puedes retirar el consentimiento para impedir nuevas solicitudes; una solicitud ya autorizada podría terminar. Las lecturas guardadas se conservan hasta que las elimines.`
-      : `To generate your interpretation, Solara will send ${profile.name} derived chart positions, signs, houses and aspects. It will not send your name, email, birth date or time, location or coordinates. Derived data is not necessarily anonymous. You can withdraw consent to stop new requests; an already authorized request may finish. Saved readings remain until you delete them.`,
+      ? `Para generar tu interpretación, Solara enviará a ${profile.name} posiciones, signos, casas y aspectos derivados de tu carta.${profile.payloadPolicy === RICH_PAYLOAD_POLICY_REVISION ? " Las ediciones ampliadas de pago también envían posiciones y ángulos natales derivados, tu edad cumplida en el año elegido, la profección tradicional y aspectos de tránsito calculados en el instante del retorno solar. No se envían marcas de tiempo natales ni del retorno." : ""} No enviará tu nombre, correo, fecha u hora de nacimiento, lugar ni coordenadas. Los datos derivados no son necesariamente anónimos. Puedes retirar el consentimiento para impedir nuevas solicitudes; una solicitud ya autorizada podría terminar. Las lecturas guardadas se conservan hasta que las elimines.`
+      : `To generate your interpretation, Solara will send ${profile.name} derived chart positions, signs, houses and aspects.${profile.payloadPolicy === RICH_PAYLOAD_POLICY_REVISION ? " Expanded paid editions also send derived natal positions and angles, your age attained in the selected year, the traditional annual profection and transit aspects calculated at the solar-return instant. Natal and return timestamps are not sent." : ""} It will not send your name, email, birth date or time, location or coordinates. Derived data is not necessarily anonymous. You can withdraw consent to stop new requests; an already authorized request may finish. Saved readings remain until you delete them.`,
   };
 }
 
@@ -77,6 +81,19 @@ export function liveGenerationConfig(fetchImpl?: typeof fetch): LiveGenerationCo
       inputTokenLimits: profile.inputTokenLimits, fetchImpl,
       timeoutMs: process.env.READINGS_REQUEST_TIMEOUT_MS ? Number(process.env.READINGS_REQUEST_TIMEOUT_MS) : undefined,
     });
-    return { profile, settings, provider, fingerprint: hash({ profile, settings, payload: PAYLOAD_POLICY_REVISION }) };
+    return { profile, settings, provider, fingerprint: hash({ profile, settings, payload: profile.payloadPolicy }) };
   } catch { return null; }
+}
+
+export const CANONICAL_HASH_SCHEME = "json-utf16-v1";
+
+/** JSON normalization, then recursive UTF-16 code-unit key order; arrays retain
+ * order. Serialize keys directly so integer-like keys are NOT re-enumerated by
+ * JSON.stringify's object rules. No host locale, ICU collation or normalization. */
+export function canonicalHash(value: unknown): string {
+  const ordered = (entry: unknown): string => Array.isArray(entry) ? `[${entry.map(ordered).join(",")}]`
+    : entry !== null && typeof entry === "object"
+      ? `{${Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, child]) => `${JSON.stringify(key)}:${ordered(child)}`).join(",")}}`
+      : JSON.stringify(entry);
+  return createHash("sha256").update(ordered(JSON.parse(JSON.stringify(value)))).digest("hex");
 }

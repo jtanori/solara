@@ -12,5 +12,7 @@ export default defineConfig([
     files: ["src/lib/log.ts"],
     rules: { "no-console": "off" },
   },
-  globalIgnores([".next/**", ".pdf/**", ".venv/**", "out/**", "build/**", "next-env.d.ts"]),
+  // Upstream CommonJS is kept byte-for-byte except for the documented backport;
+  // dependency-security.test.ts verifies its provenance and security behavior.
+  globalIgnores(["vendor/**", ".next/**", ".pdf/**", ".venv/**", "out/**", "build/**", "next-env.d.ts"]),
 ]);

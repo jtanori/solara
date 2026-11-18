@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "../../src/db";
-import { users, readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, readingGenerationAttempts as attempts, rateLimits } from "../../src/db/schema";
+import { users, readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, readingGenerationAttempts as attempts, rateLimits,
+  paidReadingRuns as paidRuns, paidReadingAttempts as paidAttempts, paidReadingAllowances as paidAllowances,
+  paidReadingEditions as paidEditions, paidReadingSnapshots as paidSnapshots, paidReadingCheckpoints as paidCheckpoints } from "../../src/db/schema";
 import { keyFor } from "../../src/lib/rate-limit";
 import { calculateSolarReturn } from "../../src/lib/solar";
 import type { ReadingViewer } from "../../src/readings/reading-view";
@@ -28,7 +30,14 @@ export async function syntheticReadingAccount(locale: "en" | "es" = "en", editio
 export async function readingLedgerSnapshot(userId: string) {
   const charts = await db.select({ id: readings.id }).from(readings).where(eq(readings.userId, userId));
   const run = await db.select().from(runs).where(eq(runs.userId, userId));
-  return JSON.stringify({ run,
+  const paid = await db.select().from(paidRuns).where(eq(paidRuns.userId, userId));
+  const paidIds = paid.map(row => row.id);
+  return JSON.stringify({ run, paid,
+    paidAllowances: await db.select().from(paidAllowances).where(eq(paidAllowances.userId, userId)),
+    paidAttempts: paidIds.length ? await db.select().from(paidAttempts).where(inArray(paidAttempts.runId, paidIds)) : [],
+    paidEditions: paidIds.length ? await db.select().from(paidEditions).where(inArray(paidEditions.runId, paidIds)) : [],
+    paidSnapshots: paidIds.length ? await db.select().from(paidSnapshots).where(inArray(paidSnapshots.runId, paidIds)) : [],
+    paidCheckpoints: paidIds.length ? await db.select().from(paidCheckpoints).where(inArray(paidCheckpoints.runId, paidIds)) : [],
     documents: charts.length ? await db.select().from(readingDocuments).where(inArray(readingDocuments.readingId, charts.map(c => c.id))) : [],
     consent: await db.select().from(consents).where(eq(consents.userId, userId)),
     attempts: run.length ? await db.select().from(attempts).where(inArray(attempts.runId, run.map(r => r.id))) : [],

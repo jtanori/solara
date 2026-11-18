@@ -224,15 +224,21 @@ function fixtureSection(section: SectionKey, locale: Locale, digest: ChartDigest
           { kind: "callout", text: es ? `Reto concreto: haz una cosa esta temporada que ${signName(digest.nodes.north, "es")} haría y ${signName(digest.nodes.south, "es")} evitaría.` : `Concrete challenge: do one thing this season that ${signName(digest.nodes.north, "en")} would do and ${signName(digest.nodes.south, "en")} would avoid.` },
         ],
       };
-    case "planetaryYear":
-    case "transits":
-      // Gated behind digest facts that land with #110; unreachable through the
-      // registry, but kept schema-valid in case of direct dispatch.
-      return {
-        blocks: [
-          { kind: "prose", text: es ? "Esta sección dependerá de hechos astronómicos que aún no calcula el motor." : "This section depends on engine facts that are not computed yet." },
-        ],
-      };
+    case "planetaryYear": {
+      const p = digest.profections;
+      return { blocks: [{ kind: "prose", text: p?.status === "available"
+        ? es ? `Edad cumplida en el año elegido: ${p.age}. Profección tradicional por signo completo: casa ${p.house}, ${signName(p.sign, locale)}, regente ${p.ruler}. Esta técnica no cambia las casas Placidus del retorno.`
+          : `Age attained in the selected year: ${p.age}. Traditional whole-sign profection: house ${p.house}, ${signName(p.sign, locale)}, ruler ${p.ruler}. This technique does not change the Placidus return houses.`
+        : es ? "No hay Ascendente natal disponible; no se ha inferido casa, signo ni regente de profección." : "No natal Ascendant is available; no profected house, sign or year lord has been inferred." }] };
+    }
+    case "transits": {
+      const transits = digest.transits;
+      const items = transits?.aspects.map(a => `${a.transit} — ${a.natal} (natal): ${aspectType(a.type, locale)}, ${a.orb}°, ${a.phase}`) ?? [];
+      return { blocks: [
+        { kind: "prose", text: es ? "Instantánea fija en el retorno solar, no un calendario anual. Los puntos natales permanecen fijos; no se predicen fechas futuras." : "A fixed solar-return snapshot, not an annual calendar. Natal points remain fixed; no future dates are predicted." },
+        ...(items.length ? [{ kind: "list" as const, items: items.slice(0, 20) }] : [{ kind: "prose" as const, text: es ? "No hay aspectos dentro de los orbes definidos en esta instantánea." : "No aspects fall within the defined orbs in this snapshot." }]),
+      ] };
+    }
     case "guidance":
       return {
         blocks: [

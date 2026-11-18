@@ -1,0 +1,986 @@
+{
+  "version": "annual-reference/1",
+  "source": "Swiss Ephemeris 2.10.03; pyswisseph Moshier, Python zoneinfo; developer reference, not editorial approval",
+  "policy": "Selected-year age, traditional whole-sign natal profections; transits at solar-return instant, fixed natal points, 3/3/3/3/2 degree orbs; exact .001; stationary .003 degree/day; central +/-6h; slow-body/orb/natal order",
+  "longitudeTolerance": 0.05,
+  "returnTimeToleranceSeconds": 120,
+  "cases": [
+    {
+      "id": "baseline",
+      "input": {
+        "name": "Synthetic Annual Facts",
+        "birthDate": "1984-05-16",
+        "birthTime": "01:00",
+        "birthPlace": {
+          "name": "Synthetic Mexicali",
+          "latitude": 32.6393,
+          "longitude": -115.4747,
+          "timezone": "America/Tijuana"
+        },
+        "returnPlace": {
+          "name": "Synthetic New York",
+          "latitude": 40.7128,
+          "longitude": -74.006,
+          "timezone": "America/New_York"
+        },
+        "year": 2026,
+        "timeChoice": "earlier"
+      },
+      "birthUtc": "1984-05-16T08:00:00Z",
+      "referenceAt": "2026-05-16T11:46:21.080Z",
+      "natalAscendant": 315.5788,
+      "natalMidheaven": 240.8865,
+      "natalBodies": {
+        "Sun": 55.6302,
+        "Moon": 250.4996,
+        "Mercury": 30.5982,
+        "Venus": 47.3723,
+        "Mars": 229.0534,
+        "Jupiter": 282.5354,
+        "Saturn": 222.1151,
+        "Uranus": 252.2379,
+        "Neptune": 270.9397,
+        "Pluto": 210.0554
+      },
+      "natalCusps": [
+        300.0,
+        330.0,
+        0.0,
+        30.0,
+        60.0,
+        90.0,
+        120.0,
+        150.0,
+        180.0,
+        210.0,
+        240.0,
+        270.0
+      ],
+      "profection": {
+        "age": 42,
+        "house": 7,
+        "sign": "Leo",
+        "ruler": "Sun"
+      },
+      "transits": [
+        {
+          "transit": "Neptune",
+          "natal": "Neptune",
+          "type": "square",
+          "orb": 2.7682,
+          "phase": "separating"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Midheaven",
+          "type": "trine",
+          "orb": 2.8214,
+          "phase": "separating"
+        },
+        {
+          "transit": "Uranus",
+          "natal": "Midheaven",
+          "type": "opposition",
+          "orb": 0.2731,
+          "phase": "separating"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Moon",
+          "type": "trine",
+          "orb": 0.305,
+          "phase": "separating"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Uranus",
+          "type": "trine",
+          "orb": 1.4333,
+          "phase": "applying"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Jupiter",
+          "type": "square",
+          "orb": 1.7308,
+          "phase": "applying"
+        },
+        {
+          "transit": "Jupiter",
+          "natal": "Mars",
+          "type": "trine",
+          "orb": 2.2445,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Pluto",
+          "type": "opposition",
+          "orb": 1.8978,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Mercury",
+          "type": "conjunction",
+          "orb": 2.4406,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Neptune",
+          "type": "trine",
+          "orb": 2.7821,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Sun",
+          "type": "conjunction",
+          "orb": 2.3058,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Midheaven",
+          "type": "opposition",
+          "orb": 2.9505,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Sun",
+          "type": "conjunction",
+          "orb": 0.0,
+          "phase": "exact"
+        },
+        {
+          "transit": "Moon",
+          "natal": "Mars",
+          "type": "opposition",
+          "orb": 1.6912,
+          "phase": "separating"
+        }
+      ]
+    },
+    {
+      "id": "fold-earlier",
+      "input": {
+        "name": "Synthetic Annual Facts",
+        "birthDate": "2000-10-29",
+        "birthTime": "01:30",
+        "birthPlace": {
+          "name": "Synthetic New York",
+          "latitude": 40.7128,
+          "longitude": -74.006,
+          "timezone": "America/New_York"
+        },
+        "returnPlace": {
+          "name": "Synthetic New York",
+          "latitude": 40.7128,
+          "longitude": -74.006,
+          "timezone": "America/New_York"
+        },
+        "year": 2026,
+        "timeChoice": "earlier"
+      },
+      "birthUtc": "2000-10-29T05:30:00Z",
+      "referenceAt": "2026-10-29T12:29:23.189Z",
+      "natalAscendant": 145.5476,
+      "natalMidheaven": 48.8049,
+      "natalBodies": {
+        "Sun": 216.0991,
+        "Moon": 238.8516,
+        "Mercury": 218.067,
+        "Venus": 252.0815,
+        "Mars": 176.3843,
+        "Jupiter": 69.7912,
+        "Saturn": 59.154,
+        "Uranus": 316.8978,
+        "Neptune": 303.8424,
+        "Pluto": 251.3971
+      },
+      "natalCusps": [
+        120.0,
+        150.0,
+        180.0,
+        210.0,
+        240.0,
+        270.0,
+        300.0,
+        330.0,
+        0.0,
+        30.0,
+        60.0,
+        90.0
+      ],
+      "profection": {
+        "age": 26,
+        "house": 3,
+        "sign": "Libra",
+        "ruler": "Venus"
+      },
+      "transits": [
+        {
+          "transit": "Pluto",
+          "natal": "Neptune",
+          "type": "conjunction",
+          "orb": 0.7313,
+          "phase": "applying"
+        },
+        {
+          "transit": "Pluto",
+          "natal": "Sun",
+          "type": "square",
+          "orb": 2.988,
+          "phase": "applying"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Neptune",
+          "type": "sextile",
+          "orb": 1.7056,
+          "phase": "separating"
+        },
+        {
+          "transit": "Uranus",
+          "natal": "Neptune",
+          "type": "trine",
+          "orb": 0.9223,
+          "phase": "applying"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Jupiter",
+          "type": "sextile",
+          "orb": 0.3455,
+          "phase": "separating"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Pluto",
+          "type": "trine",
+          "orb": 1.9514,
+          "phase": "separating"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Venus",
+          "type": "trine",
+          "orb": 2.6358,
+          "phase": "separating"
+        },
+        {
+          "transit": "Jupiter",
+          "natal": "Ascendant",
+          "type": "conjunction",
+          "orb": 1.5328,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Uranus",
+          "type": "opposition",
+          "orb": 0.4652,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Midheaven",
+          "type": "square",
+          "orb": 1.4419,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Midheaven",
+          "type": "opposition",
+          "orb": 0.2044,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Uranus",
+          "type": "square",
+          "orb": 2.1115,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Sun",
+          "type": "conjunction",
+          "orb": 0.0,
+          "phase": "exact"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Mercury",
+          "type": "conjunction",
+          "orb": 1.9679,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Neptune",
+          "type": "square",
+          "orb": 2.2567,
+          "phase": "separating"
+        }
+      ]
+    },
+    {
+      "id": "fold-later",
+      "input": {
+        "name": "Synthetic Annual Facts",
+        "birthDate": "2000-10-29",
+        "birthTime": "01:30",
+        "birthPlace": {
+          "name": "Synthetic New York",
+          "latitude": 40.7128,
+          "longitude": -74.006,
+          "timezone": "America/New_York"
+        },
+        "returnPlace": {
+          "name": "Synthetic New York",
+          "latitude": 40.7128,
+          "longitude": -74.006,
+          "timezone": "America/New_York"
+        },
+        "year": 2026,
+        "timeChoice": "later"
+      },
+      "birthUtc": "2000-10-29T06:30:00Z",
+      "referenceAt": "2026-10-29T13:29:26.502Z",
+      "natalAscendant": 157.3536,
+      "natalMidheaven": 63.4145,
+      "natalBodies": {
+        "Sun": 216.1408,
+        "Moon": 239.3807,
+        "Mercury": 218.0135,
+        "Venus": 252.1319,
+        "Mars": 176.4101,
+        "Jupiter": 69.7872,
+        "Saturn": 59.151,
+        "Uranus": 316.8979,
+        "Neptune": 303.8427,
+        "Pluto": 251.3985
+      },
+      "natalCusps": [
+        150.0,
+        180.0,
+        210.0,
+        240.0,
+        270.0,
+        300.0,
+        330.0,
+        0.0,
+        30.0,
+        60.0,
+        90.0,
+        120.0
+      ],
+      "profection": {
+        "age": 26,
+        "house": 3,
+        "sign": "Scorpio",
+        "ruler": "Mars"
+      },
+      "transits": [
+        {
+          "transit": "Pluto",
+          "natal": "Midheaven",
+          "type": "trine",
+          "orb": 0.3032,
+          "phase": "applying"
+        },
+        {
+          "transit": "Pluto",
+          "natal": "Neptune",
+          "type": "conjunction",
+          "orb": 0.7314,
+          "phase": "applying"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Midheaven",
+          "type": "sextile",
+          "orb": 1.2786,
+          "phase": "separating"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Neptune",
+          "type": "sextile",
+          "orb": 1.7068,
+          "phase": "separating"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Moon",
+          "type": "trine",
+          "orb": 2.7552,
+          "phase": "applying"
+        },
+        {
+          "transit": "Uranus",
+          "natal": "Neptune",
+          "type": "trine",
+          "orb": 0.9205,
+          "phase": "applying"
+        },
+        {
+          "transit": "Uranus",
+          "natal": "Midheaven",
+          "type": "conjunction",
+          "orb": 1.3487,
+          "phase": "applying"
+        },
+        {
+          "transit": "Uranus",
+          "natal": "Ascendant",
+          "type": "square",
+          "orb": 2.5904,
+          "phase": "separating"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Jupiter",
+          "type": "sextile",
+          "orb": 0.3443,
+          "phase": "separating"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Pluto",
+          "type": "trine",
+          "orb": 1.9556,
+          "phase": "separating"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Venus",
+          "type": "trine",
+          "orb": 2.689,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Uranus",
+          "type": "opposition",
+          "orb": 0.4864,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Uranus",
+          "type": "square",
+          "orb": 2.0791,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Sun",
+          "type": "conjunction",
+          "orb": 0.0,
+          "phase": "exact"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Ascendant",
+          "type": "sextile",
+          "orb": 1.2128,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Mercury",
+          "type": "conjunction",
+          "orb": 1.8727,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Neptune",
+          "type": "square",
+          "orb": 2.2981,
+          "phase": "separating"
+        }
+      ]
+    },
+    {
+      "id": "southern",
+      "input": {
+        "name": "Synthetic Annual Facts",
+        "birthDate": "1990-11-03",
+        "birthTime": "22:15",
+        "birthPlace": {
+          "name": "Synthetic Sydney",
+          "latitude": -33.8688,
+          "longitude": 151.2093,
+          "timezone": "Australia/Sydney"
+        },
+        "returnPlace": {
+          "name": "Synthetic New York",
+          "latitude": 40.7128,
+          "longitude": -74.006,
+          "timezone": "America/New_York"
+        },
+        "year": 2026,
+        "timeChoice": "earlier"
+      },
+      "birthUtc": "1990-11-03T11:15:00Z",
+      "referenceAt": "2026-11-03T04:44:51.686Z",
+      "natalAscendant": 77.1271,
+      "natalMidheaven": 2.6333,
+      "natalBodies": {
+        "Sun": 220.7761,
+        "Moon": 48.7079,
+        "Mercury": 228.3755,
+        "Venus": 221.2407,
+        "Mars": 73.1907,
+        "Jupiter": 132.4565,
+        "Saturn": 290.0782,
+        "Uranus": 276.6246,
+        "Neptune": 282.249,
+        "Pluto": 227.4281
+      },
+      "natalCusps": [
+        60.0,
+        90.0,
+        120.0,
+        150.0,
+        180.0,
+        210.0,
+        240.0,
+        270.0,
+        300.0,
+        330.0,
+        0.0,
+        30.0
+      ],
+      "profection": {
+        "age": 36,
+        "house": 1,
+        "sign": "Gemini",
+        "ruler": "Mercury"
+      },
+      "transits": [
+        {
+          "transit": "Pluto",
+          "natal": "Midheaven",
+          "type": "sextile",
+          "orb": 0.5128,
+          "phase": "separating"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Midheaven",
+          "type": "conjunction",
+          "orb": 0.5946,
+          "phase": "separating"
+        },
+        {
+          "transit": "Uranus",
+          "natal": "Midheaven",
+          "type": "sextile",
+          "orb": 1.9618,
+          "phase": "applying"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Uranus",
+          "type": "square",
+          "orb": 2.5262,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Moon",
+          "type": "square",
+          "orb": 1.0128,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Mercury",
+          "type": "square",
+          "orb": 1.3452,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Pluto",
+          "type": "square",
+          "orb": 2.2926,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Jupiter",
+          "type": "square",
+          "orb": 1.5505,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Neptune",
+          "type": "sextile",
+          "orb": 1.758,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Venus",
+          "type": "conjunction",
+          "orb": 2.7663,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Sun",
+          "type": "conjunction",
+          "orb": 0.0,
+          "phase": "exact"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Venus",
+          "type": "conjunction",
+          "orb": 0.4646,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Neptune",
+          "type": "sextile",
+          "orb": 1.4729,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Jupiter",
+          "type": "square",
+          "orb": 1.6804,
+          "phase": "applying"
+        }
+      ]
+    },
+    {
+      "id": "leap-day",
+      "input": {
+        "name": "Synthetic Annual Facts",
+        "birthDate": "1988-02-29",
+        "birthTime": "12:00",
+        "birthPlace": {
+          "name": "Synthetic Madrid",
+          "latitude": 40.4168,
+          "longitude": -3.7038,
+          "timezone": "Europe/Madrid"
+        },
+        "returnPlace": {
+          "name": "Synthetic New York",
+          "latitude": 40.7128,
+          "longitude": -74.006,
+          "timezone": "America/New_York"
+        },
+        "year": 2027,
+        "timeChoice": "earlier"
+      },
+      "birthUtc": "1988-02-29T11:00:00Z",
+      "referenceAt": "2027-02-28T21:59:04.906Z",
+      "natalAscendant": 71.6226,
+      "natalMidheaven": 317.3289,
+      "natalBodies": {
+        "Sun": 340.081,
+        "Moon": 125.3297,
+        "Mercury": 314.3372,
+        "Venus": 23.2359,
+        "Mars": 274.7386,
+        "Jupiter": 28.3364,
+        "Saturn": 271.1584,
+        "Uranus": 270.5099,
+        "Neptune": 279.7115,
+        "Pluto": 222.5192
+      },
+      "natalCusps": [
+        60.0,
+        90.0,
+        120.0,
+        150.0,
+        180.0,
+        210.0,
+        240.0,
+        270.0,
+        300.0,
+        330.0,
+        0.0,
+        30.0
+      ],
+      "profection": {
+        "age": 39,
+        "house": 4,
+        "sign": "Virgo",
+        "ruler": "Mercury"
+      },
+      "transits": [
+        {
+          "transit": "Pluto",
+          "natal": "Moon",
+          "type": "opposition",
+          "orb": 0.8258,
+          "phase": "separating"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Mars",
+          "type": "square",
+          "orb": 1.5462,
+          "phase": "applying"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Saturn",
+          "type": "square",
+          "orb": 2.034,
+          "phase": "separating"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Moon",
+          "type": "trine",
+          "orb": 2.1373,
+          "phase": "applying"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Uranus",
+          "type": "square",
+          "orb": 2.6825,
+          "phase": "separating"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Mercury",
+          "type": "sextile",
+          "orb": 1.2717,
+          "phase": "applying"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Ascendant",
+          "type": "sextile",
+          "orb": 1.4429,
+          "phase": "separating"
+        },
+        {
+          "transit": "Jupiter",
+          "natal": "Midheaven",
+          "type": "opposition",
+          "orb": 2.4306,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mars",
+          "natal": "Jupiter",
+          "type": "trine",
+          "orb": 1.1592,
+          "phase": "separating"
+        },
+        {
+          "transit": "Venus",
+          "natal": "Jupiter",
+          "type": "square",
+          "orb": 1.2407,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Venus",
+          "type": "sextile",
+          "orb": 1.9301,
+          "phase": "separating"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Sun",
+          "type": "conjunction",
+          "orb": 0.0,
+          "phase": "exact"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Neptune",
+          "type": "sextile",
+          "orb": 0.3695,
+          "phase": "separating"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Ascendant",
+          "type": "square",
+          "orb": 1.5416,
+          "phase": "applying"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Pluto",
+          "type": "trine",
+          "orb": 2.4382,
+          "phase": "applying"
+        },
+        {
+          "transit": "Moon",
+          "natal": "Midheaven",
+          "type": "sextile",
+          "orb": 0.452,
+          "phase": "separating"
+        }
+      ]
+    },
+    {
+      "id": "polar-natal",
+      "input": {
+        "name": "Synthetic Annual Facts",
+        "birthDate": "1975-06-21",
+        "birthTime": "04:45",
+        "birthPlace": {
+          "name": "Synthetic Tromso",
+          "latitude": 69.65,
+          "longitude": 18.96,
+          "timezone": "Europe/Oslo"
+        },
+        "returnPlace": {
+          "name": "Synthetic New York",
+          "latitude": 40.7128,
+          "longitude": -74.006,
+          "timezone": "America/New_York"
+        },
+        "year": 2026,
+        "timeChoice": "earlier"
+      },
+      "birthUtc": "1975-06-21T03:45:00Z",
+      "referenceAt": "2026-06-20T11:43:52.584Z",
+      "natalAscendant": null,
+      "natalMidheaven": 342.5743,
+      "natalBodies": {
+        "Sun": 89.1776,
+        "Moon": 237.8491,
+        "Mercury": 75.0966,
+        "Venus": 134.5251,
+        "Mars": 22.806,
+        "Jupiter": 20.2017,
+        "Saturn": 109.3707,
+        "Uranus": 208.4686,
+        "Neptune": 249.9061,
+        "Pluto": 186.4857
+      },
+      "natalCusps": [],
+      "profection": {
+        "age": 51,
+        "house": null,
+        "sign": null,
+        "ruler": null
+      },
+      "transits": [
+        {
+          "transit": "Pluto",
+          "natal": "Pluto",
+          "type": "trine",
+          "orb": 1.4073,
+          "phase": "separating"
+        },
+        {
+          "transit": "Neptune",
+          "natal": "Pluto",
+          "type": "opposition",
+          "orb": 2.1462,
+          "phase": "applying"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Venus",
+          "type": "trine",
+          "orb": 0.8746,
+          "phase": "applying"
+        },
+        {
+          "transit": "Saturn",
+          "natal": "Mercury",
+          "type": "sextile",
+          "orb": 1.4461,
+          "phase": "applying"
+        },
+        {
+          "transit": "Jupiter",
+          "natal": "Moon",
+          "type": "trine",
+          "orb": 0.0941,
+          "phase": "separating"
+        },
+        {
+          "transit": "Jupiter",
+          "natal": "Uranus",
+          "type": "square",
+          "orb": 0.5254,
+          "phase": "applying"
+        },
+        {
+          "transit": "Venus",
+          "natal": "Pluto",
+          "type": "sextile",
+          "orb": 1.6788,
+          "phase": "separating"
+        },
+        {
+          "transit": "Venus",
+          "natal": "Neptune",
+          "type": "trine",
+          "orb": 1.7416,
+          "phase": "applying"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Mars",
+          "type": "square",
+          "orb": 0.2466,
+          "phase": "separating"
+        },
+        {
+          "transit": "Mercury",
+          "natal": "Jupiter",
+          "type": "square",
+          "orb": 2.8509,
+          "phase": "separating"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Sun",
+          "type": "conjunction",
+          "orb": 0.0,
+          "phase": "exact"
+        },
+        {
+          "transit": "Sun",
+          "natal": "Uranus",
+          "type": "trine",
+          "orb": 0.709,
+          "phase": "separating"
+        },
+        {
+          "transit": "Moon",
+          "natal": "Midheaven",
+          "type": "opposition",
+          "orb": 0.6489,
+          "phase": "applying"
+        },
+        {
+          "transit": "Moon",
+          "natal": "Neptune",
+          "type": "square",
+          "orb": 2.0193,
+          "phase": "separating"
+        }
+      ]
+    }
+  ]
+}

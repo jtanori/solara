@@ -27,7 +27,10 @@
     "db:check:remote": "tsx scripts/db-remote.ts --check",
     "db:manifest": "tsx scripts/generate-migration-manifest.ts",
     "db:manifest:check": "tsx scripts/generate-migration-manifest.ts --check",
-    "backlog:snapshot": "tsx scripts/backlog-snapshot.ts"
+    "backlog:snapshot": "tsx scripts/backlog-snapshot.ts",
+    "readings:worker": "tsx scripts/paid-reading-worker.ts",
+    "readings:evaluate": "tsx scripts/evaluate-paid-readings.ts",
+    "readings:approve-evaluation": "tsx scripts/approve-paid-reading-evaluation.ts"
   },
   "engines": {
     "node": ">=22"
@@ -62,15 +65,22 @@
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "drizzle-kit": "0.31.10",
+    "drizzle-kit": "0.31.11",
     "esbuild": "0.28.2",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.4.6",
     "pdfjs-dist": "6.5.438",
+    "picomatch": "file:vendor/solara-picomatch-v4-4.0.7-solara.3.tgz",
     "playwright-core": "1.65.1",
     "postcss": "^8.5.32",
     "tailwindcss": "4.1.17",
     "tsx": "^4.23.15",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "0.25.12"
+    },
+    "picomatch": "$picomatch"
   }
 }
