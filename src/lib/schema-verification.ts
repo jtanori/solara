@@ -2,6 +2,7 @@ export const REQUIRED_TABLES = [
   "public.users",
   "public.sessions",
   "public.readings",
+  "public.reading_chart_facts",
   "public.knowledge",
   "public.subscriptions",
   "public.stripe_events",
@@ -29,6 +30,7 @@ export const REQUIRED_INDEXES = [
   "rate_limits_expires_idx",
   "email_tokens_user_idx",
   "reading_documents_reading_locale_version_key",
+  "reading_chart_facts_reading_version_key",
   "account_lifecycle_leases_expires_idx",
   "reading_runs_lifetime_user_key",
   "reading_runs_reading_idx",
@@ -90,6 +92,9 @@ export const REQUIRED_COLUMNS: RequiredColumn[] = [
 
 // Include every column used by the consent/attempt boundary, not just table presence.
 for (const [table, names] of Object.entries({
+  // #152: the saved calculation behind the factual wheel. Insert-only and versioned;
+  // every column participates in the coherence/identity check, so all are required.
+  reading_chart_facts: ["id", "reading_id", "facts_version", "calculation_policy", "house_system", "chart_version", "facts", "facts_hash", "created_at"],
   reading_generation_consents: ["user_id", "receipt_id", "revision", "processor_id", "policy_version", "policy_hash", "locale", "granted_at", "withdrawn_at"],
   reading_generation_runs: ["id", "user_id", "kind", "reading_id", "document_id", "locale", "status", "owner", "deadline", "consumed_at", "consent_revision", "policy_hash", "config_hash", "content_version", "settings", "ceiling_micros", "failure_code", "created_at", "finished_at"],
   reading_generation_attempts: ["id", "run_id", "owner", "section", "phase", "state", "requested_model", "reported_model", "reserved_micros", "cost_micros", "usage", "latency_ms", "code", "created_at", "settled_at"],

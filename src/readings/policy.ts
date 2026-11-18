@@ -1,10 +1,16 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import { costMicros, generationSettings, type GenerationSettings } from "@/readings/execution";
 import { MAX_OUTPUT_TOKENS_PER_SECTION, TIER_CEILING_MXN } from "@/readings/config";
 import { createChatAdapter } from "@/readings/adapters/chat-completions";
 import type { ReadingProvider } from "@/readings/provider";
 import type { Locale } from "@/lib/i18n";
+
+// Canonical hashing lives in its own module so deterministic-identity callers need
+// not import this one (it also builds the provider adapter). Re-exported unchanged:
+// same scheme, same bytes, same hashes, no existing importer has to move.
+// Re-exported so existing importers keep one path; `hash` is also used below.
+import { CANONICAL_HASH_SCHEME, canonicalHash, hash } from "@/readings/canonical-hash";
+export { CANONICAL_HASH_SCHEME, canonicalHash, hash };
 
 export const GENERATION_RUN_MS = 45_000;
 export const GENERATION_DISPATCH_MS = 40_000;
@@ -46,10 +52,6 @@ export function consentDescriptor(profile: ProcessorProfile, locale: Locale): Co
   };
 }
 
-export function hash(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
 /** No fixture/model/price fallback for a real account. All values stay server-side. */
 export function liveGenerationConfig(fetchImpl?: typeof fetch): LiveGenerationConfig | null {
   const profile = processorProfile();
@@ -85,15 +87,3 @@ export function liveGenerationConfig(fetchImpl?: typeof fetch): LiveGenerationCo
   } catch { return null; }
 }
 
-export const CANONICAL_HASH_SCHEME = "json-utf16-v1";
-
-/** JSON normalization, then recursive UTF-16 code-unit key order; arrays retain
- * order. Serialize keys directly so integer-like keys are NOT re-enumerated by
- * JSON.stringify's object rules. No host locale, ICU collation or normalization. */
-export function canonicalHash(value: unknown): string {
-  const ordered = (entry: unknown): string => Array.isArray(entry) ? `[${entry.map(ordered).join(",")}]`
-    : entry !== null && typeof entry === "object"
-      ? `{${Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, child]) => `${JSON.stringify(key)}:${ordered(child)}`).join(",")}}`
-      : JSON.stringify(entry);
-  return createHash("sha256").update(ordered(JSON.parse(JSON.stringify(value)))).digest("hex");
-}

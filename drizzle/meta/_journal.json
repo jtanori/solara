@@ -64,6 +64,13 @@
       "when": 1794921828602,
       "tag": "0008_paid_annual_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794990879224,
+      "tag": "0009_reading_chart_facts",
+      "breakpoints": true
     }
   ]
 }

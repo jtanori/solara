@@ -1,16 +1,18 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { readings, readingDocuments as documents, readingGenerationRuns as runs, paidReadingRuns as paidRuns, paidReadingEditions as paidEditions } from "@/db/schema";
+import { readings, readingChartFacts as chartFacts, readingDocuments as documents, readingGenerationRuns as runs, paidReadingRuns as paidRuns, paidReadingEditions as paidEditions } from "@/db/schema";
+import { BASE_FACTS_BYTES, BASE_FACTS_VERSION, baseFactsRowRejection, readBaseFacts, type BaseFactsRejection } from "@/readings/chart-facts";
 import { isPaidProfile, paidSections } from "@/readings/paid-contract";
 import { paidSnapshotHash, readPaidSnapshot, PAID_SNAPSHOT_BYTES } from "@/readings/paid-chart";
 import { paidCalculationBlocks } from "@/readings/paid-presentation";
 import { getReadingNotes } from "@/lib/reading-content";
 import { log } from "@/lib/log";
 import type { Locale } from "@/lib/i18n";
+import type { ChartFacts } from "@/lib/chart";
 import { generationView } from "@/readings/generation-view";
 import { chartNotes, isReadingId, readChart } from "@/readings/chart-presentation";
 import { readStoredDocument } from "@/readings/stored-document";
-import { READING_LIMITS, ReadingViewError, type ReadingAvailability, type ReadingPresentation, type ReadingSelector } from "@/readings/presentation";
+import { READING_LIMITS, ReadingViewError, type ReadingAvailability, type ReadingChart, type ReadingPresentation, type ReadingSelector } from "@/readings/presentation";
 
 // Same testable server boundary as lib/passwords.ts. Client imports must be type-only.
 if (typeof window !== "undefined") throw new Error("reading-view is server-only");
@@ -24,6 +26,104 @@ const chartColumns = {
   result: sql<unknown>`case when octet_length(${readings.result}::text) <= ${READING_LIMITS.chartBytes} then ${readings.result} else null end`,
 };
 
+/**
+ * The immutable facts row saved with the chart (#152), read on its own rather than
+ * joined onto the chart projection.
+ *
+ * Deliberately a second query. A join would make the chart read depend on a table that
+ * migration 0009 introduces, so an instance that has not been migrated yet would lose
+ * charts it already serves — the exact guarantee `loadReadingPresentation` extends to
+ * the generation tables ("missing safety tables do not mean an unused offer"). Reading
+ * facts separately keeps that guarantee intact and means the chart query, its row count
+ * and its ownership filter are byte-identical to before.
+ *
+ * Only the version this code understands is selected: a future contract is a new row
+ * under a new `facts_version`, never a rewrite, so older code keeps reading the row it
+ * knows and ignores the rest. `reading_chart_facts_reading_version_key` is unique, so at
+ * most one row can match. As with `result` above, the payload is size-guarded in SQL: a
+ * row too large to transfer arrives as `null` and is reported as oversized rather than
+ * being read halfway. Ownership is restated here so the query cannot be reused to read
+ * another account's facts by id alone.
+ */
+const factsColumns = {
+  factsVersion: chartFacts.factsVersion,
+  factsCalculationPolicy: chartFacts.calculationPolicy,
+  factsHouseSystem: chartFacts.houseSystem,
+  factsChartVersion: chartFacts.chartVersion,
+  factsHash: chartFacts.factsHash,
+  facts: sql<unknown>`case when octet_length(${chartFacts.facts}::text) <= ${BASE_FACTS_BYTES} then ${chartFacts.facts} else null end`,
+};
+
+/**
+ * One stored row. Every field is present whenever a row is — this is a plain select,
+ * not an outer join — except `facts`, which the SQL size-guard above can null out.
+ */
+type StoredFactsRow = {
+  factsVersion: string; factsCalculationPolicy: string; factsHouseSystem: string;
+  factsChartVersion: string; factsHash: string; facts: unknown;
+};
+
+/**
+ * Verify a stored facts row against the chart summary and return the facts, or a stable
+ * rejection code. Never throws: reading a chart must not depend on a facts row being
+ * readable.
+ *
+ * That promise is enforced rather than assumed. `@/readings/chart-facts` bounds nesting
+ * before it hashes or measures a payload, and this catch is the backstop for anything
+ * else a stored row could do: the call sits outside `storedFacts`'s query catch, so an
+ * escape would surface as a 500 on the chart and PDF routes instead of as a chart
+ * without its wheel. The code is stable and the payload is never logged, because it is
+ * derived personal data. (PR #156 review, Medium.)
+ */
+function decodeStoredFacts(row: StoredFactsRow, summary: ReadingChart["result"]): ChartFacts | BaseFactsRejection {
+  try {
+    const metadata = baseFactsRowRejection({
+      factsVersion: row.factsVersion,
+      calculationPolicy: row.factsCalculationPolicy,
+      houseSystem: row.factsHouseSystem,
+      chartVersion: row.factsChartVersion,
+      factsHash: row.factsHash,
+      facts: row.facts,
+    });
+    if (metadata) return metadata;
+    const decoded = readBaseFacts(row.facts, summary);
+    return "rejection" in decoded ? decoded.rejection : decoded.facts;
+  } catch {
+    return "invalid";
+  }
+}
+
+/**
+ * Attach verified facts to the display chart, or leave them absent.
+ *
+ * Absent and rejected are the same outcome for the viewer: the page renders from
+ * `result` and reports that full positions were not saved, instead of drawing a wheel
+ * that could contradict the numbers beside it. A rejected row means stored data this
+ * code cannot trust, so it is logged under a stable code — without the payload, which
+ * is derived personal data — and it is never a 500.
+ */
+/**
+ * Read the stored facts without ever letting the attempt escape. An instance that has
+ * not run migration 0009 has no `reading_chart_facts` table at all; that must cost the
+ * viewer the wheel, not the chart they saved.
+ */
+async function storedFacts(store: ReadingViewStore, userId: string, readingId: string): Promise<StoredFactsRow | BaseFactsRejection> {
+  try {
+    return (await store.facts(userId, readingId)) ?? "absent";
+  } catch {
+    return "unavailable";
+  }
+}
+
+function withBaseFacts(chart: ReadingChart, row: StoredFactsRow | BaseFactsRejection, userId: string): ReadingChart {
+  const decoded = typeof row === "string" ? row : decodeStoredFacts(row, chart.result);
+  if (typeof decoded === "string") {
+    if (decoded !== "absent") log.warn("readings.facts_rejected", { userId, readingId: chart.id, code: decoded });
+    return chart;
+  }
+  return { ...chart, baseFacts: decoded };
+}
+
 /** SELECT-only repository. No provider, consent, lifecycle lease, or live-cache dependency. */
 export class ReadingViewStore {
   constructor(private readonly database: Pick<typeof db, "select"> = db) {}
@@ -31,6 +131,20 @@ export class ReadingViewStore {
   async chart(userId: string, readingId: string) {
     return (await this.database.select(chartColumns).from(readings)
       .where(and(eq(readings.id, readingId), eq(readings.userId, userId))).limit(1)).at(0) ?? null;
+  }
+
+  /**
+   * The stored facts for a chart this account owns, or null when there are none.
+   * Throws only if the database does; `loadReadingPresentation` treats even that as
+   * "no facts", because a supplementary read must not be able to fail a chart view.
+   */
+  async facts(userId: string, readingId: string) {
+    return (await this.database.select(factsColumns).from(chartFacts)
+      .where(and(
+        eq(chartFacts.readingId, readingId),
+        eq(chartFacts.factsVersion, BASE_FACTS_VERSION),
+        sql`exists (select 1 from readings owner where owner.id = ${chartFacts.readingId} and owner.user_id = ${userId})`,
+      )).limit(1)).at(0) ?? null;
   }
 
   async snapshot(userId: string, readingId: string) {
@@ -122,7 +236,7 @@ export async function loadReadingPresentation(
     throw new ReadingViewError("service_unavailable");
   }
   if (!chartRow) throw new ReadingViewError("not_found");
-  const chart = readChart(chartRow);
+  const chart = withBaseFacts(readChart(chartRow), await storedFacts(store, user.id, readingId), user.id);
   const run = snapshot?.run?.id ? snapshot.run : null;
   let generation = snapshot ? generationView(run) : null;
   const document = snapshot?.document?.id ? snapshot.document : null;

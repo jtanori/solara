@@ -2,7 +2,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PDF_FAILURE_CODES, PDF_IPC_CHUNK_BYTES, PDF_WORKER_HEAP_MB, PDF_WORKER_RSS_BYTES, ReadingPdfError, type PdfFailureCode, type PdfWorkerMessage, type ReadingPdfInput } from "@/readings/pdf-contract";
-import { READING_LIMITS, sectionText } from "@/readings/presentation";
+import { PDF_INPUT_BYTES, READING_LIMITS, sectionText } from "@/readings/presentation";
 
 if (typeof window !== "undefined") throw new Error("pdf-render is server-only");
 
@@ -21,7 +21,7 @@ export class ReadingPdfRenderer {
     if (signal?.aborted) throw new ReadingPdfError("pdf_aborted");
     const serialized = JSON.stringify({ chart: input.chart, content: input.content });
     const textLength = input.content.sections.flatMap(sectionText).reduce((sum, text) => sum + text.length, 0);
-    if (Buffer.byteLength(serialized) > READING_LIMITS.documentBytes + READING_LIMITS.chartBytes ||
+    if (Buffer.byteLength(serialized) > PDF_INPUT_BYTES ||
       input.content.sections.length > 11 || input.content.sections.some(section => section.blocks.length > 30) ||
       textLength > (input.content.kind === "saved-reading" && input.content.tier === "paid" ? READING_LIMITS.paidText : READING_LIMITS.freeText)) throw new ReadingPdfError("pdf_input_limit");
     const limits = { deadlineMs: READING_LIMITS.pdfDeadlineMs, outputBytes: READING_LIMITS.pdfBytes, rssBytes: PDF_WORKER_RSS_BYTES, ...this.options.limits };

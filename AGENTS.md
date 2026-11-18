@@ -36,7 +36,7 @@ solara/
 │   ├── benchmark-reading-pdf.ts # isolated synthetic resource samples; not hosted qualification
 │   └── verify-gating-production.ts # prod-mode gating verifier: 404 + role scoping + payload leak checks
 ├── docs/
-│   ├── decisions.md            # ADRs 001-010 (006 identity, 007 auth hardening, 008 migrations/deploy, 009 backlog, 010 lifecycle lease)
+│   ├── decisions.md            # ADRs 001-011 (006 identity, 007 auth hardening, 008 migrations/deploy, 009 backlog, 010 lifecycle lease, 011 product scope)
 │   └── setup/                  # 01-foundation, 02-stripe, 03-maps, 04-pdf, 05-i18n, 06-astro, 07-validation, 08-auth-security
 ├── .github/
 │   ├── workflows/ci.yml        # verify job: migrate → typegen → tsc → eslint → tests → audit → build → smoke
@@ -194,6 +194,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - **ADR 006** Identity: keep local auth through launch; Neon Auth only via superseding ADR and security review.
 - **ADR 007** Auth and transport hardening for launch.
 - **ADR 008** One migration path; migrate before deploy; rollback is code/forward-fix/restore, not down migrations.
+- **ADR 011** Solar Return first (including a factual wheel), then payments, then Free/Premium; the larger shared four-product offer is approved direction, not implemented limits. See [Solar completion](docs/plan-solar-return-completion.md).
 
 Full text: [`docs/decisions.md`](docs/decisions.md). Review mechanics: [`docs/CODE_REVIEW.md`](docs/CODE_REVIEW.md).
 

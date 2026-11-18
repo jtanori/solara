@@ -16,3 +16,4 @@ migrate.log
 
 # On-demand backlog snapshot (ADR 009 / #132) — must never be committed
 /docs/backlog-snapshot.md
+.scratch/

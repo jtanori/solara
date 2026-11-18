@@ -39,5 +39,9 @@ export const EXPECTED_MIGRATIONS: MigrationManifestEntry[] = [
   {
     "tag": "0008_paid_annual_facts",
     "hash": "9f1565c5656b626e76c51e2ee98adc3f3b597670cfd4159f20110b8e35fa065c"
+  },
+  {
+    "tag": "0009_reading_chart_facts",
+    "hash": "f91731efcb43d35339f756464b35d997f476c76a374b601bb9938892d0a89624"
   }
 ];

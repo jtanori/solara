@@ -1,13 +1,26 @@
 import type { Locale } from "@/lib/i18n";
+import type { ChartFacts } from "@/lib/chart";
 import type { ChartResult } from "@/lib/types";
 import type { GenerationView } from "@/readings/generation-view";
 import type { ReadingBlock, SectionKey, SectionStatus, SectionTier } from "@/readings/types";
 
-/** Display contracts only: no DB rows, provider metadata, facts blobs or raw error messages. */
+/**
+ * Display contracts only: no DB rows, no provider metadata, no provider facts
+ * payload, no raw error messages. Whitelisted deterministic derived data is allowed
+ * and is what `ReadingChart.calculation` and `ReadingChart.baseFacts` carry.
+ */
 export const READING_PRESENTATION_VERSION = "reading-view/1";
 export const READING_LIMITS = {
   documentBytes: 512 * 1024,
   chartBytes: 16 * 1024,
+  /**
+   * Upper bound on the serialized base facts a chart may carry (#152). Equal to
+   * `BASE_FACTS_BYTES` in `src/readings/chart-facts.ts`; this module is imported by
+   * client components and that module is server-only (`node:crypto`), so the number
+   * is repeated here deliberately and `tests/readings-facts.test.ts` fails if the two
+   * ever diverge.
+   */
+  baseFactsBytes: 64 * 1024,
   freeText: 32_768,
   paidText: 131_072,
   pdfBytes: 8 * 1024 * 1024,
@@ -15,6 +28,16 @@ export const READING_LIMITS = {
   paidPdfPages: 80,
   pdfDeadlineMs: 15_000,
 } as const;
+
+/**
+ * Upper bound on the serialized PDF input, which is `{ chart, content }`: the frozen
+ * prose document, the display chart, and any base facts that chart carries.
+ *
+ * The preflight check in `pdf-render.ts` and the worker-side check in `pdf-worker.ts`
+ * guard the same quantity and previously spelled it out independently, so widening one
+ * could silently leave the other rejecting valid input. Both now use this single value.
+ */
+export const PDF_INPUT_BYTES = READING_LIMITS.documentBytes + READING_LIMITS.chartBytes + READING_LIMITS.baseFactsBytes;
 
 export type ReadingNotice = "partial" | "section_failed" | "section_unavailable" | "unsupported_blocks" | "legacy_question_missing" | "missing_sections" | "notes_unavailable";
 export type ReadingAvailability = "ready" | "chart_only" | "other_chart" | "history_unavailable" | "document_unavailable" | "service_unavailable";
@@ -67,6 +90,15 @@ export type ReadingChart = {
   result: Omit<ChartResult, "houseSystem"> & { houseSystem: "Whole sign" | "Placidus" };
   /** Whitelisted deterministic snapshot facts, not provider output or raw birth data. */
   calculation?: ReadingBlock[];
+  /**
+   * The complete deterministic calculation behind this chart (#152), read back from the
+   * immutable row saved with it and verified against `result` before it is exposed.
+   * Absent — never a default, never recomputed — for charts saved before the facts
+   * table existed, for charts whose calculation has no Ascendant, and for any stored row
+   * that fails verification. Same privacy status as `calculation`: derived positions,
+   * never birth date, time, place or name.
+   */
+  baseFacts?: ChartFacts;
 };
 export type ReadingPresentation = {
   chart: ReadingChart;

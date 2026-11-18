@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { GenerationSettings } from "@/readings/execution";
 import { bigint, check, boolean, doublePrecision, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { ChartInput, ChartResult, Role } from "@/lib/types";
+import type { ChartFacts } from "@/lib/chart";
 import type { PaidSnapshot } from "@/readings/paid-chart";
 import type { PaidStatus } from "@/readings/paid-contract";
 import type { ReadingDocument, SectionKey } from "@/readings/types";
@@ -35,6 +36,38 @@ export const readings = pgTable("readings", {
   result: jsonb("result").$type<ChartResult>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * The full deterministic calculation behind a saved chart (#152) — what the factual
+ * wheel and numerical table are drawn from, since `readings.result` only carries the
+ * four-place summary the original UI needed.
+ *
+ * Insert-only and versioned like `reading_documents`: there is no UPDATE path, and a
+ * future contract is a new `factsVersion` row rather than a rewrite, so the original
+ * `result` and every already-delivered page/PDF stay exactly as saved. Nothing
+ * backfills these rows and no read path recomputes them; a chart saved before this
+ * table simply has none, and says so.
+ *
+ * The unique index leads with `reading_id`, so it also serves per-chart lookups and no
+ * second index is needed (the reasoning already recorded for
+ * `reading_documents_reading_locale_version_key`). Facts are meaningless without their
+ * chart, so deletion cascades.
+ */
+export const readingChartFacts = pgTable("reading_chart_facts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  readingId: uuid("reading_id").notNull().references(() => readings.id, { onDelete: "cascade" }),
+  factsVersion: text("facts_version").notNull(),
+  calculationPolicy: text("calculation_policy").notNull(),
+  houseSystem: text("house_system").notNull(),
+  chartVersion: text("chart_version").notNull(),
+  facts: jsonb("facts").$type<ChartFacts>().notNull(),
+  factsHash: text("facts_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex("reading_chart_facts_reading_version_key").on(table.readingId, table.factsVersion),
+  // Same structural bound the read path enforces, so an oversized row cannot exist.
+  check("chart_facts_size_check", sql`octet_length(${table.facts}::text) <= 65536`),
+]);
 
 // ------------------------------------------------------------------ readings engine (#103)
 
