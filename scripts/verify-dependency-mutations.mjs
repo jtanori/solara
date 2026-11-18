@@ -86,7 +86,11 @@ const mutations = [
     writeFileSync(parser, text.slice(0, start) + "    const analysis = analyzeRepeatedExtglob(body, opts);" + text.slice(end));
   }, literalTest],
   ["star-quantifier-unprotected", () => edit(parser, "(token.type === 'plus' || token.type === 'star') && analysis.risky", "token.type === 'plus' && analysis.risky"), literalTest],
-  ["recursion-opt-out-bypasses-guard", () => edit(parser, "const analysis = body.includes('*')", "const analysis = opts.maxExtglobRecursion !== false && body.includes('*')"), literalTest],
+  ["star-only-guard-restored", () => edit(parser, "const analysis = !literalRepeat", "const analysis = body.includes('*')"), literalTest],
+  ["ambiguous-literal-branches", () => edit(parser, " && firstChars.size === branches.length", ""), literalTest],
+  ["case-fold-bypass", () => edit(parser, "branch[0]?.toLowerCase()", "branch[0]"), literalTest],
+  ["unbounded-branch-count", () => edit(parser, "branches.length <= 16 && ", ""), literalTest],
+  ["recursion-opt-out-bypasses-guard", () => edit(parser, "const analysis = !literalRepeat", "const analysis = opts.maxExtglobRecursion !== false && !literalRepeat"), literalTest],
   ["incomplete-literal-escaping", () => {
     const line = readFileSync(parser, "utf8").split("\n").find(line => line.includes("? { risky: true, safeOutput: literal.replace"));
     assert.ok(line);

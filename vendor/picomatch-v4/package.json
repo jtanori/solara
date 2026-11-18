@@ -1,6 +1,6 @@
 {
   "name": "@solara/picomatch-v4",
-  "version": "4.0.7-solara.2",
+  "version": "4.0.7-solara.3",
   "private": true,
   "description": "Local security backport of picomatch 4.0.7; see ../README.md",
   "license": "MIT",
@@ -18,6 +18,6 @@
     "upstreamName": "picomatch",
     "upstreamVersion": "4.0.7",
     "advisory": "GHSA-fc5q-39xc-vjpf",
-    "policy": "repeated-star-literal-v1"
+    "policy": "repeated-literal-grammar-v2"
   }
 }

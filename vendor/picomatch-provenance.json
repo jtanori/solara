@@ -1,10 +1,10 @@
 {
   "advisory": "GHSA-fc5q-39xc-vjpf",
-  "policy": "repeated-star-literal-v1",
+  "policy": "repeated-literal-grammar-v2",
   "packages": [
     {
       "name": "@solara/picomatch-v4",
-      "version": "4.0.7-solara.2",
+      "version": "4.0.7-solara.3",
       "path": "vendor/picomatch-v4",
       "upstreamVersion": "4.0.7",
       "upstreamGitHead": "6bb40679c218cefba5d4e9662408c5fdf699a8bb",
@@ -25,7 +25,7 @@
         },
         "lib/parse.js": {
           "upstream": "4e1e05447668aa1e94366c5516a2bcd8f5fff800cc92b1d0cd7d77703b8618c4",
-          "vendored": "e62dc126fcc5e6fd5407a685134997915a00eef3f481440198c1e46b89bc5ba2"
+          "vendored": "8b33247847a5e82e0bc447ecf37352d73fac64c63c31f05b54666d9230c80d25"
         },
         "lib/picomatch.js": {
           "upstream": "fdd249d7ffff853f3bb1c77eafc8baa1a437bea85a94c35877b83c6a40d9ca94",
@@ -45,8 +45,8 @@
         }
       },
       "archive": {
-        "path": "vendor/solara-picomatch-v4-4.0.7-solara.2.tgz",
-        "integrity": "sha512-8OZbASYf+6SH9mxth3H7kdRO+zYl8CsWIBofyJG1E6T9YoRvlZAwD5mm1T7xWrbskDoImW7HRKIEa8ZBuJzeNA=="
+        "path": "vendor/solara-picomatch-v4-4.0.7-solara.3.tgz",
+        "integrity": "sha512-2PNVXxLjKeovZYnwhA1kuh24vi+LkCvn7HuWsq1wXJD9Ve2K2tIHmpjZuQSRrdjOMqJlSrac3aVm7SqEM6G/lw=="
       }
     }
   ]

@@ -4,13 +4,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { createDeploymentInputFixture, deploymentInputFiles } from "./helpers/deployment-inputs";
+import provenance from "../vendor/picomatch-provenance.json";
 
 test("deployment input keeps PDF build/runtime assets but no local reading fixtures or runners", () => {
   const files = deploymentInputFiles();
   for (const path of [
     "scripts/build-pdf.mjs", "scripts/check-pdf-package.mjs",
     // npm ci must be able to install the local security backport in a preview.
-    "vendor/solara-picomatch-v4-4.0.7-solara.2.tgz",
+    provenance.packages[0].archive.path,
     "src/readings/pdf-worker.ts", "src/readings/pdf-bootstrap.mjs",
     "src/readings/fonts/LICENSE", "src/readings/fonts/noto-sans-latin-400-normal.woff",
     "src/readings/fonts/noto-sans-latin-700-normal.woff", "src/readings/fonts/noto-sans-latin-400-italic.woff",

@@ -540,13 +540,20 @@ const parse = (input, options) => {
     const literal = input.slice(token.startIndex, state.index + 1);
     const body = input.slice(token.startIndex + 2, state.index);
     // Solara security backport: GHSA-fc5q-39xc-vjpf (CVE-2026-112366).
-    // Never emit nested wildcard repetition. Conservatively literalize a
-    // repeated extglob containing any star, even a quoted/escaped/class star.
-    // No regex rewrite or maxExtglobRecursion opt-out can reopen this path.
-    // Escape every metacharacter, including already-escaped stars: the upstream
-    // escapeRegex helper intentionally skips those and is not a literal encoder.
-    // Ordinary globs, finite literal repeats and non-repeating extglobs remain.
-    const analysis = body.includes('*')
+    // A star blacklist misses +([ab]+) and other nested/ambiguous repetitions.
+    // Allow only 1..16 nonempty ASCII literal words with disjoint first chars:
+    // each repetition has exactly one possible branch and consumes a fixed word.
+    // Fold case even without nocase: flags:'i' can override that option. Reject
+    // ALL other body syntax (classes, groups, escapes, quotes, wildcards, optional
+    // tokens, overlapping alternatives), rather than trying to parse it twice.
+    // Neither regex options nor maxExtglobRecursion:false relax this restriction.
+    const branches = body.split('|');
+    const firstChars = new Set(branches.map(branch => branch[0]?.toLowerCase()));
+    const literalRepeat = branches.length <= 16 && firstChars.size === branches.length
+      && branches.every(branch => /^[A-Za-z0-9_-]+$/.test(branch));
+    // Fully escape, including already-escaped metacharacters. The upstream
+    // escapeRegex intentionally skips those and is not a literal encoder.
+    const analysis = !literalRepeat
       ? { risky: true, safeOutput: literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
       : analyzeRepeatedExtglob(body, opts);
 

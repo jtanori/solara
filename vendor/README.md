@@ -11,7 +11,7 @@ unbounded wildcard inside another repetition can block the event loop.
 
 `picomatch-v4/` is an explicit **private Solara fork**, not an upstream release.
 It keeps Picomatch 4.0.7's MIT license, author and public API. The package name
-is `@solara/picomatch-v4`, the local version is `4.0.7-solara.2`, and publication
+is `@solara/picomatch-v4`, the local version is `4.0.7-solara.3`, and publication
 is disabled with `private: true`. It adds no dependency or install script.
 
 `picomatch-provenance.json` records the original npm archive URL/integrity,
@@ -22,18 +22,36 @@ third-party npm fork is trusted as the fix.
 
 ## Deliberately conservative compatibility policy
 
-When closing a **repeated** extglob (`+(...)` or `*(...)`), any `*` in its body
-selects Picomatch's existing literal fallback instead of a repeated regex.
-This also includes nested, quoted, escaped and character-class stars. For
-example, `+(*a)` now matches the literal text `+(*a)`, **not** `aaa`.
-`+([*])`, `+("*")` and `+(\\*)` also become literal. This intentional restriction
-avoids introducing a second glob parser or a clever regex rewrite that could
-reopen the vulnerability. `maxExtglobRecursion: false` cannot disable it.
+The previous `.2` star-only restriction was **insufficient**: review reproduced
+`+([ab]+)` compiling a nested unbounded quantifier and hanging on 35 `a`s plus
+`!`, despite a zero audit count. `.3` replaces that blacklist with an allowlist.
 
-Ordinary `**/*.ts`, braces, brackets, dot/Windows/case options, finite literal
-repeats such as `+(foo|bar)`, and non-repeating/negated extglobs remain supported.
-This is a tested security restriction, **not a claim of complete equivalence
-for arbitrary Picomatch patterns, or of eliminating every possible regex DoS**.
+When the parser closes a **repeated** extglob (`+(...)` or `*(...)`), it permits
+only **1–16 nonempty ASCII words** (`[A-Za-z0-9_-]+`), separated by `|`, whose
+first characters are all distinct after ASCII case folding. Each iteration then
+has exactly one possible branch and consumes a fixed nonempty word. Case is
+folded even without `nocase`, because `flags: 'i'` can override that option.
+
+**Every other repeated body becomes a fully escaped literal**, not another
+interpreted expression: stars, classes, nested groups, regex plus, optional
+syntax, escaped/quoted syntax, empty/overlapping branches, and excess branches.
+Examples: `+(*a)`, `+([ab]+)`, `+(a?(b))`, `+(foo|foobar)` and `+(a|A)` now match
+only their literal spelling under the selected case options. This intentionally
+restricts some safe patterns too; it does not attempt to reparse or simplify
+arbitrary glob/regex syntax. `maxExtglobRecursion: false` and regex options cannot
+relax the recognized repeated-extglob guard.
+
+Ordinary `**/*.ts`, braces, brackets, dot/Windows/case options, deterministic
+literal repeats such as `+(foo|bar)`, and non-repeating/negated extglobs retain
+their existing behavior. The bounded tests exercise matcher, `makeRe` and
+`parse`/`compileRe`, all real installed consumers, and class/group/plus/optional/
+alternation cases. Parser syntax that is not recognized as a repeated extglob
+(e.g. raw lookaround-like `(?...)` groups), arbitrary regex options/prepended
+regex, combinations of independent unbounded patterns, and caller-supplied
+`compileRe` states are **not** a general linear-time regex guarantee. Do not
+expose this regex-based tool to arbitrary untrusted regexes without a separate
+process deadline. The local threat model remains dev-tool glob inputs, not a
+demonstrated browser-request exploit.
 
 All transitive callers use this one pinned implementation through the direct
 dev dependency `picomatch` and `overrides.picomatch: "$picomatch"`.
@@ -46,7 +64,7 @@ No runtime application dependency is added or changed.
 
 ## Installation and evidence
 
-The small checked-in `solara-picomatch-v4-4.0.7-solara.2.tgz` is required by npm's
+The small checked-in `solara-picomatch-v4-4.0.7-solara.3.tgz` is required by npm's
 pinned `file:` dependency and its lockfile integrity. It is produced with
 `npm pack ./vendor/picomatch-v4 --ignore-scripts --pack-destination vendor`.
 It is intentionally retained alongside readable source: **no build-time

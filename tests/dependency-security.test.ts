@@ -117,7 +117,7 @@ test("dependency security: vendored source, installed code and npm tarball have 
 });
 
 for (const consumer of ["micromatch", "tinyglobby", "fdir"]) {
-  test(`dependency security: ${consumer} uses the patched matcher and literalizes repeated stars`, () => {
+  test(`dependency security: ${consumer} uses the patched matcher and restricts repeated extglobs`, () => {
     const fromConsumer = createRequire(require.resolve(consumer));
     assert.equal(fromConsumer.resolve("picomatch"), installedPicomatch);
     const pm = fromConsumer("picomatch") as Picomatch;
@@ -125,8 +125,12 @@ for (const consumer of ["micromatch", "tinyglobby", "fdir"]) {
       ["+(*)", "aaa"], ["+(*a)", "aaa"], ["*(*a)", "aaa"], ["+(a*)", "aaa"],
       ["+(a*b)", "abab"], ["+(*a|b)", "aaab"], ["+(@(*a))", "aaa"],
       ["src/+(*a).ts", "src/aaa.ts"], ["+([*])", "***"], ["+(\"*\")", "***"], ["+(\\*)", "***"],
+      ["+([ab]+)", "aaa"], ["*([ab]+)", "aaa"], ["+((a+))", "aaa"], ["+(+(a))", "aaa"],
+      ["+(a?(b))", "aaa"], ["+(a?)", "aaaa"], ["+([ab])", "aba"], ["+(a|aa)", "aaa"],
+      ["+(foo|foobar)", "foofoobar"], ["+(a|A)", "aA"], ["+([a\\+]b)", "ab"],
+      ["+(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q)", "abc"],
     ];
-    for (const options of [{}, { capture: true }, { bash: true }, { windows: true }, { maxExtglobRecursion: false }]) {
+    for (const options of [{}, { capture: true }, { bash: true }, { windows: true }, { regex: true }, { regex: false }, { nocase: true }, { flags: "i" }, { maxExtglobRecursion: false }]) {
       for (const [pattern, formerlyMatched] of cases) {
         assert.equal(pm(pattern, options)(formerlyMatched), false, `${consumer}: ${pattern} must not compile a wildcard repetition`);
         // Avoid picomatch's input===pattern shortcut: the compiled regex itself
@@ -149,6 +153,31 @@ test("dependency security: repeated wildcard attacks complete within an external
       for (const pattern of patterns) for (const input of inputs) {
         assert.equal(pm(pattern, options)(input), false, pattern);
         assert.equal(pm.makeRe(pattern, options).test(input), false, pattern);
+      }
+    }
+  `);
+});
+
+test("dependency security: star-free repeated extglob attacks are bounded through every installed API", () => {
+  const callers = ["micromatch", "tinyglobby", "fdir"].map(name => createRequire(require.resolve(name)).resolve("picomatch"));
+  boundedNode(`
+    const assert = require('node:assert/strict');
+    const patterns = ['+([ab]+)', '*([ab]+)', '+((a+))', '+(+(a))', '+(a?(b))', '+(a?)', '+([ab]|a)', '+(a|aa)', '+(foo|foobar)', '+(a|A)', '+(@(a|aa))', '+([[:alpha:]]+)'];
+    const inputs = ['a'.repeat(35) + '!', 'a'.repeat(60000) + '!', 'foo'.repeat(20000) + '!', 'A'.repeat(60000) + '!'];
+    for (const entry of ${JSON.stringify(callers)}) {
+      const pm = require(entry);
+      for (const options of [{}, { capture: true }, { bash: true }, { windows: true }, { dot: true }, { nocase: true }, { flags: 'i' }, { regex: false }, { regex: true }, { unescape: true }, { nobracket: true }, { maxExtglobRecursion: false }, { maxExtglobRecursion: 1000 }]) {
+        for (const pattern of patterns) {
+          const match = pm(pattern, options), re = pm.makeRe(pattern, options), compiled = pm.compileRe(pm.parse(pattern, options), options);
+          assert.equal(re.test(pattern), true, pattern);
+          assert.equal(compiled.test(pattern), true, pattern);
+          for (const input of inputs) for (const test of [match, value => re.test(value), value => compiled.test(value)]) assert.equal(test(input), false, pattern);
+        }
+        // Positive grammar: deterministic literal repeats still work; rejecting
+        // every pattern is not an acceptable security fix.
+        assert.equal(pm('+(foo|bar)', options)('foobarfoo'), true);
+        assert.equal(pm('*(foo|bar)', options)('foobarfoo'), true);
+        assert.equal(pm.makeRe('+(a)', options).test('a'.repeat(60000) + '!'), false);
       }
     }
   `);
