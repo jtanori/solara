@@ -101,11 +101,21 @@ mostly integration and honest-labelling work.
 
 Fixed before S1-a starts, so no issue re-opens another's decisions.
 
+The wheel half lands in `src/lib/wheel.ts` with S1-b. The facts half is implemented in
+`src/readings/chart-facts.ts`, which cannot be client-safe (canonical hashing uses
+`node:crypto`), so `presentation.ts` repeats the one number it needs and
+`tests/readings-facts.test.ts` fails if the two ever diverge.
+
 ```ts
-// src/lib/wheel.ts — pure; no Date.now, no I/O, no Node-only or server-only import.
+// src/readings/chart-facts.ts — the S1-a facts contract, as implemented.
 export const BASE_FACTS_VERSION      = "base-facts/1";
 export const BASE_CALCULATION_POLICY = "whole-sign-return-v1";
-export const BASE_FACTS_BYTES        = 64 * 1024;   // stored + serialized bound
+export const BASE_FACTS_BYTES        = 64 * 1024;   // stored bound: CHECK + read guard
+export const BASE_FACTS_SAVE_BYTES   = 32 * 1024;   // save-side bound, see below
+export const BASE_FACTS_TOLERANCE_DEGREES = 0.0001; // measured: max real delta 4.999e-5
+export const RETURN_SUN_TOLERANCE_DEGREES = 0.002;  // measured: max real delta 4.94e-5
+
+// src/lib/wheel.ts — pure; no Date.now, no I/O, no Node-only or server-only import.
 export const WHEEL_VIEW_BOX          = 440;         // square; centre 220,220
 export const WHEEL_RADII = {
   outer: 152, signRing: 128, houseRing: 114, aspectRing: 94,
@@ -117,6 +127,26 @@ export const WHEEL_MAX_CHORDS   = 24;   // matches the existing display limit
 export const WHEEL_MAX_LABEL_CHARS = 12;
 export const WHEEL_MAX_ELEMENTS = 260;  // PDF time/heap budget
 ```
+
+Two size bounds rather than one, because the payload is measured twice by two different
+serializers. This module measures `JSON.stringify`, which writes no separator spacing;
+PostgreSQL measures `octet_length(facts::text)` after `jsonb` re-serializes with `", "`
+and `": "`, so the stored form is always somewhat larger. The stored bound is enforced
+by the `chart_facts_size_check` constraint and by the read guard; the save-side bound is
+half of it, which guarantees a row this code accepts can never trip the constraint and
+turn a saveable chart into a 500. The margin is far larger than the expansion needs:
+over the 3168-chart sweep every chart produced a storable row, the largest stored
+payload was 11.4 KiB and the median 9.7 KiB, so real charts keep 2.87x headroom against
+the save bound and 5.7x against the stored bound.
+
+The tolerances are measured, not guessed. A sweep of 3168 charts (12 birth places x 12
+return places x 6 years x 4 birth times, both hemispheres, |latitude| to 69.6) produced
+zero coherence rejections, with a largest Ascendant delta of 4.999e-5 degrees, a largest
+Moon delta of 4.98e-5 and a largest return-Sun delta of 4.94e-5 — that is the 4-decimal
+rounding `castChart` applies and nothing else. Each bound is set at 2x (angles) and 40x
+(return Sun) the measured maximum, so rounding passes while a genuinely different
+instant does not: the Sun moves about 0.04 degrees per hour, so `0.002` still fails
+anything more than roughly three minutes off.
 
 ### Projection — the pinned invariant
 
@@ -271,8 +301,33 @@ In `src/readings/chart-save.ts`, after `result` is computed and before the respo
      keeps unrounded values, `castChart` rounds to 4 dp)
    - `result.sunHouse === facts.bodies.find(Sun).house` when both non-null
    - `result.moon` agrees with the facts' Moon within `0.0001°`
-   - `serializedFacts` ≤ `BASE_FACTS_BYTES`
+   - the return Sun agrees with `result.natalSun` within `0.002°`
+   - when an Ascendant exists, the twelve whole-sign cusps are the ones that Ascendant
+     implies: house one starts at its sign and each following cusp is exactly 30°
+     further. Twelve well-formed cusps from the next sign along would draw a wheel
+     contradicting its own table, and no other rule catches that. The invariant is
+     restated here independently of `wholeSignCusps` rather than imported, so this
+     module stays free of the ephemeris that function lives beside; were the convention
+     ever to change, the gate rejects the row and the chart still renders.
+   - `serializedFacts` ≤ `BASE_FACTS_SAVE_BYTES`
 3. One transaction inserts the reading and its facts row.
+
+The gates run in a fixed order — schema, then coherence, then size — and which one
+refuses a payload is part of the contract, because the code is what gets logged:
+`invalid` means "this is not a `base-facts/1` document at all", `incoherent` means "it
+is one, and it contradicts the summary beside it". They are complementary rather than
+redundant: a body list of nine is `invalid`, while a duplicated tenth body still has ten
+distinct names and is also caught by the schema's exact length, and cusps rotated by 30°
+are perfectly schema-valid and only `incoherent`.
+
+What is written is exactly what was validated. `castChart` emits fields this contract
+does not declare — each angle also carries a redundant `index`, the position of a sign
+that `sign` already names — so the row stores the parsed form. That keeps the immutable
+payload minimal and guarantees it reads back byte-identically, so the hash verified on
+read is the hash of the bytes that were written. The consequence is deliberate: anything
+the wheel or the numerical table later needs must be declared in `baseFactsSchema`
+first, because an insert-only row can never be amended — a new field means a new
+`factsVersion`.
 
 Failure semantics, deliberately asymmetric:
 
@@ -288,17 +343,30 @@ Failure semantics, deliberately asymmetric:
 
 ### Read path
 
-- `chartColumns` gains
-  `facts: sql<unknown>\`case when octet_length(${readingChartFacts.facts}::text) <= ${BASE_FACTS_BYTES} then ${readingChartFacts.facts} else null end\``
-  via a `LEFT JOIN` on `readingId` and `factsVersion = BASE_FACTS_VERSION`. The join
-  must not change row count or ownership filtering, and chart reads must stay
-  independent of unavailable generation tables (the existing `try`/`catch` fallback to
-  `store.chart()` keeps working).
+- **Not a `LEFT JOIN` on `chartColumns`, as first planned — a second query.** A join
+  makes the chart read depend on a table migration `0009` introduces, so an instance
+  that has not been migrated yet loses charts it already serves. That is not
+  hypothetical: `tests/readings-view.test.ts` builds a database containing only
+  `readings` and requires the view to degrade to `service_unavailable` *with the chart
+  still rendered*, and the joined version failed it. `ReadingViewStore.facts()` now
+  reads the row on its own, keyed by `readingId` and `factsVersion = BASE_FACTS_VERSION`
+  with ownership restated in SQL, so the chart query, its row count and its ownership
+  filter are byte-identical to before and no join can multiply rows. It is attempted
+  only after the chart read has already established ownership.
+- The facts payload keeps the same guard style as `result`:
+  `sql<unknown>\`case when octet_length(${readingChartFacts.facts}::text) <= ${BASE_FACTS_BYTES} then ${readingChartFacts.facts} else null end\``,
+  so an oversized row arrives as `null` and is reported as `oversize` rather than
+  transferred halfway. A failed facts read adds one rejection code, `unavailable`
+  (missing table, or the database refused the query), and like every other rejection it
+  costs the viewer the wheel, never the chart.
 - `readChart()` accepts an optional facts payload, validates it with a new
   `baseFactsSchema` (whole-sign variant: `houseSystem: z.literal("whole-sign")`,
   `ascendant` nullable, `houses` length 12 **or** 0, natal bodies length 10,
   `placidusValidated` still `true` as `castChart` emits it), re-checks `factsHash`
-  and the same coherence rules, and returns `ReadingChart` with `facts?: ChartFacts`.
+  and the same coherence rules, and attaches `baseFacts?: ChartFacts` to the
+  `ReadingChart` it returns. The name says which edition the data belongs to, since the
+  paid Placidus edition keeps arriving separately as `calculation` blocks and the two
+  are never merged.
 - **Over-size, malformed, incoherent or hash-mismatched facts are treated as
   absent**, with a `readings.facts_rejected` warning log and the
   `facts_unavailable` notice — never a 500 and never a partial wheel that
@@ -308,31 +376,54 @@ Failure semantics, deliberately asymmetric:
 
 ### Acceptance
 
-- [ ] `npm run db:manifest && npm run db:manifest:check` pass; `npm run db:migrate`
-      applies 9 migrations to a fresh disposable loopback database; `npm run db:check`
-      reports the new table/index/column counts with no pending or unexpected journal
-      hashes. Record the actual counts in the PR body.
-- [ ] A fresh-`0008` database upgraded through `0009` keeps every existing row and
-      leaves `readings.result` bytes unchanged.
-- [ ] Saving a valid chart writes exactly one facts row with `factsVersion
+- [x] `npm run db:manifest && npm run db:manifest:check` pass; `npm run db:migrate`
+      applies 10 migrations to a fresh disposable loopback database; `npm run db:check`
+      reports 25/25 tables, 156/156 columns, 23/23 indexes, no pending migrations and no
+      unexpected journal hashes (before `0009`: 24/147/22). Against a `0008`-only
+      database the same check fails closed, naming the missing table, its nine columns,
+      the missing index and `0009` as pending.
+- [x] A fresh-`0008` database upgraded through `0009` keeps every existing row and
+      leaves `readings.result` bytes unchanged (`sha256` of `result::text` compared
+      before and after), backfills nothing, and the unique index survives the upgrade.
+      Built with the same harness `tests/readings-migrations.test.ts` uses.
+- [x] Saving a valid chart writes exactly one facts row with `factsVersion
       "base-facts/1"`, `houseSystem "whole-sign"`, and a hash that
-      `canonicalHash(facts)` reproduces.
-- [ ] A second save of the same input writes a second reading with its own facts row;
+      `canonicalHash(facts)` reproduces; the stored facts equal the calculation after a
+      JSONB round trip, and the response is still exactly `{ id }`.
+- [x] A second save of the same input writes a second reading with its own facts row;
       a duplicate `(readingId, factsVersion)` insert is refused by the unique index
-      (asserted against real PostgreSQL, not mocked).
-- [ ] Deleting a chart cascades to its facts; the existing deletion-accounting and
-      `actorId`-preserving tests still pass unchanged.
-- [ ] A forced cast failure saves the chart with **no** facts row, logs the stable
-      code, and returns the same `{ id }` response as today.
-- [ ] A forced facts-insert failure rolls back: no reading row, no facts row, 500.
-- [ ] Each coherence rule is violated once in a test and refuses to write facts.
-- [ ] A legacy row with no facts reads successfully; `readChart` output for a
-      pre-existing fixture is byte-identical to its output before this change.
-- [ ] Oversize and malformed facts read as absent, with the notice and no 500.
-- [ ] Serialized facts contain no value from the saved `input` (name, birth date,
-      birth time, place names, latitude, longitude, timezone).
-- [ ] No provider call, no generation dispatch, no consent or allowance mutation
-      occurs during save (assert the existing zero-fetch/zero-POST guards).
+      (asserted against real PostgreSQL by SQLSTATE `23505` and constraint name, not by
+      message text, and not mocked).
+- [x] Deleting a chart cascades to its facts, and deleting the account cascades too;
+      the existing deletion-accounting and `actorId`-preserving tests still pass
+      unchanged in the full suite.
+- [x] A forced cast failure saves the chart with **no** facts row, logs
+      `readings.facts_unavailable` with the stable code and no raw birth input, does not
+      log `readings.save_failed`, and returns the same `{ id }` response as today.
+      Reached through a `ChartSaveDeps.factsRow` seam, because no real input currently
+      trips the gate — which is itself the measured result.
+- [x] A forced facts-insert failure rolls back: no reading row, no facts row, the
+      existing 500 body, and the raised database text never reaches the log. Injected with
+      a `BEFORE INSERT` trigger on `reading_chart_facts`, as the publication-failure test
+      does for `reading_documents`.
+- [x] Each coherence rule is violated once in a test and refuses to write facts, with
+      the expected code per mutation (`invalid` for "not a `base-facts/1` document",
+      `incoherent` for "one that contradicts its summary"), plus the tolerance edges from
+      the sweep and the wheel-less high-latitude chart.
+- [x] A legacy row with no facts reads successfully and nothing is written by the
+      read; `baseFacts` is not merely `undefined` but absent as a key, so the serialized
+      view is byte-identical to before. `tests/readings-view.test.ts` still passes
+      unchanged, including the database-with-only-`readings` degradation case.
+- [x] Oversize, malformed, incoherent, hash-mismatched and unknown-version facts all
+      read as absent with a `readings.facts_rejected` warning carrying the stable code and
+      never the payload, and no 500. An oversized row cannot be inserted at all: the CHECK
+      constraint refuses it (SQLSTATE `23514`).
+- [x] Serialized facts contain no value from the saved `input` — asserted against
+      sentinel name/place values, the birth date and time, the birth timezone, and all
+      four raw coordinates, both for the computed facts and for the row as stored.
+- [x] No provider call, no generation dispatch, no consent row and one — not two —
+      reading per save, asserted with a `fetch` mock that throws if called; the existing
+      "chart creation is chart-only even with consent" test still passes unchanged.
 
 ### Verification
 
@@ -358,6 +449,21 @@ tests/db-check.test.ts tests/chart.test.ts tests/solar.test.ts`.
 
 Each must produce a named assertion failure and be restored; record the matrix in the
 PR body as prior slices did.
+
+**Result: 10/10 killed, no survivors, tree restored and re-verified after each.** The nine
+named mutations plus one more that the version-filter design suggested —
+`facts-version-unfiltered` (drop `factsVersion` from the read's `WHERE`, so a future row
+is rendered by today's code). Killing tests, in order: the no-recast/no-backfill read test
+(3 assertions), the same test plus the unknown-version test, the rejected-facts-still-saves
+test, the rollback test, the coherence-gate and tolerance tests, the stored-row
+verification and tampered-row tests, the tampered-row test, the privacy and save tests, the
+stored-row verification test, and the unknown-version test.
+
+Two notes on method. A mutant that fails to compile or crashes the file is not a kill —
+the first `facts-backfill-update` attempt put an `await` in a synchronous function, failed
+the whole file, and was rewritten as a faithful async backfill before it was counted
+(14 pass / 2 named failures). And each mutant was applied to the real source, run against
+real PostgreSQL, then restored from the index.
 
 ---
 
@@ -556,13 +662,25 @@ what is measured, hosted runtime qualification (#81).
 
 ### Bounds
 
-Both `pdf-render.ts` and `pdf-worker.ts` enforce `documentBytes + chartBytes`. With
-facts on `ReadingChart`, both become `documentBytes + chartBytes + BASE_FACTS_BYTES`,
-and a test asserts the two modules compute the same bound from the same constants —
-they are duplicated today, and a one-sided change would let the parent admit input the
-child rejects, or the reverse. The child's environment allowlist, fs restriction,
-network denial, heap/RSS ceilings, single render slot and 15 s deadline are unchanged;
-no native addon or new dependency is introduced, and the wheel needs no image asset.
+Both `pdf-render.ts` and `pdf-worker.ts` enforced `documentBytes + chartBytes` as two
+independent spellings of one bound, so a one-sided change would let the parent admit
+input the child rejects, or the reverse. Rather than widen both and pin their agreement
+with a test, `presentation.ts` now exports the single value
+`PDF_INPUT_BYTES = documentBytes + chartBytes + baseFactsBytes` and both modules use it,
+which removes the divergence instead of detecting it; the test that remains asserts
+neither module re-spells the sum and that `READING_LIMITS.baseFactsBytes` still equals
+`BASE_FACTS_BYTES`.
+
+Worth recording, because it changes what the widening is for: given `freeText` (32 KiB)
+and `paidText` (128 KiB) capping the prose far below `documentBytes` (512 KiB), no
+legitimate payload ever reached the old bound either, so this is not the fix for a live
+rejection. It keeps the stated bound true now that facts ride along with the chart, and
+the behavioural test uses the widest chart the save path can actually produce — padded
+to just under `BASE_FACTS_SAVE_BYTES` — and asserts it reaches the worker.
+
+The child's environment allowlist, fs restriction, network denial, heap/RSS ceilings,
+single render slot and 15 s deadline are unchanged; no native addon or new dependency is
+introduced, and the wheel needs no image asset.
 
 ### Acceptance
 

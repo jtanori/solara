@@ -85,23 +85,23 @@ export function calculateSolarReturn(input: ChartInput): ChartResult {
 }
 
 /**
- * Chart v2 — the solar-return chart plus the natal chart it activates.
+ * The full deterministic facts for an already-calculated return, cast from that
+ * return's own instant rather than recalculated independently.
  *
- * Additive: `calculateSolarReturn` keeps its contract, so saved readings and the existing
- * UI are untouched. Fills the gap identified in the readings audit: v1 knows three
- * positions (Sun, Moon, ASC); v2 knows ten bodies, their houses, both angles, the true
- * node, and the aspects within the return chart and between it and the natal chart.
+ * Taking `result` as a parameter is the point: the saved summary and the saved facts
+ * are then provably about the same moment, which is what the coherence gate in
+ * `@/readings/chart-facts` checks. Chart saving uses this to persist facts beside an
+ * unchanged `ChartResult`; `calculateSolarReturnChart` uses it so there is exactly one
+ * cast path and no second copy of the sidereal-time/obliquity arithmetic to drift.
  */
-export function calculateSolarReturnChart(input: ChartInput, houseSystem: HouseSystem = "whole-sign"): { result: ChartResult; facts: ChartFacts } {
-  const result = calculateSolarReturn(input);
-
+export function solarReturnFacts(input: ChartInput, result: ChartResult, houseSystem: HouseSystem = "whole-sign"): ChartFacts {
   // Natal chart, cast for the birth moment at the birth place.
   const natalAt = resolveBirthTime(input).toJSDate();
 
   const when = new Date(result.exactUtc);
   const ramc = normalize(SiderealTime(when as unknown as Parameters<typeof SiderealTime>[0]) * 15 + input.returnPlace.longitude);
 
-  const facts = castChart({
+  return castChart({
     at: when,
     latitude: input.returnPlace.latitude,
     longitude: input.returnPlace.longitude,
@@ -114,6 +114,17 @@ export function calculateSolarReturnChart(input: ChartInput, houseSystem: HouseS
       ].map(body => ({ name: body, longitude: longitudeOf(body as BodyName, natalAt) })),
     },
   });
+}
 
-  return { result, facts };
+/**
+ * Chart v2 — the solar-return chart plus the natal chart it activates.
+ *
+ * Additive: `calculateSolarReturn` keeps its contract, so saved readings and the existing
+ * UI are untouched. Fills the gap identified in the readings audit: v1 knows three
+ * positions (Sun, Moon, ASC); v2 knows ten bodies, their houses, both angles, the true
+ * node, and the aspects within the return chart and between it and the natal chart.
+ */
+export function calculateSolarReturnChart(input: ChartInput, houseSystem: HouseSystem = "whole-sign"): { result: ChartResult; facts: ChartFacts } {
+  const result = calculateSolarReturn(input);
+  return { result, facts: solarReturnFacts(input, result, houseSystem) };
 }

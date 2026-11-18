@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as renderer from "@react-pdf/renderer";
 import { SolarReturnDocument } from "@/components/solar-pdf";
-import { READING_LIMITS, sectionText } from "@/readings/presentation";
+import { PDF_INPUT_BYTES, READING_LIMITS, sectionText } from "@/readings/presentation";
 import { loadPdfFonts } from "@/readings/pdf-fonts";
 import { PDF_IPC_CHUNK_BYTES, ReadingPdfError, type PdfWorkerMessage, type ReadingPdfInput } from "@/readings/pdf-contract";
 
@@ -14,7 +14,7 @@ process.once("disconnect", () => process.exit(1));
 process.once("message", async (message: { input: string }) => {
   let stream: NodeJS.ReadableStream | undefined;
   try {
-    if (typeof message.input !== "string" || Buffer.byteLength(message.input) > READING_LIMITS.documentBytes + READING_LIMITS.chartBytes) throw new ReadingPdfError("pdf_input_limit");
+    if (typeof message.input !== "string" || Buffer.byteLength(message.input) > PDF_INPUT_BYTES) throw new ReadingPdfError("pdf_input_limit");
     const input = JSON.parse(message.input) as ReadingPdfInput;
     const text = input.content.sections.flatMap(sectionText).reduce((sum, value) => sum + value.length, 0);
     if (input.content.sections.length > 11 || input.content.sections.some(section => section.blocks.length > 30) ||
