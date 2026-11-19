@@ -12,6 +12,7 @@ These guides cover the current application in three separate environments. The c
 8. [Auth and security hardening](08-auth-security-hardening.md)
 9. [Reading generation safety — disabled rollout and recovery](09-reading-generation-safety.md)
 10. [Paid editions, durable worker and bilingual editorial evaluation](10-paid-readings.md)
+11. [Actions-owned deployments, approval gates and break-glass](11-actions-deploys.md)
 
 ## Recommended environment separation
 

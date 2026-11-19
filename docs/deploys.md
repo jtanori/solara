@@ -1,5 +1,15 @@
 # Deploys
 
+> **FROZEN as a source of truth — 2026-11-19.** This file records the `scripts/deploy.sh` era and is
+> kept only as history. **GitHub Deployments** (created by the `environment:` key on the deploy
+> workflows) and workflow **job summaries** are the authority for what is live and how it got there.
+> See [ADR 012](decisions.md#adr-012--readiness-tolerates-schema-ahead-in-production) and
+> [ADR 013](decisions.md#adr-013--github-actions-is-the-only-deployer-merging-is-the-deploy).
+>
+> Do not add rows. The last row below is the final entry. If the legacy script appends a row after
+> this date it is not authoritative — read Deployments instead. Workflows never commit to `main`, so
+> no deploy ever writes into the deployed tree.
+
 Append-only record written by `scripts/deploy.sh` (#76). Do not edit rows by hand; the script appends
 one row per deploy so "what is in production right now?" has an answer without guessing.
 

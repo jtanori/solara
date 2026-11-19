@@ -146,6 +146,57 @@ For **production** (before real customers): repeat with prod direct URL, but onl
 
 ---
 
+## Phase 0 — inventory for the Actions-owned pipeline (M5)
+
+Fill this in **before** issue 6 (`deploy-staging.yml`) or issue 7 (`deploy-production.yml`) is
+written. Record names, scopes and plans — never secret values. See
+[`docs/plan-deployment-alignment.md`](../plan-deployment-alignment.md) §11–13.
+
+### Vercel
+
+| Item | Recorded value |
+| --- | --- |
+| Plan (Hobby / Pro) | |
+| Production branch | |
+| Deployment Protection enabled? | |
+| Protection Bypass for Automation created? | |
+| `git.deploymentEnabled` behaviour for feature-branch previews (spike S1) | |
+| Preview env var scopes (which rows are `staging`-only vs all-preview vs all-environments) | |
+| Any `DATABASE_URL` row scoped to **both** Preview and Production? | |
+
+### Neon
+
+| Item | Recorded value |
+| --- | --- |
+| Staging project / branch | |
+| Staging endpoint ID (`ep-…`) | |
+| Production project / branch (pooled + direct) | |
+| Production endpoint ID (`ep-…`) | |
+| Postgres major version (must match `ci.yml`) | |
+| Read-only staging role created for the rehearsal gate? | |
+
+### Vercel environment variables — scope audit
+
+| Variable name | Preview | Production | Branch scope |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | | | |
+| `APP_URL` | | | |
+| `NEXT_PUBLIC_*` (list) | | | |
+| `STRIPE_*` (list) | | | |
+
+> A `DATABASE_URL` visible to both Preview and Production is the failure mode the boot guard
+> (issue 3) exists to make loud. If one already exists, fix the scope before Phase 3.
+
+### Spikes
+
+- [ ] **S1** — does `deploymentEnabled: { "staging": false }` suppress feature-branch previews?
+      Does `vercel deploy --prebuilt --env KEY=value` set runtime env or is it build-time only?
+      Record the observed result and the date.
+- [ ] **S2** — can a per-PR Neon branch receive its own runtime `DATABASE_URL` and be cleaned up on
+      close? Record the mechanism, not a credential.
+
+---
+
 ## Quick verification checklist (run locally after UI clicks)
 
 ```bash

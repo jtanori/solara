@@ -349,3 +349,110 @@ before deciding which account conveniences belong in the initial release.
   new feature dependency without assessing its current code and material risk.
 - No provider/Stripe spending, hosted data changes, activation, deployment or
   production promotion follows automatically from this product decision.
+
+---
+
+## ADR 012 — Readiness tolerates schema-ahead in production
+
+**Date:** 2026-11-19
+
+**Status:** Accepted; implementation pending (milestone M5, `docs/plan-deployment-alignment.md`)
+
+**Context:** Operator review of the deploy pipeline after a production readiness incident
+
+### Context
+`buildReadiness` compares the applied migration hashes in `drizzle.__drizzle_migrations` with
+`EXPECTED_MIGRATIONS` as an **exact set**, and `tests/readiness.test.ts` pins that as the contract.
+Two consequences were accepted as normal until now:
+
+- Migrations are applied *before* the deployment that needs them (correct ordering), so between
+  `migrate` succeeding and the new build serving, the still-live build sees hashes it does not
+  know and reports `503`. The runbook calls this "expected readiness skew".
+- A Vercel Instant Rollback after a migration restores availability but never restores readiness:
+  the rolled-back build permanently lacks the new hash. Monitors and the next deploy stay red.
+
+Exact equality was doing double duty: detecting "you are pointed at the wrong database" *and*
+forbidding forward-compatible rollout. The first signal is worth keeping; the second is not a
+property a production system can have.
+
+### Decision
+Replace equality with four states: `exact`, `ahead`, `behind`, `diverged`.
+
+- `exact` — ok.
+- `ahead` — ok. Applied is a superset of expected and every extra entry is newer than the build's
+  newest expected migration.
+- `behind` — fatal (expected has entries the database has not applied).
+- `diverged` — fatal (applied contains an older or unknown entry).
+
+There is **no numeric cap** on how far ahead a database may be. A fourth unknown migration is no
+more dangerous than a second, and a cap adds a test matrix without adding safety. The bound is
+**time**: `/api/version` reports the state continuously, and the drift monitor alerts when it is
+not `exact` for longer than the observation threshold.
+
+`/api/ready` and `/api/version` expose the state as a **string only** — never counts, tags, or
+table names, consistent with the detail budget already enforced in `src/app/api/ready/handler.ts`.
+
+### Consequences
+- **This removes the last automated signal that a rollback is schema-incompatible.** A rolled-back
+  build now reports green. The compensating controls are mandatory, not optional: a *blocking*
+  destructive-DDL lint on every PR that adds `drizzle/*.sql`, expand/contract discipline for
+  breaking changes, and persistent `ahead` reporting with time-bounded alerting. The lint must
+  merge before or with this change.
+- `docs/PR_WORKFLOW.md`, `docs/setup/01-foundation-and-deployment.md` and the runbooks must stop
+  describing readiness skew as an expected 503, and #76's "readiness-based rollback unavailable"
+  wording is superseded.
+- Displaying `ahead` forever is intentional. A stuck `ahead` is the signal; a passing one is not.
+- **Deployment records:** `docs/deploys.md` is frozen with a header pointing at its replacement.
+  GitHub Deployments (created by the `environment:` key) plus workflow job summaries are the
+  authority for "what is live and how did it get there". Workflows never commit to `main`, so no
+  deploy ever writes a file into the deployed tree.
+- Splitting the four states is a policy change, not a bug fix. Reverting it requires a superseding
+  ADR.
+
+---
+
+## ADR 013 — GitHub Actions is the only deployer; merging is the deploy
+
+**Date:** 2026-11-19
+
+**Status:** Accepted; implementation pending (milestone M5, `docs/plan-deployment-alignment.md`)
+
+**Context:** `scripts/deploy.sh` was the documented deploy path, but it was optional
+
+### Context
+`deploy.sh` wrapped `gh pr merge`, dispatched migrations, waited for Vercel, and recorded the
+result. The actual deploy trigger, however, was Vercel's Git integration reacting to the merge. Any
+merge performed through the GitHub UI, `gh`, or an agent skipped the script entirely: migrations
+ran late or not at all, Vercel deployed regardless, and nothing recorded what happened.
+
+Gate strength that depends on the actor remembering a local script is not a gate. The rulesets
+require a PR and the `verify` check, so merges are audited — but audit is not ordering.
+
+### Decision
+- **Merging is the deploy.** Every push to `staging` and `main` starts the corresponding GitHub
+  Actions workflow. `workflow_dispatch` exists only for break-glass recovery.
+- Vercel's Git auto-deploy is disabled for those two branches **only after** the replacement
+  workflow has been proven against them; feature-branch previews are unchanged until per-PR
+  databases are proven.
+- Deploy order is fixed inside the workflow: **build → migrate → stage → verify candidate →
+  promote → verify live**. A broken build never touches the database; a candidate is never promoted
+  without proving its own identity.
+- Migration-bearing production releases require approval of the `production-migrations`
+  environment. This is a deploy gate, not a merge gate, and does not conflict with the catch-22
+  rule in `docs/PR_WORKFLOW.md` §0: it delays a job, never a merge, and the operator is already the
+  sole merge authority.
+- Promotion is merge-commit-only, enforced server-side (`HEAD^2` equals the `staging` tip), because
+  a squash merge of a fast-forwardable promotion produces an identical **tree** and would otherwise
+  pass tree equality while destroying ancestry.
+- Rollback is an alias move to the previous deployment. It never reverts schema. A failed release
+  after a successful migration is fixed forward, or the application is rolled back only once
+  compatibility is established.
+
+### Consequences
+- `scripts/deploy.sh` is retired once Deployments-aware monitoring exists; `scripts/promote.sh`
+  only opens the promotion PR and watches the resulting run.
+- `migrate.yml` becomes break-glass (verify plus emergency forward-fix) with the same gates.
+- `docs/deploys.md` is frozen; GitHub Deployments and job summaries are the record.
+- "Merged but not live" becomes a reported state rather than an inference from email.
+- Reverting this requires a superseding ADR and a proven replacement deploy path, not just a
+  preference for a local script.
