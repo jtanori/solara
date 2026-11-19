@@ -59,8 +59,17 @@ const view: ReadingPresentation = {
  * measurement use its result.
  */
 let compiled = "";
+/**
+ * The app's stylesheet, compiled by the app's own pipeline — with the webfont `@import`s
+ * removed. This asserts layout, and layout does not depend on which face wins the fallback
+ * while the test runs; keeping the imports would make every navigation wait on a font CDN,
+ * which is a flaky dependency in a browser test and no part of what is being measured.
+ * Nothing else is filtered: `:root`, `*` box-sizing, the typography and every breakpoint
+ * stay, because those are the rules that decide the box.
+ */
 const compileStylesheet = async () => (await postcss([tailwindcss()])
-  .process(readFileSync("src/app/globals.css", "utf8"), { from: "src/app/globals.css" })).css;
+  .process(readFileSync("src/app/globals.css", "utf8"), { from: "src/app/globals.css" })).css
+  .replace(/@import\s+url\((["']?)https?:\/\/[^)"']*\1\)\s*;?/g, "");
 const markup = renderToStaticMarkup(createElement(ReadingPageView, { view, locale: "en", selector: { kind: "chart" } }));
 
 /**
@@ -82,6 +91,9 @@ before(async () => {
   mkdirSync(EVIDENCE, { recursive: true });
   compiled = await compileStylesheet();
   servedCss = compiled;
+  // The served stylesheet references nothing off-origin: the measurement is the layout,
+  // not a font download, and a webfont import would make every navigation wait on a CDN.
+  assert.equal(/url\((["']?)https?:/i.test(compiled), false, "the served stylesheet must be self-contained");
   server = createServer((request, response) => {
     if (request.url === "/wheel.css") { response.setHeader("Content-Type", "text/css"); response.end(servedCss); return; }
     response.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -106,9 +118,14 @@ type Measurement = {
 };
 
 /** Measure the served page at one viewport. Nothing here reads `scrollWidth`. */
+/** Fail fast on anything that is not the served page: no CDN may gate a measurement. */
+const offline = async (page: Awaited<ReturnType<Browser["newPage"]>>) =>
+  page.route("**/*", route => route.request().url().startsWith(origin) ? route.continue() : route.abort());
+
 const measure = async (path: string, width: number, density: number): Promise<Measurement> => {
   const page = await browser.newPage({ viewport: { width, height: 1000 }, deviceScaleFactor: density });
   try {
+    await offline(page);
     await page.goto(`${origin}${path}`);
     return await page.evaluate(() => {
       const wheel = document.querySelector("svg.chart-wheel") as SVGSVGElement;
@@ -201,6 +218,7 @@ test("browser wheel: /sample keeps the decorative sizes this slice did not chang
   for (const [width, drawing] of [[1280, 250], [560, 190]] as const) {
     const page = await browser.newPage({ viewport: { width, height: 1000 }, deviceScaleFactor: 1 });
     try {
+      await offline(page);
       await page.goto(`${origin}/sample`);
       const size = await page.evaluate(() => {
         const wheel = document.querySelector("svg.chart-wheel") as SVGSVGElement;
