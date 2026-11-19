@@ -23,8 +23,8 @@ import { calculateSolarReturn, calculateSolarReturnChart, solarReturnFacts } fro
 // literal locally and this file is the tie between the two declarations.
 import { BASE_FACTS_VERSION } from "../src/readings/chart-facts";
 import {
-  WHEEL_MAX_CHORDS, WHEEL_MAX_ELEMENTS, WHEEL_MAX_LABEL_CHARS, WHEEL_MAX_LABEL_NUDGE_DEG,
-  WHEEL_MIN_LABEL_SEPARATION_DEG, WHEEL_RADII, WHEEL_VIEW_BOX,
+  LABEL_ADVANCE, LABEL_LINE_HEIGHT, WHEEL_MAX_CHORDS, WHEEL_MAX_ELEMENTS, WHEEL_MAX_LABEL_CHARS, WHEEL_MAX_LABEL_NUDGE_DEG,
+  WHEEL_MIN_LABEL_FONT, WHEEL_MIN_LABEL_SEPARATION_DEG, WHEEL_RADII, WHEEL_VIEW_BOX,
   longitudeAt, projectWheel, wheelAngle, wheelPoint, type FactsVersion, type WheelGeometry,
 } from "../src/lib/wheel";
 import { readingChartInput } from "./helpers/reading-fixtures";
@@ -413,13 +413,63 @@ test("wheel: never moves an anchor during collision handling", () => {
   // uncrowded chart labels all fourteen, and the crowded one records its drops.
   const relaxed = clone(clusteredFacts);
   const spread = relaxed.bodies.map(body => body.longitude);
-  relaxed.bodies.forEach((body, index) => { body.longitude = normalize(spread[0]! + index * 34); });
+  // 40 degrees apart, and the nodes moved with them, so every label fits at a readable
+  // size: the point is that relaxing the crowd changes bands, never anchors.
+  relaxed.bodies.forEach((body, index) => { body.longitude = normalize(spread[0]! + index * 40); });
+  relaxed.nodes.trueNode.longitude = normalize(spread[0]! - 40);
+  relaxed.nodes.southNode.longitude = normalize(spread[0]! - 80);
   const relaxedWheel = wheel(relaxed);
   assert.equal(relaxedWheel.unlabelled.length, 0, "the relaxed fixture must free the crowd");
   // Same fourteen points either way: crowding changes bands and nudges, never the
   // population of what is plotted.
   assert.deepEqual(relaxedWheel.points.map(item => item.id).slice().sort(),
     geometry.points.map(item => item.id).slice().sort());
+});
+
+/**
+ * Every placed label's painted box, stated here from the geometry's published output and
+ * the published constants — independently of the fitter, so this measures the drawing a
+ * reader receives rather than restating the rule that produced it.
+ */
+const labelBoxes = (geometry: WheelGeometry) => geometry.points
+  .filter(point => point.band !== null)
+  .map(point => {
+    const size = geometry.labelFontSize[point.id]!;
+    const radius = point.band === "A" ? geometry.radii.labelBandA : geometry.radii.labelBandB;
+    return { id: point.id, band: point.band!, size, x: point.labelPosition.x, y: point.labelPosition.y,
+      halfWidth: ([...point.label].length * LABEL_ADVANCE * size) / 2, halfHeight: (LABEL_LINE_HEIGHT * size) / 2 };
+  });
+
+test("wheel: no two placed labels overlap, in either band or across them", () => {
+  // The two fixtures the review named: the Spanish 2026 fixture, where `Ascendente` (A)
+  // crossed `Venus` (B) by 17.80 × 8.57 view-box units, and the same input one year later,
+  // where `Uranus` (A) crossed `South Node` (B). Both are in the fixture set below as
+  // members, but they are named here because a regression must fail by name.
+  const later = solarReturnFacts({ ...readingChartInput, year: 2030 },
+    calculateSolarReturn({ ...readingChartInput, year: 2030 }));
+  const named: [string, ChartFacts][] = [...allFixtures, ["fixture+4y", later]];
+  for (const [name, fixture] of named) for (const locale of LOCALES) {
+    const geometry = wheel(fixture, locale);
+    const boxes = labelBoxes(geometry);
+    // The deliberately clustered fixture drops nearly every label, which is correct; what
+    // matters here is that whatever *is* placed clears everything else, and that the
+    // fixtures which do place labels are the ones the overlap rule is proved on.
+    if (name !== "cluster") assert.ok(boxes.length >= 10, `${name}/${locale}: the fixture must place labels`);
+    for (let i = 0; i < boxes.length; i += 1) for (let j = i + 1; j < boxes.length; j += 1) {
+      const a = boxes[i]!, b = boxes[j]!;
+      // Boxes are half-extents around the label's centre; touching still counts.
+      const dx = Math.abs(a.x - b.x) - (a.halfWidth + b.halfWidth);
+      const dy = Math.abs(a.y - b.y) - (a.halfHeight + b.halfHeight);
+      assert.ok(dx > 0 || dy > 0,
+        `${name}/${locale}: ${a.id} (${a.band}, ${a.size}) overlaps ${b.id} (${b.band}, ${b.size}) by ${(-dx).toFixed(2)} × ${(-dy).toFixed(2)}`);
+    }
+  }
+  // The named cases are the ones that used to fail, so assert they are still the crowded
+  // ones: both bands carry labels, which is the condition that made per-band fitting wrong.
+  for (const [name, fixture] of named) {
+    const bands = new Set(wheel(fixture, "es").points.map(point => point.band));
+    assert.ok(bands.has("A") && bands.has("B"), `${name}: both bands must be in use`);
+  }
 });
 
 test("wheel: keeps placed labels at least the minimum separation apart", () => {
@@ -650,6 +700,51 @@ test("wheel: returns an empty-but-valid geometry when houses are omitted", () =>
   assert.deepEqual(geometry.signs.map(sign => sign.label), SIGN_NAMES.map(name => signName(name, "en")));
 });
 
+test("wheel: ticks mark the projected degrees, and only sign boundaries are full-length", () => {
+  for (const [name, fixture] of allFixtures) for (const locale of LOCALES) {
+    const geometry = wheel(fixture, locale);
+    // Four per sign, in sign order: the boundary first, then the three minor offsets.
+    assert.equal(geometry.ticks.length, geometry.signs.length * 4, name);
+    const boundaries = new Set(geometry.signs.map(sign => sign.startAngle));
+    for (const [index, tick] of geometry.ticks.entries()) {
+      const sign = geometry.signs[Math.floor(index / 4)]!;
+      const offset = index % 4;
+      assert.equal(tick.full, index % 4 === 0, `${name}: tick ${index} full-length only at a boundary`);
+      // The tick is measured from the *plotted* boundary, not from a fixed screen angle:
+      // a chart whose Aries edge sits at 268.908° has its quarter-sign ticks at 261.408°,
+      // 253.908° and 246.408° — so a fixed `index * 7.5` screen set cannot pass this.
+      const expected = (sign.startAngle - offset * 7.5 + 360) % 360;
+      // Both sides are emitted at three decimals, so the comparison is at that precision.
+      const gap = Math.min(Math.abs(tick.angle - expected), 360 - Math.abs(tick.angle - expected));
+      assert.ok(gap < 1e-3, `${name}: tick ${index} at ${tick.angle}°, expected ${expected}°`);
+      if (tick.full) assert.ok(boundaries.has(tick.angle));
+    }
+    // The fixture's Aries edge is not at 0°, so a fixed-7.5° tick set cannot pass above.
+    const aries = geometry.signs[0]!;
+    assert.ok(aries.startAngle > 1 && aries.startAngle < 359, `${name}: the fixture rotates the signs`);
+    assert.notEqual(Math.round(geometry.ticks[0]!.angle), 0, `${name}: the first tick is not at screen angle 0`);
+  }
+});
+
+test("wheel: every placed label is drawn at the size the geometry chose, and only those", () => {
+  for (const [name, fixture] of allFixtures) for (const locale of LOCALES) {
+    const geometry = wheel(fixture, locale);
+    const placed = geometry.points.filter(point => point.band !== null);
+    assert.deepEqual(Object.keys(geometry.labelFontSize).sort(), placed.map(point => point.id).sort(), name);
+    for (const point of placed) {
+      const size = geometry.labelFontSize[point.id]!;
+      // Inside the policy, above the floor, and big enough that the label's own width
+      // fits the room it has — the fit rule is what stops the collisions.
+      assert.ok(size >= WHEEL_MIN_LABEL_FONT && size <= 10, `${name}/${point.id}: ${size}`);
+      const radius = point.band === "A" ? geometry.radii.labelBandA : geometry.radii.labelBandB;
+      const width = ([...point.label].length * LABEL_ADVANCE * size) / (2 * Math.PI * radius) * 360;
+      assert.ok(width <= 360, `${name}/${point.id}: label spans ${width}°`);
+    }
+    // A label the geometry dropped has no size to draw it at.
+    for (const id of geometry.unlabelled) assert.equal(geometry.labelFontSize[id], undefined);
+  }
+});
+
 test("wheel: stays inside the element budget", () => {
   for (const [name, fixture] of allFixtures) {
     const geometry = wheel(fixture);
@@ -667,7 +762,13 @@ test("wheel: stays inside the element budget", () => {
   // both are well inside the ceiling, which is what the budget is for.
   const largest = [...allFixtures].sort((a, b) => wheel(b[1]).elementCount - wheel(a[1]).elementCount)[0]!;
   const size = wheel(largest[1]).elementCount;
-  assert.equal(size, 156, `largest fixture is ${largest[0]}`);
+  // Measured after fit-aware, cross-band placement: 14 points, 24 chords, 12 signs, 12
+  // houses, ticks and leaders. It moves with the placement policy — 155 when labels began
+  // being dropped rather than shrunk, 157 when the fit test became a cross-band box test,
+  // 155 once the box metrics were calibrated against the face the PDF embeds — which is
+  // exactly why the counting rule (asserted above) is the invariant and this is only a
+  // snapshot of the current fixtures.
+  assert.equal(size, 155, `largest fixture is ${largest[0]}`);
   assert.ok(size <= WHEEL_MAX_ELEMENTS);
   assert.ok(WHEEL_MAX_ELEMENTS - size >= 100, "the headroom the PDF time budget relies on is real");
 });

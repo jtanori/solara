@@ -39,6 +39,13 @@ export const WHEEL_MAX_LABEL_NUDGE_DEG = 14;
 export const WHEEL_MAX_CHORDS = 24;
 export const WHEEL_MAX_LABEL_CHARS = 12;
 export const WHEEL_MAX_ELEMENTS = 260;
+/**
+ * The smallest type a label may be set at and still be read. A label that would need to
+ * be smaller than this to clear its neighbours is dropped instead of shrunk: an
+ * unreadable glyph is not a label, and the numerical table is the authoritative
+ * equivalent. Shared with the PDF so both emitters make the same decision.
+ */
+export const WHEEL_MIN_LABEL_FONT = 7;
 
 /**
  * The facts contract this geometry understands, declared locally on purpose (see
@@ -98,6 +105,22 @@ export type WheelGeometry = {
   radii: typeof WHEEL_RADII;
   anchorLongitude: number;
   signs: { index: number; label: string; startAngle: number; endAngle: number; labelAngle: number }[];
+  /**
+   * Minor ticks, four per sign, at fixed offsets from each *projected* sign boundary.
+   *
+   * Emitted rather than derived by each emitter: the signs rotate with the chart's own
+   * Ascendant, so ticks at fixed screen angles would sit at a different offset from the
+   * sign edges on every chart while still reading as degree markings. `full` marks the
+   * real sign boundary, which is the only full-length line.
+   */
+  ticks: { index: number; angle: number; full: boolean }[];
+  /**
+   * The type size each placed label is set at, in view-box units. Emitted so both
+   * emitters draw the same label at the same size — the PDF cannot re-derive it from text
+   * metrics and get the same answer — and a label that is absent from this map is one the
+   * geometry chose not to place.
+   */
+  labelFontSize: Record<string, number>;
   houses: { number: number; cuspLongitude: number; angle: number; midAngle: number }[];
   points: WheelPoint[];
   chords: { a: string; b: string; type: AspectType; orb: number }[];
@@ -177,14 +200,86 @@ const DROPPED_LABEL_STUB = 8;
 const LEADER_THRESHOLD_DEG = 0.5;
 
 /**
- * The smallest whole-degree nudge that clears every label already placed in this
- * band, or `null` when the band is exhausted. Anchors never move; only the label
- * does, so a displaced position can never be mistaken for a real one.
+ * A label's drawn box, in view-box units, including its halo — the rectangle a reader
+ * actually sees, not the arc its centre sits on.
+ *
+ * `band` is kept so the rule "labels in one band keep a minimum angular separation" can
+ * still be enforced on top of the box test; the box test itself is deliberately blind to
+ * band, because labels in *different* bands are drawn at different radii and can still
+ * collide (an inner-ring label reaching outwards over an outer-ring one).
  */
-function placeLabel(angle: number, occupied: number[]): number | null {
+type PlacedLabel = {
+  angle: number;
+  band: "A" | "B";
+  centreX: number;
+  centreY: number;
+  halfWidth: number;
+  halfHeight: number;
+};
+
+/**
+ * Design type size for a label with room, the advance of one character, and the line box,
+ * all as fractions of the type size. Each is measured against the face the PDF embeds and
+ * carries headroom for a wider one a browser may substitute: Noto Sans Latin measures
+ * 0.683 em per character and 1.467 em of line box on this wheel's labels, and the wheel is
+ * also read in whatever sans or serif a page resolves to. A label judged to fit when it
+ * does not is the bug this rule exists to prevent; one set slightly small is merely quiet.
+ * The PDF uses the same constants, so page and PDF agree without either re-deriving them.
+ */
+export const LABEL_FONT_MAX = 10;
+export const LABEL_ADVANCE = 0.76;
+export const LABEL_LINE_HEIGHT = 1.62;
+/**
+ * Halo half-width in view-box units: the emitters stroke a 2.4-wide outline behind the
+ * glyphs so a label stays readable over a chord, which extends the painted box by 1.2 on
+ * every side. The strut below adds the rest of the clearance, in the one place it is easy
+ * to reason about: two label boxes must not come within half a point.
+ */
+const LABEL_HALO = 1.2;
+/** Minimum clear space between two painted boxes, in view-box units. */
+const LABEL_CLEARANCE = 0.5;
+/** Size steps tried below `LABEL_FONT_MAX`; 0.25 is far finer than the eye resolves here. */
+const LABEL_FONT_STEP = 0.25;
+
+/** The painted box of a label centred at `angle` on a ring of `radius`. */
+function labelBox(angle: number, characters: number, fontSize: number, radius: number): Omit<PlacedLabel, "angle" | "band"> {
+  const centre = wheelPoint(angle, radius);
+  return {
+    centreX: centre.x,
+    centreY: centre.y,
+    halfWidth: (characters * LABEL_ADVANCE * fontSize) / 2 + LABEL_HALO,
+    halfHeight: (LABEL_LINE_HEIGHT * fontSize) / 2 + LABEL_HALO,
+  };
+}
+
+/** Whether two painted label boxes touch or crowd each other. Both count as a collision. */
+function boxesIntersect(a: PlacedLabel, b: PlacedLabel): boolean {
+  return Math.abs(a.centreX - b.centreX) < a.halfWidth + b.halfWidth + LABEL_CLEARANCE
+    && Math.abs(a.centreY - b.centreY) < a.halfHeight + b.halfHeight + LABEL_CLEARANCE;
+}
+
+/**
+ * Where this label may be placed in `band`, or `null` when nothing readable fits.
+ *
+ * The test is pairwise against **every label already emitted, whichever band it is in**:
+ * bands sit at different radii, so equal angular separation is not equal distance, and a
+ * per-band check lets an A label overlap a B one. Within a band the older angular-minimum
+ * floor still applies, which keeps neighbours far enough apart that their leader stubs
+ * read as separate lines.
+ *
+ * Candidate order is fixed — nudge 0, −1, +1, … then size descending — so the choice is
+ * deterministic and a tie resolves towards the label that moves least.
+ */
+function placeLabel(angle: number, characters: number, radius: number, band: "A" | "B", placed: PlacedLabel[]): { angle: number; fontSize: number; box: PlacedLabel } | null {
   for (const nudge of LABEL_NUDGES) {
     const candidate = normalize(angle + nudge);
-    if (occupied.every(placed => circularSeparation(candidate, placed) >= WHEEL_MIN_LABEL_SEPARATION_DEG)) return candidate;
+    for (let fontSize = LABEL_FONT_MAX; fontSize >= WHEEL_MIN_LABEL_FONT; fontSize -= LABEL_FONT_STEP) {
+      const box: PlacedLabel = { angle: candidate, band, ...labelBox(candidate, characters, fontSize, radius) };
+      const collides = placed.some(other => boxesIntersect(box, other));
+      const crowded = placed.some(other => other.band === band
+        && circularSeparation(candidate, other.angle) < WHEEL_MIN_LABEL_SEPARATION_DEG);
+      if (!collides && !crowded) return { angle: candidate, fontSize, box };
+    }
   }
   return null;
 }
@@ -228,31 +323,39 @@ export function projectWheel(facts: ChartFacts | null | undefined, locale: Local
   const anchorLongitude = normalize(ascendant.longitude);
   const projected = projectPoints(facts, anchorLongitude);
 
-  const bandA: number[] = [];
-  const bandB: number[] = [];
   const points: WheelPoint[] = [];
   const unlabelled: string[] = [];
+  const labelFontSize: Record<string, number> = {};
+  /** Every label emitted so far, in either band: the collision test is across both. */
+  const placed: PlacedLabel[] = [];
   for (const item of projected) {
     const label = pointName(item.id, locale);
     const anchor = wheelPoint(item.angle, WHEEL_RADII.outer);
     let band: "A" | "B" | null = null;
     let labelAngle = item.angle;
+    let fontSize = 0;
+    const characters = [...label].length;
     if (validLabel(label)) {
-      const inBandA = placeLabel(item.angle, bandA);
+      // A label is only ever placed where it fits at a readable size; band A is tried
+      // first, then band B, then the label is dropped and recorded. Anchors never move.
+      const inBandA = placeLabel(item.angle, characters, WHEEL_RADII.labelBandA, "A", placed);
       if (inBandA !== null) {
         band = "A";
-        labelAngle = inBandA;
-        bandA.push(inBandA);
+        labelAngle = inBandA.angle;
+        fontSize = inBandA.fontSize;
+        placed.push(inBandA.box);
       } else {
-        const inBandB = placeLabel(item.angle, bandB);
+        const inBandB = placeLabel(item.angle, characters, WHEEL_RADII.labelBandB, "B", placed);
         if (inBandB !== null) {
           band = "B";
-          labelAngle = inBandB;
-          bandB.push(inBandB);
+          labelAngle = inBandB.angle;
+          fontSize = inBandB.fontSize;
+          placed.push(inBandB.box);
         }
       }
     }
     if (band === null) unlabelled.push(item.id);
+    if (band !== null) labelFontSize[item.id] = round3(fontSize);
     const radius = band === "A" ? WHEEL_RADII.labelBandA
       : band === "B" ? WHEEL_RADII.labelBandB
       : WHEEL_RADII.outer + DROPPED_LABEL_STUB;
@@ -351,6 +454,17 @@ export function projectWheel(facts: ChartFacts | null | undefined, locale: Local
     radii: { ...WHEEL_RADII },
     anchorLongitude,
     signs,
+    // Four minor ticks per sign, measured from that sign's own projected boundary. The
+    // boundary itself is the only full-length line, so the ring cannot read as a scale
+    // that disagrees with the plotted zodiac.
+    labelFontSize,
+    ticks: signs.flatMap(sign => Array.from({ length: 4 }, (_, offset) => ({
+      index: sign.index * 4 + offset,
+      // Offsets are degrees along the zodiac (7.5° = a quarter of a sign), then projected
+      // like everything else — so a tick sits at a fixed distance from its own boundary.
+      angle: round3(wheelAngle(sign.index * 30 + offset * 7.5, anchorLongitude)),
+      full: offset === 0,
+    }))),
     houses,
     points,
     chords,
