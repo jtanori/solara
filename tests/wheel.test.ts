@@ -763,12 +763,12 @@ test("wheel: stays inside the element budget", () => {
   const largest = [...allFixtures].sort((a, b) => wheel(b[1]).elementCount - wheel(a[1]).elementCount)[0]!;
   const size = wheel(largest[1]).elementCount;
   // Measured after fit-aware, cross-band placement: 14 points, 24 chords, 12 signs, 12
-  // houses, ticks and leaders. It moves with the placement policy — 156 when labels began
+  // houses, ticks and leaders. It moves with the placement policy — 155 when labels began
   // being dropped rather than shrunk, 157 when the fit test became a cross-band box test,
-  // 156 again when that test started rejecting collisions at every size rather than one —
-  // which is exactly why the counting rule (asserted above) is the invariant and this is
-  // only a snapshot of the current fixtures.
-  assert.equal(size, 156, `largest fixture is ${largest[0]}`);
+  // 155 once the box metrics were calibrated against the face the PDF embeds — which is
+  // exactly why the counting rule (asserted above) is the invariant and this is only a
+  // snapshot of the current fixtures.
+  assert.equal(size, 155, `largest fixture is ${largest[0]}`);
   assert.ok(size <= WHEEL_MAX_ELEMENTS);
   assert.ok(WHEEL_MAX_ELEMENTS - size >= 100, "the headroom the PDF time budget relies on is real");
 });

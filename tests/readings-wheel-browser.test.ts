@@ -70,6 +70,16 @@ let compiled = "";
 const compileStylesheet = async () => (await postcss([tailwindcss()])
   .process(readFileSync("src/app/globals.css", "utf8"), { from: "src/app/globals.css" })).css
   .replace(/@import\s+url\((["']?)https?:\/\/[^)"']*\1\)\s*;?/g, "");
+/**
+ * The face the overlap measurement uses: the one the PDF already embeds, served from the
+ * repository so the result does not depend on which fonts the machine running the suite
+ * happens to have installed. It is the widest realistic case for these labels (0.683 em
+ * per character), and the geometry's own metrics carry headroom over it.
+ */
+const WHEEL_FACE = readFileSync("src/readings/fonts/noto-sans-latin-400-normal.woff").toString("base64");
+const FACE_CSS = `@font-face { font-family: WheelTestFace; src: url(data:font/woff;base64,${WHEEL_FACE}) format("woff"); font-weight: 400; font-style: normal; }
+svg.chart-wheel text { font-family: WheelTestFace, sans-serif; }`;
+
 const markup = renderToStaticMarkup(createElement(ReadingPageView, { view, locale: "en", selector: { kind: "chart" } }));
 /** A chart one year later: the second fixture the review named for label overlap. */
 const later = solarReturnFacts({ ...readingChartInput, year: 2030 },
@@ -81,7 +91,8 @@ const later = solarReturnFacts({ ...readingChartInput, year: 2030 },
  * has to fit is the track it is actually given.
  */
 const servedDocument = (css: string, wheelMarkup = markup, pageClass = "reading-page") => `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head>
+<meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}
+${FACE_CSS}</style></head>
 <body><main class="app-page ${pageClass}"><div class="app-wrap">${wheelMarkup}</div></main></body></html>`;
 
 /**
@@ -240,6 +251,8 @@ for (const [path, label] of [["/", "en 2026"], ["/es", "es 2026"], ["/later-en",
     try {
       await offline(page);
       await page.goto(`${origin}${path}`);
+      // Glyph boxes must be measured with the face actually applied, not mid-swap.
+      await page.evaluate(() => document.fonts.ready);
       const labels = await page.evaluate(() => {
         const svg = document.querySelector("svg.chart-wheel")!;
         return Array.from(svg.querySelectorAll("g[data-point] text")).map(text => {

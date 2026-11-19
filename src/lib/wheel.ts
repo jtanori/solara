@@ -219,21 +219,25 @@ type PlacedLabel = {
 
 /**
  * Design type size for a label with room, the advance of one character, and the line box,
- * all as fractions of the type size. Each is deliberately at or above what the shipped
- * faces measure (an uppercase initial measures up to 0.70 em per character and a Latin
- * line box up to 1.28 em, before the halo): a label judged to fit when it does not is the
- * bug this whole rule exists to prevent, while one set slightly small is merely quiet.
+ * all as fractions of the type size. Each is measured against the face the PDF embeds and
+ * carries headroom for a wider one a browser may substitute: Noto Sans Latin measures
+ * 0.683 em per character and 1.467 em of line box on this wheel's labels, and the wheel is
+ * also read in whatever sans or serif a page resolves to. A label judged to fit when it
+ * does not is the bug this rule exists to prevent; one set slightly small is merely quiet.
  * The PDF uses the same constants, so page and PDF agree without either re-deriving them.
  */
 export const LABEL_FONT_MAX = 10;
-export const LABEL_ADVANCE = 0.72;
-export const LABEL_LINE_HEIGHT = 1.35;
+export const LABEL_ADVANCE = 0.76;
+export const LABEL_LINE_HEIGHT = 1.62;
 /**
  * Halo half-width in view-box units: the emitters stroke a 2.4-wide outline behind the
  * glyphs so a label stays readable over a chord, which extends the painted box by 1.2 on
- * every side; 0.3 more keeps two haloes from merely touching.
+ * every side. The strut below adds the rest of the clearance, in the one place it is easy
+ * to reason about: two label boxes must not come within half a point.
  */
-const LABEL_HALO = 1.5;
+const LABEL_HALO = 1.2;
+/** Minimum clear space between two painted boxes, in view-box units. */
+const LABEL_CLEARANCE = 0.5;
 /** Size steps tried below `LABEL_FONT_MAX`; 0.25 is far finer than the eye resolves here. */
 const LABEL_FONT_STEP = 0.25;
 
@@ -248,10 +252,10 @@ function labelBox(angle: number, characters: number, fontSize: number, radius: n
   };
 }
 
-/** Whether two painted label boxes touch. Touching counts as a collision. */
+/** Whether two painted label boxes touch or crowd each other. Both count as a collision. */
 function boxesIntersect(a: PlacedLabel, b: PlacedLabel): boolean {
-  return Math.abs(a.centreX - b.centreX) < a.halfWidth + b.halfWidth
-    && Math.abs(a.centreY - b.centreY) < a.halfHeight + b.halfHeight;
+  return Math.abs(a.centreX - b.centreX) < a.halfWidth + b.halfWidth + LABEL_CLEARANCE
+    && Math.abs(a.centreY - b.centreY) < a.halfHeight + b.halfHeight + LABEL_CLEARANCE;
 }
 
 /**
