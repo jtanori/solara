@@ -58,3 +58,64 @@ export function editionTitle(content: ReadingContent, locale: Locale = content.l
 export function aspectHeadings(locale: Locale): string[] {
   return locale === "es" ? ["Cuerpo", "Con", "Aspecto", "Orbe"] : ["Body", "With", "Aspect", "Orb"];
 }
+
+/**
+ * The wheel notice vocabulary (issue #154). One list the page renders from, keyed by the
+ * omission codes `@/lib/wheel` emits, plus the two states in which it emits none because
+ * it returns `null` instead. That shared vocabulary is the reason those two codes exist
+ * at all: the caller knows why it has no wheel, and must still say so.
+ */
+export const WHEEL_NOTICE_COPY = {
+  facts_unavailable: {
+    en: "This chart was saved before complete positions were recorded, so no chart wheel is shown. Save a new chart to get one — nothing is guessed or redrawn to fill the gap.",
+    es: "Esta carta se guardó antes de que se registraran las posiciones completas, así que no se muestra la rueda. Guarda una carta nueva para obtenerla: no se adivina ni se redibuja nada para llenar el hueco.",
+  },
+  ascendant_unavailable: {
+    en: "The Ascendant and houses are omitted at high latitudes until the calculation is independently verified. No horizon has been invented, so no wheel is shown; the positions below are still the calculated ones.",
+    es: "El ascendente y las casas se omiten en latitudes altas hasta verificar el cálculo de forma independiente. No se ha inventado un horizonte, así que no se muestra la rueda; las posiciones de abajo siguen siendo las calculadas.",
+  },
+  houses_omitted: {
+    en: "The house ring was left out: a stored cusp does not bound a usable sector. The positions and aspects are unaffected.",
+    es: "Se omitió el anillo de casas: una cúspide guardada no delimita un sector utilizable. Las posiciones y los aspectos no cambian.",
+  },
+  natal_not_plotted: {
+    en: "Only the solar return is drawn. Your natal positions are listed in the table and are not plotted in the wheel — a return point and a natal point are different moments.",
+    es: "Solo se dibuja la revolución solar. Tus posiciones natales aparecen en la tabla y no se trazan en la rueda: un punto de retorno y uno natal son momentos distintos.",
+  },
+  cross_aspects_not_plotted: {
+    en: "Aspects between the return chart and your natal chart appear only in the table, marked (natal). No chord is drawn for them.",
+    es: "Los aspectos entre la carta de retorno y tu carta natal aparecen solo en la tabla, marcados (natal). No se traza ninguna cuerda para ellos.",
+  },
+  aspects_truncated: {
+    en: "More aspects were found than fit on the wheel: only the tightest 24 by orb are drawn. The table lists each group separately.",
+    es: "Se encontraron más aspectos de los que caben en la rueda: solo se dibujan los 24 más estrechos por orbe. La tabla enumera cada grupo por separado.",
+  },
+  labels_omitted: {
+    en: "Some labels are too close together to print legibly, so they were left out of the drawing. Every one of them is listed in the table.",
+    es: "Algunas etiquetas están demasiado juntas para imprimirse con claridad y se omitieron del dibujo. Todas aparecen en la tabla.",
+  },
+} as const satisfies Record<string, LocalizedText>;
+
+export type WheelNoticeCode = keyof typeof WHEEL_NOTICE_COPY;
+
+/** The decorative label, kept exactly as it reads on the marketing surfaces. */
+export const DECORATIVE_WHEEL_LABEL: LocalizedText = {
+  en: "Decorative wheel, not a plot of this chart",
+  es: "Rueda decorativa, no representa esta carta",
+};
+
+/**
+ * The disclaimer that comes off a real reading page only when a real wheel is drawn
+ * in its place. It is one string in each locale, split so the decorative sentence can be
+ * dropped without dropping the calculation caveat that still applies.
+ */
+export function readingCalculationNotice(hasWheel: boolean, locale: Locale): string {
+  const es = locale === "es";
+  const calculation = es
+    ? "Este cálculo es preliminar y una invitación a reflexionar, no una carta verificada profesionalmente."
+    : "This is a preliminary calculation and a starting point for reflection—not a professionally verified chart.";
+  if (hasWheel) return calculation;
+  return es
+    ? `${calculation} La rueda es decorativa y no representa tus posiciones.`
+    : `${calculation} The wheel is decorative, not a plot of your placements.`;
+}

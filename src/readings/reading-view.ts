@@ -4,6 +4,7 @@ import { readings, readingChartFacts as chartFacts, readingDocuments as document
 import { BASE_FACTS_BYTES, BASE_FACTS_VERSION, baseFactsRowRejection, readBaseFacts, type BaseFactsRejection } from "@/readings/chart-facts";
 import { isPaidProfile, paidSections } from "@/readings/paid-contract";
 import { paidSnapshotHash, readPaidSnapshot, PAID_SNAPSHOT_BYTES } from "@/readings/paid-chart";
+import { baseCalculationBlocks } from "@/readings/base-presentation";
 import { paidCalculationBlocks } from "@/readings/paid-presentation";
 import { getReadingNotes } from "@/lib/reading-content";
 import { log } from "@/lib/log";
@@ -237,6 +238,13 @@ export async function loadReadingPresentation(
   }
   if (!chartRow) throw new ReadingViewError("not_found");
   const chart = withBaseFacts(readChart(chartRow), await storedFacts(store, user.id, readingId), user.id);
+  // Base charts get their numerical facts from the same verified facts row the wheel is
+  // drawn from (issue #154). Attached here, on the already-optional `calculation`, so the
+  // page and the PDF pick them up through the existing block renderers. A chart with no
+  // facts row keeps `calculation` absent and therefore renders no table — nothing is cast
+  // at render time to fill the gap.
+  if (chart.baseFacts) chart.calculation = baseCalculationBlocks(chart.baseFacts, locale);
+
   const run = snapshot?.run?.id ? snapshot.run : null;
   let generation = snapshot ? generationView(run) : null;
   const document = snapshot?.document?.id ? snapshot.document : null;
