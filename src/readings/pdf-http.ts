@@ -5,7 +5,7 @@ import { log, requestMeta } from "@/lib/log";
 import { AUTH_RATE_LIMITS, consumeBudgets, keyFor, rateLimitedResponse } from "@/lib/rate-limit";
 import { authenticatedCacheHeaders, privateReferrerHeaders } from "@/lib/security-headers";
 import { readingSelector } from "@/readings/chart-presentation";
-import { ReadingViewError } from "@/readings/presentation";
+import { ReadingViewError, wheelFactsOf } from "@/readings/presentation";
 import { loadReadingPresentation, ReadingViewStore, type ReadingViewer, type ReadingViewDeps } from "@/readings/reading-view";
 import { ReadingPdfError } from "@/readings/pdf-contract";
 import { readingPdfRenderer, type ReadingPdfRenderer } from "@/readings/pdf-render";
@@ -44,13 +44,16 @@ export async function handleReadingPdf(request: Request, readingId: string, deps
     const view = await loadReadingPresentation(user, readingId, locale, selector, { ...deps, store });
     if (view.availability === "service_unavailable") return failure("service_unavailable", 503, true);
     const { chart, content } = view;
+    // The same accessor the page uses, so the PDF cannot project different facts than the
+    // page rendered for the same selection and locale (issue #155).
+    const wheelFacts = wheelFactsOf(view) ?? undefined;
     const responseHeaders = {
       "Content-Type": "application/pdf",
       "Content-Disposition": `attachment; filename="solara-${chart.year}-${content.locale}-${content.kind === "saved-reading" ? content.partial ? "partial-reading" : "reading" : "chart-notes"}.pdf"`,
     };
     // HEAD authenticates/selects but does not spend CPU laying out discarded bytes.
     if (request.method === "HEAD") return privateResponse(new Response(null, { headers: responseHeaders }));
-    const rendered = await (deps.renderer ?? readingPdfRenderer).render({ chart, content }, request.signal);
+    const rendered = await (deps.renderer ?? readingPdfRenderer).render({ chart, content, wheelFacts }, request.signal);
     // No transaction spans rendering. Recheck immediately before delivery; bytes
     // already delivered cannot be recalled after the unavoidable final-check race.
     if (!await store.stillOwned(user.id, readingId, content.kind === "saved-reading" ? content.id : undefined, content.kind === "saved-reading" && content.tier === "paid")) return failure("not_found", 404);

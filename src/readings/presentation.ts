@@ -100,6 +100,23 @@ export type ReadingChart = {
    */
   baseFacts?: ChartFacts;
 };
+/**
+ * The facts this presentation's wheel may be drawn from — the single accessor both emitters
+ * use (page in S1-c, PDF in S1-d).
+ *
+ * A paid edition keeps its verified facts on the presentation (`wheelFacts`) because they
+ * are not part of its hashed chart summary; a base chart keeps them on the chart itself.
+ * One accessor, so no caller has to know which — and nothing else in the payload is
+ * consulted, so a chart with neither renders no wheel rather than a fabricated one.
+ *
+ * Lives here rather than beside the page component because `SolarReturnDocument` cannot
+ * import a Next component: this module is the only thing page and PDF already share, and
+ * two accessors would be two answers to "which facts".
+ */
+export function wheelFactsOf(view: Pick<ReadingPresentation, "chart" | "wheelFacts">): ChartFacts | null {
+  return view.wheelFacts ?? view.chart.baseFacts ?? null;
+}
+
 export type ReadingPresentation = {
   chart: ReadingChart;
   content: ReadingContent;

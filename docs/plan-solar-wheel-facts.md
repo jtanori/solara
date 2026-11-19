@@ -682,6 +682,24 @@ The child's environment allowlist, fs restriction, network denial, heap/RSS ceil
 single render slot and 15 s deadline are unchanged; no native addon or new dependency is
 introduced, and the wheel needs no image asset.
 
+### Absent wheel adds no text
+
+A chart without facts gains **no wheel block at all** — no heading and no missing-wheel
+sentence. This is a deliberate scope boundary, not an omission.
+
+The page explains absence where the wheel would be, chosen by whether `calculation` rows
+exist. Copying that sentence into the PDF is tempting and wrong here: it would insert a
+new line into every already-frozen paid edition, changing the text and visual hashes of
+documents that this slice has no business touching, and the acceptance criterion above is
+precisely that existing fixtures change *only* by the intended wheel addition (a chart
+with no wheel has no intended addition). `tests/pdf.test.ts` passing all 26 unchanged is
+the evidence that the boundary held; `tests/readings-wheel-pdf.test.ts` asserts the
+silence explicitly in both locales so a future "helpful" sentence fails a test rather
+than surfacing as a snapshot diff after deploy.
+
+If absence copy in the PDF is wanted, it belongs to its own slice with its own snapshot
+review, not to the slice that adds a drawing.
+
 ### Acceptance
 
 - [ ] A base-chart PDF and a paid-edition PDF each contain the wheel, with vector
