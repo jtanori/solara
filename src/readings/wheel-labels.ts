@@ -18,6 +18,7 @@
  */
 import { WHEEL_MAX_LABEL_CHARS, type WheelGeometry } from "@/lib/wheel";
 import type { Locale } from "@/lib/i18n";
+import { WHEEL_NOTICE_COPY, type WheelNoticeCode } from "@/readings/presentation-copy";
 
 /** A point label as both emitters print it: truncated to the geometry's own limit. */
 export function wheelLabelText(label: string): string {
@@ -53,49 +54,65 @@ export function wheelDrawingText(geometry: WheelGeometry): string[] {
  * The PDF has no `role="img"`/`aria-labelledby`: a PDF page is already a sequence of text
  * for assistive technology, so the title and description are emitted as visible text under
  * the drawing instead. Same words, different mechanism.
+ *
+ * The table pointer says "the numerical tables **in this PDF**", not "on this same page".
+ * The page can promise "below" because it is one scrollable surface; the PDF cannot. Its
+ * calculation blocks start a new `Page`, so a document with facts ends the wheel page and
+ * begins the tables overleaf — measured on a production-shaped input, and asserted by
+ * `tests/readings-wheel-pdf.test.ts`. Pointing at the wrong page is worse than pointing at
+ * the document.
  */
 export function wheelAccessibleName(chartName: string, houseSystem: string, locale: Locale): { title: string; description: string; tableNote: string } {
   return locale === "es"
     ? {
         title: `Carta factual de ${chartName}`,
         description: `Carta de ${chartName} del retorno solar, casas de ${houseSystem}.`,
-        tableNote: "La tabla numérica de esta misma página es el equivalente autoritativo de este dibujo.",
+        tableNote: "Las tablas numéricas de este PDF son el equivalente autoritativo de este dibujo.",
       }
     : {
         title: `Factual chart for ${chartName}`,
         description: `${chartName} chart for the solar return, ${houseSystem} houses.`,
-        tableNote: "The numerical table on this same page is the authoritative equivalent of this drawing.",
+        tableNote: "The numerical tables in this PDF are the authoritative equivalent of this drawing.",
       };
 }
 
 /**
- * The caption under the drawing names what is missing. Identical copy to the page's notices
- * (`WHEEL_NOTICE_COPY`), restated here only for the two codes the *drawing* can carry: a
- * null geometry never reaches the PDF, because the PDF is built from a geometry the caller
- * has already projected.
+ * The notices under the drawing, in the same words the page uses.
+ *
+ * This reads `WHEEL_NOTICE_COPY` directly rather than restating the strings. A local copy is
+ * how the two surfaces drift: the page gains a code, the PDF keeps printing the old sentence,
+ * and nothing fails because each side only ever checks itself. Both surfaces now index one
+ * table, so a copy change reaches both or neither.
+ *
+ * A code with no PDF copy is a code the drawing cannot carry, and is skipped rather than
+ * printed as a key.
  */
 export function wheelOmissionText(omissions: readonly string[], locale: Locale): string[] {
-  const copy: Record<string, { en: string; es: string }> = {
-    natal_not_plotted: {
-      en: "Only the solar return is drawn. Your natal positions are listed in the table and are not plotted in the wheel — a return point and a natal point are different moments.",
-      es: "Solo se dibuja la revolución solar. Tus posiciones natales aparecen en la tabla y no se trazan en la rueda: un punto de retorno y uno natal son momentos distintos.",
-    },
-    cross_aspects_not_plotted: {
-      en: "Aspects between the return chart and your natal chart appear only in the table, marked (natal). No chord is drawn for them.",
-      es: "Los aspectos entre la carta de retorno y tu carta natal aparecen solo en la tabla, marcados (natal). No se traza ninguna cuerda para ellos.",
-    },
-    houses_omitted: {
-      en: "The house ring was left out: a stored cusp does not bound a usable sector. The positions and aspects are unaffected.",
-      es: "Se omitió el anillo de casas: una cúspide guardada no delimita un sector utilizable. Las posiciones y los aspectos no cambian.",
-    },
-    aspects_truncated: {
-      en: "More aspects were found than fit on the wheel: only the tightest 24 by orb are drawn. The table lists each group separately.",
-      es: "Se encontraron más aspectos de los que caben en la rueda: solo se dibujan los 24 más estrechos por orbe. La tabla enumera cada grupo por separado.",
-    },
-    labels_omitted: {
-      en: "Some labels are too close together to print legibly, so they were left out of the drawing. Every one of them is listed in the table.",
-      es: "Algunas etiquetas están demasiado juntas para imprimirse de forma legible, así que se omitieron del dibujo. Todas aparecen en la tabla.",
-    },
-  };
-  return omissions.filter(code => code in copy).map(code => copy[code][locale]);
+  return omissions
+    .filter((code): code is WheelNoticeCode => code in WHEEL_NOTICE_COPY)
+    .map(code => WHEEL_NOTICE_COPY[code][locale]);
+}
+
+/**
+ * The explanation for a chart with **no wheel**, identical to the page's sentence.
+ *
+ * The first version of this slice emitted nothing here, on the theory that adding a line
+ * would disturb frozen paid snapshots. That was wrong twice over: the frozen snapshots are
+ * of charts that never had a wheel and take the same path, and the plan's Missing data
+ * section requires the explanation whatever the format. Silence leaves a reader holding a
+ * PDF with no drawing and no reason for it.
+ *
+ * `hasTable` mirrors the page exactly: it only promises a table when the document actually
+ * carries calculation blocks. A legacy chart with none gets the short sentence rather than a
+ * pointer to a table that was never rendered.
+ */
+export function wheelAbsentText(hasTable: boolean, locale: Locale): string {
+  if (locale === "es") {
+    return hasTable
+      ? "No hay rueda para esta carta. La tabla numérica de este PDF es la referencia autoritativa."
+      : "No hay rueda para esta carta.";
+  }
+  return hasTable
+    ? "There is no wheel for this chart. The numerical table in this PDF is the authoritative reference."
+    : "There is no wheel for this chart.";
 }
