@@ -718,21 +718,38 @@ probes must do the same.
 
 ### Absent wheel explains itself
 
-A chart without facts draws no wheel, and **says why**: one headed block carrying the same
-sentence the page shows. This reverses an earlier decision in this slice, recorded here
-rather than quietly rewritten.
+A chart without facts draws no wheel, and **says why**: one headed block carrying the absence
+sentence, the *reason*, and — only when calculation blocks exist — a pointer to the tables.
 
-The original argument was that a sentence would insert a line into every frozen paid edition.
-That confused two documents. Every existing snapshot is a chart with no facts at all, which
-takes the same path before and after — its text is byte-identical apart from the intended
-sentence — so freezing was never at risk. What the silence actually produced was a PDF with
-no drawing and no reason for it, which is the failure the plan's Missing data section names.
+Both reversals are recorded here rather than quietly rewritten, because each looked like a
+sensible boundary at the time.
 
-The copy is index-selected exactly as on the page: a document that carries calculation blocks
-is told the table in the PDF is authoritative; one that does not gets the short sentence, so
-the PDF never points at a table it did not render. `tests/pdf.test.ts` was regenerated
-intentionally, with the eight changed text lines and eight hashes reviewed as rasters in both
-locales.
+*First reversal: silence.* The original decision was to emit nothing, on the theory that a
+sentence would insert a line into every frozen paid edition. That confused two documents.
+Every existing snapshot is a chart with no facts at all, which takes the same path before and
+after — its text is identical apart from the intended sentence — so freezing was never at
+risk. What silence produced was a PDF with no drawing and no reason for it.
+
+*Second reversal: one generic sentence.* "There is no wheel for this chart" is true of
+everything without a wheel, so it explains nothing. There are two distinct states and the
+reader's next action differs:
+
+| state | how it is detected | notice |
+| --- | --- | --- |
+| saved positions absent or unverifiable | `wheelFacts === null` | `facts_unavailable` — offers the remedy: save the chart again |
+| positions real, no usable Ascendant | facts present, `projectWheel` returns null (\|lat\| ≥ 66) | `ascendant_unavailable` — says the horizon was withheld and the positions shown are still calculated |
+
+The choice is `wheelAbsentReason(hasFacts)`, called by `wheelCopy` from the input facts — the
+same rule `reading-page-view.tsx` applies for the same chart, reading the same
+`WHEEL_NOTICE_COPY` table, so the page and the PDF cannot give different reasons. The document
+passes `hasFacts` rather than inferring it from `geometry === null`, because both states
+produce a null geometry and inferring would collapse them back into one line.
+
+The table pointer is index-selected exactly as on the page: a document that carries
+calculation blocks is told the table in the PDF is authoritative; one that does not gets the
+short sentence, so the PDF never points at a table it did not render. `tests/pdf.test.ts` was
+regenerated intentionally, with the eight changed text lines and eight hashes reviewed as
+rasters in both locales.
 
 ### What the raster caught that assertions did not
 
@@ -768,33 +785,21 @@ drawing — so the next instance fails a test.
 is not running. `tests/readings-wheel-pdf.test.ts` rebuilds in `before()`; hand-written
 probes must do the same.
 
-### Absent wheel adds no text
-
-A chart without facts gains **no wheel block at all** — no heading and no missing-wheel
-sentence. This is a deliberate scope boundary, not an omission.
-
-The page explains absence where the wheel would be, chosen by whether `calculation` rows
-exist. Copying that sentence into the PDF is tempting and wrong here: it would insert a
-new line into every already-frozen paid edition, changing the text and visual hashes of
-documents that this slice has no business touching, and the acceptance criterion above is
-precisely that existing fixtures change *only* by the intended wheel addition (a chart
-with no wheel has no intended addition). `tests/pdf.test.ts` passing all 26 unchanged is
-the evidence that the boundary held; `tests/readings-wheel-pdf.test.ts` asserts the
-silence explicitly in both locales so a future "helpful" sentence fails a test rather
-than surfacing as a snapshot diff after deploy.
-
-If absence copy in the PDF is wanted, it belongs to its own slice with its own snapshot
-review, not to the slice that adds a drawing.
-
 ### Acceptance
 
 - [ ] A base-chart PDF and a paid-edition PDF each contain the wheel, with vector
       primitives (not a raster image) and selectable Latin label text.
 - [ ] Wheel label text extracted from the PDF equals the labels the page rendered for
-      the same chart and locale.
-- [ ] Page and PDF geometry are produced by the same `projectWheel` call signature and
-      the same constants; a test renders both from one fixture and compares the emitted
-      coordinate sets.
+      the same chart and locale — compared against the **rendered page**, not against the
+      geometry both emitters read. An earlier version got its "page" labels from
+      `wheelLabelTexts(geometry)`, which is the PDF's own function, so it compared geometry
+      to itself: changing only the page's painted Pluto label left both parity tests green.
+      The page is now rendered through `renderToStaticMarkup`, its `<text>` nodes read out of
+      the markup, and the multisets compared; the same HTML-only mutation fails.
+- [ ] Page and PDF primitives are compared tuple for tuple — every `<line>` and `<circle>`
+      the page emits, matched against the PDF tree as an unordered multiset of rounded
+      coordinates, ticks included. Counting ticks without comparing their coordinates was
+      the earlier gap: a tick could move and the count still matched.
 - [ ] A wheel label outside the font subset yields `409 pdf_glyphs` — no boxes, no
       silent drop, no transliteration.
 - [ ] The wheel never splits across pages; the fixed-layout and page-count caps still
@@ -820,7 +825,7 @@ shared module) · `pdf-halo-returns` (paint an opaque box behind the labels) ·
 `pdf-snapshot-blind-update` (a test that fails if snapshots are regenerated without
 the recorded manual review note).
 
-All ten mutations were run and each is killed by a named test:
+All twelve mutations were run and each is killed by a named test:
 
 | mutation | killed by |
 | --- | --- |
@@ -834,8 +839,12 @@ All ten mutations were run and each is killed by a named test:
 | `wheelFacts` dropped from the serialized input | wheel-present and paid-edition tests |
 | **`fontFamily` removed from the SVG text nodes** | font-substitution and Type1-resource tests |
 | **`wrap={false}` removed from the enclosing `View`** | title/caption co-location test |
+| **only the page's Pluto label changed** (HTML-only drift) | rendered-page parity test |
+| **`wheelAbsentReason` collapsed to one code** | two-reasons test (EN and ES) |
 
-Two of these escaped the first time they were run, which is why they are called out. Moving
+Four of these escaped when first tried, which is why they are called out. The last two were
+escapes in the *tests*, not the product: the parity test never rendered the page, and the
+absence block had only one sentence to assert. Moving
 only a chord's *second* endpoint passed the parity test, because it compared `x1`/`y1` and
 counted anchors without checking where they were; segments are now compared as an unordered
 multiset of both endpoints, and anchors by position. Removing `fontFamily` passed everything,

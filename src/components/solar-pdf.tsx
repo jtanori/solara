@@ -7,7 +7,7 @@ import { AVAILABILITY_COPY, NOTICE_COPY, PREVIEW_COPY, aspectHeadings, editionTi
 import { chartDetails, chartDisclaimer, chartPlacements, returnDate, savedDate } from "@/readings/presentation-format";
 import { PDF_FONT, pdfGlyphsSupported, pdfLines } from "@/readings/pdf-fonts";
 import { projectWheel, type WheelGeometry } from "@/lib/wheel";
-import { wheelAbsentText, wheelAccessibleName, wheelDrawingText, wheelOmissionText } from "@/readings/wheel-labels";
+import { wheelAbsentNotices, wheelAbsentText, wheelAccessibleName, wheelDrawingText, wheelOmissionText } from "@/readings/wheel-labels";
 import { PdfChartWheel } from "@/components/pdf-chart-wheel";
 import { houseSystemLabel } from "@/readings/base-presentation";
 import { PDF_FIXED_LAYOUT_LIMITS, ReadingPdfError, type ReadingPdfInput } from "@/readings/pdf-contract";
@@ -44,8 +44,10 @@ function styles(renderer: PdfRenderer) { return renderer.StyleSheet.create({
  * of boxes. `geometry` is optional: a document built without facts has no wheel and no
  * wheel strings, which is the honest case, not a gap.
  */
-export function pdfStrings({ chart, content, geometry }: {
+export function pdfStrings({ chart, content, geometry, hasFacts }: {
   chart: ReadingChart; content: ReadingContent; geometry: WheelGeometry | null; renderer: unknown;
+  /** `hasFacts` selects the *reason* a missing wheel is missing; see `wheelCopy`. */
+  hasFacts: boolean;
 }): string[] {
   const locale = content.locale; const saved = content.kind === "saved-reading";
   return [
@@ -60,7 +62,7 @@ export function pdfStrings({ chart, content, geometry }: {
     // reject a perfectly renderable chart.
     ...(geometry ? wheelDrawingText(geometry) : []),
     // …and every word around the drawing, from the same object the layout renders.
-    ...wheelStrings(wheelCopy({ chart, content, geometry })),
+    ...wheelStrings(wheelCopy({ chart, content, geometry, hasFacts })),
     ...(saved ? [content.contentVersion, content.chartVersion, ...content.previews.flatMap(preview => [preview.title, preview.teaser, PREVIEW_COPY[preview.availability][locale]])] : []),
   ];
 }
@@ -88,15 +90,25 @@ export type WheelCopy = {
   absent: string | null;
 };
 
-export function wheelCopy({ chart, content, geometry }: {
+export function wheelCopy({ chart, content, geometry, hasFacts }: {
   chart: ReadingChart; content: ReadingContent; geometry: WheelGeometry | null;
+  /**
+   * Whether verified facts reached this document at all — `wheelFacts !== null` at the call
+   * site, exactly as the page computes it. It is what distinguishes "the saved positions are
+   * missing" from "the positions exist but were withheld at high latitude", and it is passed
+   * in rather than inferred from `geometry === null` because both states produce a null
+   * geometry. Inferring would collapse two different sentences into one generic line.
+   */
+  hasFacts: boolean;
 }): WheelCopy {
   const locale = content.locale;
   const heading = locale === "es" ? "Rueda factual" : "Factual wheel";
   if (!geometry) {
     // Same condition the page uses: only promise a table the document actually carries.
     const hasTable = (chart.calculation?.length ?? 0) > 0;
-    return { heading, title: "", caption: "", notices: [], absent: wheelAbsentText(hasTable, locale) };
+    // The reason travels with the sentence: "there is no wheel" without a why reads as a
+    // defect. Both sentences come from `WHEEL_NOTICE_COPY`, the table the page prints from.
+    return { heading, title: "", caption: "", notices: wheelAbsentNotices(hasFacts, locale), absent: wheelAbsentText(hasTable, locale) };
   }
   const { title, description, tableNote } = wheelAccessibleName(
     chart.name, houseSystemLabel(geometry.houseSystem, locale), locale,
@@ -110,10 +122,16 @@ export function wheelCopy({ chart, content, geometry }: {
   };
 }
 
-/** Every string the wheel contributes, for the glyph gate. Empty when there is no wheel. */
+/**
+ * Every string the wheel contributes, for the glyph gate.
+ *
+ * A missing wheel contributes its sentence *and* its reason: both are drawn, so both must
+ * survive the glyph check. Gating only the sentence would let an unsupported character enter
+ * through the notice and be silently dropped — the failure mode this whole gate exists for.
+ */
 function wheelStrings(copy: WheelCopy): string[] {
   return copy.absent !== null
-    ? [copy.heading, copy.absent]
+    ? [copy.heading, copy.absent, ...copy.notices]
     : [copy.heading, copy.title, copy.caption, ...copy.notices];
 }
 
@@ -125,6 +143,15 @@ export function SolarReturnDocument({ chart, content, wheelFacts, renderer, onPa
   // chart legitimately has no wheel (legacy facts, or no Ascendant at high latitude) and
   // the PDF states that in words rather than drawing a substitute.
   const geometry = projectWheel(wheelFacts ?? null, content.locale);
+  /**
+   * Why there is no wheel, if there isn't one — the same distinction the page draws.
+   *
+   * `wheelFacts` present means the saved positions are verified and real; `projectWheel`
+   * returning null over them means the *Ascendant* could not be honoured (|latitude| >= 66
+   * refuses to approximate a horizon). No `wheelFacts` at all means the saved positions are
+   * missing or unverifiable. Identical geometry, different facts, different sentence.
+   */
+  const hasFacts = wheelFacts !== null && wheelFacts !== undefined;
   const s = styles(renderer);
   const locale = content.locale; const es = locale === "es"; const saved = content.kind === "saved-reading";
   const title = editionTitle(content);
@@ -132,7 +159,7 @@ export function SolarReturnDocument({ chart, content, wheelFacts, renderer, onPa
   // wheel's own text is in it (issue #155: an uncovered glyph must be `pdf_glyphs`, never a
   // PDF of boxes). `geometry` is passed because omitted labels are not drawn and must not
   // be submitted to the glyph check on a caller's behalf.
-  const strings = pdfStrings({ chart, content, geometry, renderer });
+  const strings = pdfStrings({ chart, content, geometry, hasFacts, renderer });
   if (!pdfGlyphsSupported(strings, renderer)) throw new ReadingPdfError("pdf_glyphs");
   const wrap = (value: string, width = 499, size = 10, bold = false) => pdfLines(value, width, size, renderer, bold).join("\n");
   const header = <View fixed style={s.header}><Text style={s.brand}>solara.</Text><Text style={{ fontSize: 8 }}>{es ? "TU REVOLUCIÓN SOLAR" : "YOUR SOLAR RETURN"}</Text></View>;
@@ -198,7 +225,7 @@ export function SolarReturnDocument({ chart, content, wheelFacts, renderer, onPa
    * page gives — rather than a decorative wheel standing in for a chart. Both live in the
    * same place in the document, so "where is the wheel" has one answer.
    */
-  const wheel = wheelCopy({ chart, content, geometry });
+  const wheel = wheelCopy({ chart, content, geometry, hasFacts });
   const wheelBlock = geometry
     ? <View key="wheel" wrap={false} style={{ marginTop: 14, marginBottom: 16 }}>
         <Text style={s.heading} minPresenceAhead={30}>{wheel.heading}</Text>
@@ -208,13 +235,17 @@ export function SolarReturnDocument({ chart, content, wheelFacts, renderer, onPa
           <Text key={`omission-${index}`} style={s.small}>{wrap(text, 499, 9)}</Text>
         ))}
       </View>
-    // No geometry means no drawing — but not silence. A reader holding a PDF with no wheel and
-    // no sentence explaining why is the failure the plan's Missing data section names, and
-    // suppressing the copy to protect frozen snapshots confused two different documents: every
-    // existing snapshot is a chart that never had a wheel and takes this same path, unchanged.
+    // No geometry means no drawing — but not silence, and not a bare "there is no wheel"
+    // either. A reader told only that something is missing assumes a defect; the *reason* is
+    // what makes the omission legible, and there are two of them. `wheel.notices` carries the
+    // one that applies (missing saved positions vs. no usable Ascendant at high latitude),
+    // built by the same function the page uses so the two surfaces cannot disagree.
     : <View key="wheel-absent" wrap={false} style={{ marginTop: 14, marginBottom: 16 }}>
         <Text style={s.heading} minPresenceAhead={30}>{wheel.heading}</Text>
         <Text style={s.small}>{wrap(wheel.absent ?? "", 499, 9)}</Text>
+        {wheel.notices.map((text, index) => (
+          <Text key={`absent-reason-${index}`} style={s.small}>{wrap(text, 499, 9)}</Text>
+        ))}
       </View>;
 
   flowPage("cover", [

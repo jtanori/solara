@@ -4,15 +4,21 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { SolarReturnDocument, pdfStrings, wheelCopy } from "../src/components/solar-pdf";
 import { PdfChartWheel, PDF_WHEEL_POINTS } from "../src/components/pdf-chart-wheel";
+import { ChartWheel } from "../src/components/chart-wheel";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { loadPdfFonts } from "../src/readings/pdf-fonts";
 import { ReadingPdfRenderer, pdfIpcPayload } from "../src/readings/pdf-render";
 import { ReadingPdfError } from "../src/readings/pdf-contract";
 import { READING_LIMITS, PDF_INPUT_BYTES, wheelFactsOf } from "../src/readings/presentation";
 import { BASE_FACTS_BYTES, baseFactsRow } from "../src/readings/chart-facts";
-import { projectWheel, WHEEL_MIN_LABEL_FONT, WHEEL_VIEW_BOX } from "../src/lib/wheel";
+import { projectWheel, wheelAngle, WHEEL_MIN_LABEL_FONT, WHEEL_VIEW_BOX } from "../src/lib/wheel";
 import { wheelDrawingText, wheelLabelText, wheelLabelTexts } from "../src/readings/wheel-labels";
 import { calculateSolarReturn, solarReturnFacts } from "../src/lib/solar";
-import { editionTitle } from "../src/readings/presentation-copy";
+import { calculatePaidSnapshot } from "../src/readings/paid-chart";
+import { paidCalculationBlocks } from "../src/readings/paid-presentation";
+import { randomUUID } from "node:crypto";
+import { editionTitle, WHEEL_NOTICE_COPY } from "../src/readings/presentation-copy";
 import { chartNotes } from "../src/readings/chart-presentation";
 import { pdfFixture, inspectPdf, normalizePdfText } from "./helpers/reading-pdf";
 import { readingChartInput, frozenReading } from "./helpers/reading-fixtures";
@@ -126,20 +132,138 @@ test("PDF wheel: a chart with facts draws a vector wheel, and a chart without fa
   }
 });
 
-test("PDF wheel: every placed label is selectable text equal to the page's label set", async () => {
+/**
+ * The HTML wheel, parsed from its real server render — not from the geometry.
+ *
+ * This is the whole point of a parity test. The previous version of the test below got its
+ * "page" labels from `wheelLabelTexts(geometry)`, which is the *same* function the PDF uses,
+ * so the comparison was geometry against itself and passed while the HTML wheel printed
+ * something else entirely. Changing only the page's Pluto label to "Wrong label" left both
+ * parity tests green — the reviewer's escape.
+ *
+ * So the page is rendered: `ChartWheel` for the same geometry and locale, through
+ * `renderToStaticMarkup`, and the markup is read back. Every `<text>` in the SVG is a painted
+ * label; `<title>` inside an omitted point's group is not.
+ */
+type PageWheel = { labels: string[]; lines: { x1: number; y1: number; x2: number; y2: number }[]; circles: { cx: number; cy: number; r: number }[] };
+
+function renderPageWheel(geometry: NonNullable<ReturnType<typeof projectWheel>>, locale: "en" | "es", chartName: string): PageWheel {
+  const markup = renderToStaticMarkup(createElement(ChartWheel, { geometry, locale, chartName, returnInstant: "May 16, 2026" }));
+  const draw = markup.slice(markup.indexOf("<svg"), markup.indexOf("</svg>"));
+  /** Attributes are emitted in stable order by React; read them by name rather than by position. */
+  const attr = (tag: string, name: string): number => {
+    const match = new RegExp("\\s" + name + "=\"(-?[0-9.]+)\"").exec(tag);
+    assert.ok(match, `missing ${name} in ${tag.slice(0, 80)}`);
+    return Number(match[1]);
+  };
+  const labels = [...draw.matchAll(/<text\b[^>]*>([^<]*)<\/text>/gu)].map(match => match[1]!);
+  const lines = [...draw.matchAll(/<line\b[^>]*>/gu)].map(([tag]) => ({ x1: attr(tag, "x1"), y1: attr(tag, "y1"), x2: attr(tag, "x2"), y2: attr(tag, "y2") }));
+  const circles = [...draw.matchAll(/<circle\b[^>]*>/gu)].map(([tag]) => ({ cx: attr(tag, "cx"), cy: attr(tag, "cy"), r: attr(tag, "r") }));
+  return { labels, lines, circles };
+}
+
+/** Rounded to the precision both emitters write, so float noise is not a parity failure. */
+const keyed = (values: number[]) => values.map(value => value.toFixed(3)).join(",");
+
+/**
+ * Two different absences, two different sentences — in both languages.
+ *
+ * "There is no wheel for this chart" is true of everything that lacks a wheel and therefore
+ * explains nothing. A reader needs to know *why*: were the saved positions missing (a
+ * remedy exists — save the chart again), or did the chart simply have no usable Ascendant
+ * because it is high-latitude (the positions are real, the horizon is what was withheld)?
+ * The page has always drawn that distinction from `WHEEL_NOTICE_COPY`; the PDF drew neither,
+ * then drew one generic line. It now draws the same notice, chosen by the same rule.
+ */
+test("PDF wheel: a missing wheel says why, and the two reasons are distinguishable in EN and ES", async () => {
+  const facts = fixtureFacts();
+  for (const locale of ["en", "es"] as const) {
+    /** No facts at all: the saved positions are absent or unverifiable. */
+    const { inspected: noFacts } = await render(withoutFacts(locale));
+    const missingPositions = WHEEL_NOTICE_COPY.facts_unavailable[locale];
+    assert.ok(noFacts.text.includes(missingPositions), `${locale}: absence is attributed to the saved positions`);
+
+    /**
+     * Facts present, no Ascendant: a high-latitude chart whose horizon was withheld.
+     * `projectWheel` refuses to approximate it, so the geometry is null while the facts are
+     * not — exactly the state that must not be described as "positions unavailable".
+     */
+    const highLatitude = { ...facts, angles: { ...facts.angles, ascendant: null } };
+    assert.equal(projectWheel(highLatitude, locale), null, `${locale}: no geometry without an Ascendant`);
+    const { inspected: withheld } = await render({ ...pdfFixture(locale), wheelFacts: highLatitude });
+    const noHorizon = WHEEL_NOTICE_COPY.ascendant_unavailable[locale];
+    assert.ok(withheld.text.includes(noHorizon), `${locale}: absence is attributed to the withheld Ascendant`);
+
+    /**
+     * The two are not interchangeable: each document carries its own reason and *not* the
+     * other's. Without this, a single generic notice would satisfy both assertions above.
+     */
+    assert.equal(noFacts.text.includes(noHorizon), false, `${locale}: the missing-positions case does not blame latitude`);
+    assert.equal(withheld.text.includes(missingPositions), false, `${locale}: the high-latitude case does not claim the data is missing`);
+
+    // Both still state the fact of the absence itself, so the reader is not left inferring it.
+    assert.ok(noFacts.text.includes(locale === "es" ? "No hay rueda para esta carta." : "There is no wheel for this chart."));
+    assert.ok(withheld.text.includes(locale === "es" ? "No hay rueda para esta carta." : "There is no wheel for this chart."));
+    // And neither draws a substitute.
+    assert.equal(noFacts.pages.some(page => page.items.some(item => item.text === "Aries")), false,
+      `${locale}: no drawing in the missing-positions case`);
+    assert.equal(withheld.pages.some(page => page.items.some(item => item.text === "Aries")), false,
+      `${locale}: no drawing in the high-latitude case`);
+  }
+});
+
+test("PDF wheel: the painted labels are the page's own, rendered from the same component", async () => {
   for (const locale of ["en", "es"] as const) {
     const facts = fixtureFacts();
     const geometry = projectWheel(facts, locale);
     assert.ok(geometry);
+    const page = renderPageWheel(geometry, locale, withWheel(locale).chart.name);
+    /**
+     * The page's painted labels, read out of the page's markup.
+     *
+     * Signs, house numbers and placed labels all appear here; the PDF must print the same
+     * multiset. Comparing the *rendered* page to the *rendered* PDF is what makes an
+     * HTML-only drift fail: the old test compared the geometry to itself.
+     */
+    assert.ok(page.labels.length >= 20, `${locale}: the page paints its labels (${page.labels.length})`);
+    const placed = page.labels.filter(label => !/^\d+$/.test(label) && !geometry.signs.some(sign => sign.label === label));
+    assert.ok(placed.length >= 10, `${locale}: the page paints placed point labels (${placed.length})`);
+
     const { inspected } = await render(withWheel(locale));
-    const pageLabels = wheelLabelTexts(geometry);
-    assert.ok(pageLabels.length >= 10, `fixture places enough labels to be meaningful, got ${pageLabels.length}`);
-    // Normalised extraction: pdf.js joins items, so compare after collapsing whitespace.
     const text = normalizePdfText(inspected.text);
-    for (const label of pageLabels) assert.ok(text.includes(label), `${locale}: label ${label} extracted from the PDF`);
-    // Sign names are drawn by both emitters from the same geometry.
-    for (const sign of geometry.signs) assert.ok(text.includes(sign.label), `${locale}: sign ${sign.label}`);
+    /** Multiset equality over the page's painted text, not a subset check. */
+    const sorted = (values: string[]) => [...values].sort();
+    const missing = sorted(page.labels).filter((label, index, all) => all.indexOf(label) === index && !text.includes(label));
+    assert.deepEqual(missing, [], `${locale}: every label the page paints is selectable text in the PDF`);
+    // And the PDF draws no label the page does not: the drawing's own point labels, which are
+    // the only ones that could drift, are exactly the page's set.
+    const pdfLabels = wheelLabelTexts(geometry).sort();
+    assert.deepEqual(sorted(placed), pdfLabels, `${locale}: the page's placed labels are the PDF's placed labels`);
   }
+});
+
+test("PDF wheel: the page's line and circle primitives are the PDF's, coordinate for coordinate", async () => {
+  const locale = "en" as const;
+  const geometry = projectWheel(fixtureFacts(), locale);
+  assert.ok(geometry);
+  const page = renderPageWheel(geometry, locale, "Synthetic Reading");
+  const drawn = pdfTreeGeometry(geometry);
+
+  /**
+   * Both emitters are normalised to the same tuple set and compared as multisets.
+   *
+   * The page draws in SVG units, the PDF in points, but both author the *same* geometry
+   * units — `PDF_WHEEL_POINTS` exists precisely to keep that 1:1. So the tuples must match
+   * exactly. Segments are keyed with their endpoints sorted: a chord drawn backwards is the
+   * same chord, and neither emitter is required to pick the same direction.
+   */
+  const segmentKeys = (lines: { x1: number; y1: number; x2: number; y2: number }[]) => lines.map(({ x1, y1, x2, y2 }) =>
+    [[x1, y1], [x2, y2]].map(([x, y]) => keyed([x, y])).sort().join("|")).sort();
+  assert.ok(page.lines.length > 40, `the page draws its primitives (${page.lines.length} lines)`);
+  assert.deepEqual(segmentKeys(drawn.lines), segmentKeys(page.lines), "every line the page draws, the PDF draws in the same place");
+
+  const circleKeys = (circles: { cx: number; cy: number; r: number }[]) => circles.map(({ cx, cy, r }) => keyed([cx, cy, r])).sort();
+  assert.deepEqual(circleKeys(drawn.circles), circleKeys(page.circles), "every circle the page draws, the PDF draws in the same place");
 });
 
 test("PDF wheel: the emitted coordinates are the geometry's own, and the drawing is primitives", async () => {
@@ -239,9 +363,9 @@ test("PDF wheel: the glyph set contains every wheel string and the wheel block c
   assert.ok(geometry);
   const input = withWheel("en");
   const drawn = wheelDrawingText(geometry);
-  const wheel = wheelCopy({ chart: input.chart, content: input.content, geometry });
+  const wheel = wheelCopy({ chart: input.chart, content: input.content, geometry, hasFacts: true });
   assert.ok(drawn.length > 20, `the drawing carries sign, house and point text (${drawn.length})`);
-  const strings = pdfStrings({ chart: input.chart, content: input.content, geometry, renderer });
+  const strings = pdfStrings({ chart: input.chart, content: input.content, geometry, hasFacts: true, renderer });
   for (const text of drawn) assert.ok(strings.includes(text), `glyph set contains ${JSON.stringify(text)}`);
   // The words around the drawing are in the set too — heading, accessible name, caption and
   // every omission notice. They are built by the same `wheelCopy` object the layout renders,
@@ -254,7 +378,7 @@ test("PDF wheel: the glyph set contains every wheel string and the wheel block c
 
   // Without a wheel the set carries the *explanation* instead of the drawing: the chart's own
   // labels are absent, and the sentence a reader needs is present and gated.
-  const bare = pdfStrings({ chart: input.chart, content: input.content, geometry: null, renderer });
+  const bare = pdfStrings({ chart: input.chart, content: input.content, geometry: null, hasFacts: false, renderer });
   // Only *drawing-only* text must disappear. A sign name like "Taurus" also appears in the
   // document's own prose ("Sun Taurus"), so asserting its absence would test the fixture, not
   // the wheel. House numbers and placed labels are the clean signal: they exist nowhere else.
@@ -272,7 +396,7 @@ test("PDF wheel: the glyph set contains every wheel string and the wheel block c
     ...geometry.houses.map(house => String(house.number)),
   ];  assert.ok(drawingOnly.length > 5, "enough drawing-only text to be meaningful");
   for (const text of drawingOnly) assert.equal(bare.includes(text), false, `absent wheel omits ${JSON.stringify(text)}`);
-  const bareCopy = wheelCopy({ chart: input.chart, content: input.content, geometry: null });
+  const bareCopy = wheelCopy({ chart: input.chart, content: input.content, geometry: null, hasFacts: false });
   assert.ok(bareCopy.absent, "an absent wheel still has copy");
   assert.ok(bare.includes(bareCopy.absent!), "the absent-wheel sentence is gated too");
 
@@ -612,49 +736,123 @@ test("PDF wheel: a route-shaped payload serializes the facts exactly once", () =
 });
 
 /**
- * Adding the wheel changes the wheel block and nothing else.
+ * Adding the wheel to a **real paid edition** changes the wheel and nothing else.
  *
- * The reviewer's point was that frozen snapshots prove no-wheel *compatibility*, not that a
- * real paid edition kept its prose, order and metadata when a wheel was added. A with/without
- * comparison over the same document answers that directly: remove the pages the wheel occupies
- * and the remaining text must be identical, in the same order.
+ * Two things were wrong with the previous version, both caught in review. It started from
+ * `pdfFixture(locale, "paid")`, a *frozen free-tier-shaped* document: a whole-sign summary,
+ * no `chart.calculation`, then freshly cast Placidus facts bolted on. So the wheel said
+ * Placidus while the summary and the (absent) calculation pages said nothing of the kind, and
+ * no comparison could have caught a paid calculation block being lost or reordered — there
+ * were none. It also skipped the cover and dropped the entire wheel page, which carries
+ * non-wheel copy that could vanish unnoticed.
  *
- * The wheel adds exactly one page in this fixture (asserted in test 6), so the comparison is
- * page-aligned rather than a substring diff.
+ * This builds the presentation the way `loadPaidPresentation` does: `calculatePaidSnapshot`
+ * for the pinned facts, `paidCalculationBlocks` for the table pages, paired with the stored
+ * paid document. Then it removes *only* the wheel region — the block between the "Factual
+ * wheel" heading and the next section — and asserts everything else is identical in order,
+ * cover included.
  */
-test("PDF wheel: adding the wheel leaves the rest of a paid edition untouched", async () => {
+test("PDF wheel: a pinned paid edition keeps its summary, tables and metadata when the wheel is added", async () => {
   for (const locale of ["en", "es"] as const) {
-    const result = calculateSolarReturn(readingChartInput);
-    const facts = solarReturnFacts(readingChartInput, result, "placidus");
-    const input = pdfFixture(locale, "paid");
-    // One render at a time: the renderer admits a single slot by design, and `pdf_capacity`
-    // here would be the guard working, not a test failure.
+    const snapshot = calculatePaidSnapshot(randomUUID(), readingChartInput);
+    assert.equal(snapshot.facts.houseSystem, "placidus");
+    assert.equal(snapshot.chart.result.houseSystem, "Placidus");
+    const chart = { ...snapshot.chart, calculation: paidCalculationBlocks(snapshot, locale) };
+    // The pinned Placidus facts and the blocks the paid route renders — a paid presentation,
+    // not a free document wearing Placidus labels.
+    assert.ok(chart.calculation.some(block => block.kind === "aspectTable"), `${locale}: calculation pages exist`);
+    assert.ok(chart.calculation.some(block => "title" in block && (block.title ?? "").includes("Placidus")), `${locale}: the tables name the system`);
+    const input: ReadingPdfInput = { chart, content: pdfFixture(locale, "paid").content };
+
+    // One render at a time: the renderer admits a single slot by design.
     const bare = await render(input);
-    const wheeled = await render({ ...input, wheelFacts: facts });
-
-    assert.equal(wheeled.inspected.metadata.Language, bare.inspected.metadata.Language, `${locale}: metadata unchanged`);
-
-    // Drop the page that carries the *drawing*. Both documents have a wheel block — the bare
-    // one carries the absent-wheel explanation instead — so the heading cannot identify it.
-    // The drawing's own labels are the signal: "Aries" is drawn only by the wheel emitter.
-    const isWheelPage = (page: { items: { text: string }[] }) => page.items.some(item => item.text === "Aries");
-    const barePages = bare.inspected.pages.map(page => page.text);
-    const wheeledPages = wheeled.inspected.pages.map(page => page.text).filter((_, index) => !isWheelPage(wheeled.inspected.pages[index]));
-    assert.equal(wheeledPages.length, barePages.length, `${locale}: the drawing replaced a no-op block, adding no page of its own`);
+    const wheeled = await render({ ...input, wheelFacts: snapshot.facts });
+    assert.equal(wheeled.inspected.pages.length, bare.inspected.pages.length + 1,
+      `${locale}: the wheel adds exactly one page (${bare.inspected.pages.length} -> ${wheeled.inspected.pages.length})`);
 
     /**
-     * Compare pages that cannot contain wheel copy, rather than trying to align whole pages.
-     *
-     * The cover holds the wheel block, so it necessarily differs: the bare document explains
-     * the absence there and the wheeled one draws there. Everything after it is document
-     * prose — sections, notices, previews — and must be identical, in the same order.
+     * Without the facts the document explains itself — and the calculation pages are still
+     * there, which is what makes this a paid edition rather than a bare chart.
      */
-    const cover = 1;
-    assert.deepEqual(wheeledPages.slice(cover), barePages.slice(cover),
-      `${locale}: every page after the cover is unchanged, in order`);
-    const prose = (input: { content: { sections: { title: string }[] } }) => input.content.sections.map(section => section.title);
-    for (const title of prose(input)) {
-      assert.ok(wheeled.inspected.text.includes(title), `${locale}: section "${title.slice(0, 24)}" still renders`);
+    assert.ok(bare.inspected.text.includes(locale === "es" ? "No hay rueda para esta carta." : "There is no wheel for this chart."));
+    assert.ok(bare.inspected.text.includes(paidCalculationBlocks(snapshot, locale)[0]!.kind === "keyValue" ? "Placidus" : "Placidus"),
+      `${locale}: the bare paid edition still prints its Placidus tables`);
+
+    /**
+     * The wheel says Placidus, and says it about *these* facts.
+     *
+     * The points are checked against the snapshot's own longitudes through the shared
+     * `wheelAngle`, so a wheel built from re-cast facts (or the fixture's whole-sign ones)
+     * fails rather than merely looking plausible.
+     */
+    const geometry = projectWheel(snapshot.facts, locale);
+    assert.ok(geometry);
+    assert.equal(geometry.houseSystem, "placidus");
+    assert.ok(wheeled.inspected.text.includes("Placidus"));
+    const centre = geometry.viewBox / 2;
+    const deg = Math.PI / 180;
+    const anchorOf = (longitude: number) => {
+      const angle = wheelAngle(longitude, snapshot.facts.angles.ascendant!.longitude) * deg;
+      // Anchors sit on the outer ring (the page draws the label inside it); the angle is the
+      // shared projection's own.
+      const point = geometry.points.find(candidate => Math.abs(candidate.anchor.x - (centre + geometry.radii.outer * Math.cos(angle))) < 0.01
+        && Math.abs(candidate.anchor.y - (centre + geometry.radii.outer * Math.sin(angle))) < 0.01);
+      return point;
+    };
+    for (const body of snapshot.facts.bodies) {
+      // Each saved body's longitude lands on a drawn anchor, proving the wheel is *these* facts.
+      assert.ok(anchorOf(body.longitude), `${locale}: ${body.body} at ${body.longitude.toFixed(3)}° is drawn`);
     }
+
+    /**
+     * Everything outside the wheel region is identical and in order.
+     *
+     * The region runs from the "Factual wheel" heading to the disclaimer that follows it,
+     * and is removed from *both* documents before comparing: the wheeled one holds the
+     * drawing there, the bare one its absence sentence and reason. Excising the region — the
+     * whole document read as one ordered sequence, rather than dropping an entire page —
+     * compares the cover, the summary and every table, so copy outside the wheel cannot
+     * disappear unnoticed. Page boundaries are not compared because the wheel legitimately
+     * adds one.
+     */
+    const heading = locale === "es" ? "Rueda factual" : "Factual wheel";
+    const trailer = locale === "es" ? "Cálculo preliminar" : "Prototype calculation";
+    const strip = (inspected: Awaited<ReturnType<typeof render>>["inspected"]) => {
+      const flat = inspected.pages.map(page => page.text).join(" ");
+      const at = flat.indexOf(heading);
+      assert.ok(at >= 0, `${locale}: the wheel block is present`);
+      const tail = flat.slice(at);
+      const end = tail.indexOf(trailer);
+      assert.ok(end >= 0, `${locale}: the wheel block is followed by the disclaimer`);
+      return normalizePdfText(flat.slice(0, at) + tail.slice(end));
+    };
+    // The cover of the bare document really does carry the absence block, so the strip is
+    // not silently comparing two identical full texts.
+    assert.ok(bare.inspected.pages[0].text.includes(heading), `${locale}: the bare cover carries the absence block`);
+    assert.equal(strip(wheeled.inspected), strip(bare.inspected),
+      `${locale}: cover, summary, calculation tables and prose are identical with and without the wheel, in order`);
+
+    /**
+     * The calculation pages survive the wheel — compared by content, not page count.
+     *
+     * This is the part the old test structurally could not check: it had no calculation
+     * blocks to lose.
+     */
+    const tables = paidCalculationBlocks(snapshot, locale).filter(block => block.kind === "aspectTable");
+    assert.ok(tables.length > 0);
+    for (const table of tables) {
+      if (table.kind !== "aspectTable") continue;
+      const title = table.title ?? "";
+      assert.ok(title && wheeled.inspected.text.includes(title), `${locale}: table "${title.slice(0, 32)}" still renders`);
+      // First row's first two cells: a lost or reordered table changes these.
+      const [first] = table.rows;
+      assert.ok(first && wheeled.inspected.text.includes(first.a) && wheeled.inspected.text.includes(first.b),
+        `${locale}: first row of "${title.slice(0, 24)}" still renders`);
+    }
+
+    // Metadata is unchanged, field by field — not just the language.
+    const metadata = (info: Record<string, unknown>) => JSON.stringify(
+      Object.fromEntries(Object.entries(info).filter(([field]) => field !== "Custom")));
+    assert.equal(metadata(wheeled.inspected.metadata), metadata(bare.inspected.metadata), `${locale}: metadata unchanged, field for field`);
   }
 });

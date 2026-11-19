@@ -100,7 +100,8 @@ export function wheelOmissionText(omissions: readonly string[], locale: Locale):
  * would disturb frozen paid snapshots. That was wrong twice over: the frozen snapshots are
  * of charts that never had a wheel and take the same path, and the plan's Missing data
  * section requires the explanation whatever the format. Silence leaves a reader holding a
- * PDF with no drawing and no reason for it.
+ * PDF with no drawing and no reason for it. Silence *with* a sentence is only slightly
+ * better: "there is no wheel" without saying why invites the reader to assume a bug.
  *
  * `hasTable` mirrors the page exactly: it only promises a table when the document actually
  * carries calculation blocks. A legacy chart with none gets the short sentence rather than a
@@ -115,4 +116,28 @@ export function wheelAbsentText(hasTable: boolean, locale: Locale): string {
   return hasTable
     ? "There is no wheel for this chart. The numerical table in this PDF is the authoritative reference."
     : "There is no wheel for this chart.";
+}
+
+/**
+ * Which notice explains a missing wheel — the same choice the page makes, from the same
+ * input, so the two surfaces cannot give different reasons for the same chart.
+ *
+ * `wheelFactsOf` returns null when the saved positions are absent or unverifiable, and
+ * `projectWheel` returns null when the positions exist but carry no usable Ascendant
+ * (|latitude| >= 66 refuses to approximate a horizon). Those are different facts about the
+ * chart and need different sentences: one says the data is missing and offers a remedy, the
+ * other says the calculation was withheld at high latitude and that the positions shown are
+ * still real. A single generic line would be true of neither.
+ *
+ * Both codes are members of `WheelNotice`, and `projectWheel` can never emit them itself —
+ * a null geometry has no `omissions` array to put them in. The caller knows why it has no
+ * wheel; this function is the caller's answer, taken from one place.
+ */
+export function wheelAbsentReason(hasFacts: boolean): WheelNoticeCode {
+  return hasFacts ? "ascendant_unavailable" : "facts_unavailable";
+}
+
+/** The notice sentences for a missing wheel, in the document's language. */
+export function wheelAbsentNotices(hasFacts: boolean, locale: Locale): string[] {
+  return [WHEEL_NOTICE_COPY[wheelAbsentReason(hasFacts)][locale]];
 }
