@@ -66,9 +66,15 @@ export function aspectHeadings(locale: Locale): string[] {
  * at all: the caller knows why it has no wheel, and must still say so.
  */
 export const WHEEL_NOTICE_COPY = {
+  /**
+   * The saved facts are absent, or could not be verified. The reason is deliberately not
+   * asserted: "saved before positions were recorded" is only one of the ways this state
+   * arises (an unreadable row, a failed hash, a size rejection), and the viewer is not
+   * owed a claim about which. The save-a-new-chart guidance is true in every case.
+   */
   facts_unavailable: {
-    en: "This chart was saved before complete positions were recorded, so no chart wheel is shown. Save a new chart to get one — nothing is guessed or redrawn to fill the gap.",
-    es: "Esta carta se guardó antes de que se registraran las posiciones completas, así que no se muestra la rueda. Guarda una carta nueva para obtenerla: no se adivina ni se redibuja nada para llenar el hueco.",
+    en: "Complete saved positions are not available for this chart, so no chart wheel is shown. Nothing is guessed or redrawn to fill the gap; save a new chart to get one.",
+    es: "Las posiciones completas guardadas no están disponibles para esta carta, así que no se muestra la rueda. No se adivina ni se redibuja nada para llenar el hueco; guarda una carta nueva para obtenerla.",
   },
   ascendant_unavailable: {
     en: "The Ascendant and houses are omitted at high latitudes until the calculation is independently verified. No horizon has been invented, so no wheel is shown; the positions below are still the calculated ones.",
@@ -105,17 +111,13 @@ export const DECORATIVE_WHEEL_LABEL: LocalizedText = {
 };
 
 /**
- * The disclaimer that comes off a real reading page only when a real wheel is drawn
- * in its place. It is one string in each locale, split so the decorative sentence can be
- * dropped without dropping the calculation caveat that still applies.
+ * The reading page's calculation caveat. It carries **no** decorative-wheel sentence: this
+ * page either draws the chart's real wheel or draws no wheel at all, so a sentence about a
+ * decorative one would be false in both states. `DECORATIVE_WHEEL_LABEL` is the copy that
+ * belongs to the surfaces that genuinely render a decorative wheel, and it stays there.
  */
-export function readingCalculationNotice(hasWheel: boolean, locale: Locale): string {
-  const es = locale === "es";
-  const calculation = es
+export function readingCalculationNotice(locale: Locale): string {
+  return locale === "es"
     ? "Este cálculo es preliminar y una invitación a reflexionar, no una carta verificada profesionalmente."
     : "This is a preliminary calculation and a starting point for reflection—not a professionally verified chart.";
-  if (hasWheel) return calculation;
-  return es
-    ? `${calculation} La rueda es decorativa y no representa tus posiciones.`
-    : `${calculation} The wheel is decorative, not a plot of your placements.`;
 }

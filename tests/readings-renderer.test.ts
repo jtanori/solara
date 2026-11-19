@@ -97,12 +97,16 @@ test("page: PDF identity stays pinned across UI locale/plan, explicit chart edit
   assert.ok(html.includes(`/api/readings/${chart.id}/pdf?document=${content.id}`));
   assert.ok(html.includes(`/reading/${chart.id}?edition=chart`));
   assert.ok(html.includes("The saved interpretation is in Español."));
-  // S1-c (#154): this chart carries no saved facts, so the page renders no wheel at all —
-  // and therefore keeps the decorative disclaimer, which is the only thing that would be
-  // drawn. The factual branch is covered by tests/readings-wheel-page.test.ts.
-  assert.ok(html.includes("The wheel is decorative, not a plot of your placements."));
+  // S1-c (#154): this chart carries no saved facts, so the page renders no wheel at all.
+  // It also renders no decorative-wheel sentence: nothing decorative is drawn, so calling
+  // the (absent) wheel decorative would describe a drawing that is not there. The caveat
+  // that *does* still apply is the preliminary-calculation one, and the absent facts are
+  // explained without diagnosing a cause the view cannot know.
   assert.equal(html.includes("<svg class=\"chart-wheel\""), false, "no wheel without saved facts");
-  assert.ok(html.includes("This chart was saved before complete positions were recorded"), "the absence is explained");
+  assert.equal(html.includes("The wheel is decorative, not a plot of your placements."), false);
+  assert.ok(html.includes("a starting point for reflection"), "the preliminary caveat remains");
+  assert.ok(html.includes("Complete saved positions are not available"), "the absence is explained");
+  assert.equal(html.includes("saved before complete positions were recorded"), false, "no cause is asserted");
   for (const leak of ["birthDate", "birthPlace", "-115.4747", "32.6393", "fixture-only", "Download full PDF", "YOUR PREMIUM READING"]) assert.equal(html.includes(leak), false, leak);
   const notes = chartNotes(chart, { sun: "SUN_NOTE", moon: "MOON_NOTE", ascendant: "ASC_NOTE", house: "HOUSE_NOTE" }, "en", true);
   const legacy = render(h(ReadingPageView, { view: { ...view, content: notes, availability: "chart_only" }, locale: "en", selector: { kind: "chart" } }));

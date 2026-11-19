@@ -23,8 +23,8 @@ import { calculateSolarReturn, calculateSolarReturnChart, solarReturnFacts } fro
 // literal locally and this file is the tie between the two declarations.
 import { BASE_FACTS_VERSION } from "../src/readings/chart-facts";
 import {
-  WHEEL_MAX_CHORDS, WHEEL_MAX_ELEMENTS, WHEEL_MAX_LABEL_CHARS, WHEEL_MAX_LABEL_NUDGE_DEG,
-  WHEEL_MIN_LABEL_SEPARATION_DEG, WHEEL_RADII, WHEEL_VIEW_BOX,
+  LABEL_ADVANCE, WHEEL_MAX_CHORDS, WHEEL_MAX_ELEMENTS, WHEEL_MAX_LABEL_CHARS, WHEEL_MAX_LABEL_NUDGE_DEG,
+  WHEEL_MIN_LABEL_FONT, WHEEL_MIN_LABEL_SEPARATION_DEG, WHEEL_RADII, WHEEL_VIEW_BOX,
   longitudeAt, projectWheel, wheelAngle, wheelPoint, type FactsVersion, type WheelGeometry,
 } from "../src/lib/wheel";
 import { readingChartInput } from "./helpers/reading-fixtures";
@@ -413,7 +413,11 @@ test("wheel: never moves an anchor during collision handling", () => {
   // uncrowded chart labels all fourteen, and the crowded one records its drops.
   const relaxed = clone(clusteredFacts);
   const spread = relaxed.bodies.map(body => body.longitude);
-  relaxed.bodies.forEach((body, index) => { body.longitude = normalize(spread[0]! + index * 34); });
+  // 40 degrees apart, and the nodes moved with them, so every label fits at a readable
+  // size: the point is that relaxing the crowd changes bands, never anchors.
+  relaxed.bodies.forEach((body, index) => { body.longitude = normalize(spread[0]! + index * 40); });
+  relaxed.nodes.trueNode.longitude = normalize(spread[0]! - 40);
+  relaxed.nodes.southNode.longitude = normalize(spread[0]! - 80);
   const relaxedWheel = wheel(relaxed);
   assert.equal(relaxedWheel.unlabelled.length, 0, "the relaxed fixture must free the crowd");
   // Same fourteen points either way: crowding changes bands and nudges, never the
@@ -650,6 +654,50 @@ test("wheel: returns an empty-but-valid geometry when houses are omitted", () =>
   assert.deepEqual(geometry.signs.map(sign => sign.label), SIGN_NAMES.map(name => signName(name, "en")));
 });
 
+test("wheel: ticks mark the projected degrees, and only sign boundaries are full-length", () => {
+  for (const [name, fixture] of allFixtures) for (const locale of LOCALES) {
+    const geometry = wheel(fixture, locale);
+    // Four per sign, in sign order: the boundary first, then the three minor offsets.
+    assert.equal(geometry.ticks.length, geometry.signs.length * 4, name);
+    const boundaries = new Set(geometry.signs.map(sign => sign.startAngle));
+    for (const [index, tick] of geometry.ticks.entries()) {
+      const sign = geometry.signs[Math.floor(index / 4)]!;
+      const offset = index % 4;
+      assert.equal(tick.full, index % 4 === 0, `${name}: tick ${index} full-length only at a boundary`);
+      // The tick is measured from the *plotted* boundary, not from a fixed screen angle:
+      // a chart whose Aries edge sits at 268.908° has its quarter-sign ticks at 261.408°,
+      // 253.908° and 246.408° — so a fixed `index * 7.5` screen set cannot pass this.
+      const expected = (sign.startAngle - offset * 7.5 + 360) % 360;
+      // Both sides are emitted at three decimals, so the comparison is at that precision.
+      const gap = Math.min(Math.abs(tick.angle - expected), 360 - Math.abs(tick.angle - expected));
+      assert.ok(gap < 1e-3, `${name}: tick ${index} at ${tick.angle}°, expected ${expected}°`);
+      if (tick.full) assert.ok(boundaries.has(tick.angle));
+    }
+    // The fixture's Aries edge is not at 0°, so a fixed-7.5° tick set cannot pass above.
+    const aries = geometry.signs[0]!;
+    assert.ok(aries.startAngle > 1 && aries.startAngle < 359, `${name}: the fixture rotates the signs`);
+    assert.notEqual(Math.round(geometry.ticks[0]!.angle), 0, `${name}: the first tick is not at screen angle 0`);
+  }
+});
+
+test("wheel: every placed label is drawn at the size the geometry chose, and only those", () => {
+  for (const [name, fixture] of allFixtures) for (const locale of LOCALES) {
+    const geometry = wheel(fixture, locale);
+    const placed = geometry.points.filter(point => point.band !== null);
+    assert.deepEqual(Object.keys(geometry.labelFontSize).sort(), placed.map(point => point.id).sort(), name);
+    for (const point of placed) {
+      const size = geometry.labelFontSize[point.id]!;
+      // Inside the policy, above the floor, and big enough that the label's own width
+      // fits the room it has — the fit rule is what stops the collisions.
+      assert.ok(size >= WHEEL_MIN_LABEL_FONT && size <= 10, `${name}/${point.id}: ${size}`);
+      const width = ([...point.label].length * LABEL_ADVANCE * size) / (2 * Math.PI * geometry.radii.labelBandA) * 360;
+      assert.ok(width <= 360, `${name}/${point.id}: label spans ${width}°`);
+    }
+    // A label the geometry dropped has no size to draw it at.
+    for (const id of geometry.unlabelled) assert.equal(geometry.labelFontSize[id], undefined);
+  }
+});
+
 test("wheel: stays inside the element budget", () => {
   for (const [name, fixture] of allFixtures) {
     const geometry = wheel(fixture);
@@ -667,7 +715,11 @@ test("wheel: stays inside the element budget", () => {
   // both are well inside the ceiling, which is what the budget is for.
   const largest = [...allFixtures].sort((a, b) => wheel(b[1]).elementCount - wheel(a[1]).elementCount)[0]!;
   const size = wheel(largest[1]).elementCount;
-  assert.equal(size, 156, `largest fixture is ${largest[0]}`);
+  // Measured after fit-aware placement: 14 points, 24 chords, 12 signs, 12 houses, ticks
+  // and leaders. It moved by one when labels began being dropped rather than shrunk, which
+  // is exactly why the counting rule (asserted above) is the invariant and this is only a
+  // snapshot of the current fixtures.
+  assert.equal(size, 155, `largest fixture is ${largest[0]}`);
   assert.ok(size <= WHEEL_MAX_ELEMENTS);
   assert.ok(WHEEL_MAX_ELEMENTS - size >= 100, "the headroom the PDF time budget relies on is real");
 });

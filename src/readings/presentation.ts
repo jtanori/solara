@@ -105,6 +105,17 @@ export type ReadingPresentation = {
   content: ReadingContent;
   generation: GenerationView | null;
   availability: ReadingAvailability;
+  /**
+   * The verified facts this presentation's wheel may be drawn from, when it differs from
+   * `chart.baseFacts` — a paid edition's pinned Placidus snapshot (issue #154).
+   *
+   * A separate field rather than a field on `chart`, for three reasons: `snapshot.chart`
+   * is an input to the snapshot hash and must not gain keys; `readChart` builds the chart
+   * from a fixed schema, so extra keys would be stripped anyway; and keeping it on the
+   * presentation means no PDF or page payload silently carries facts the caller did not
+   * ask for. Base charts leave it undefined and use `chart.baseFacts`, as before.
+   */
+  wheelFacts?: ChartFacts;
 };
 
 export type ReadingSelector = { kind: "auto" } | { kind: "chart" } | { kind: "document"; id: string } | { kind: "paid"; id: string };

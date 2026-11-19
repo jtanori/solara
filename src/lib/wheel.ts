@@ -39,6 +39,13 @@ export const WHEEL_MAX_LABEL_NUDGE_DEG = 14;
 export const WHEEL_MAX_CHORDS = 24;
 export const WHEEL_MAX_LABEL_CHARS = 12;
 export const WHEEL_MAX_ELEMENTS = 260;
+/**
+ * The smallest type a label may be set at and still be read. A label that would need to
+ * be smaller than this to clear its neighbours is dropped instead of shrunk: an
+ * unreadable glyph is not a label, and the numerical table is the authoritative
+ * equivalent. Shared with the PDF so both emitters make the same decision.
+ */
+export const WHEEL_MIN_LABEL_FONT = 7;
 
 /**
  * The facts contract this geometry understands, declared locally on purpose (see
@@ -98,6 +105,22 @@ export type WheelGeometry = {
   radii: typeof WHEEL_RADII;
   anchorLongitude: number;
   signs: { index: number; label: string; startAngle: number; endAngle: number; labelAngle: number }[];
+  /**
+   * Minor ticks, four per sign, at fixed offsets from each *projected* sign boundary.
+   *
+   * Emitted rather than derived by each emitter: the signs rotate with the chart's own
+   * Ascendant, so ticks at fixed screen angles would sit at a different offset from the
+   * sign edges on every chart while still reading as degree markings. `full` marks the
+   * real sign boundary, which is the only full-length line.
+   */
+  ticks: { index: number; angle: number; full: boolean }[];
+  /**
+   * The type size each placed label is set at, in view-box units. Emitted so both
+   * emitters draw the same label at the same size — the PDF cannot re-derive it from text
+   * metrics and get the same answer — and a label that is absent from this map is one the
+   * geometry chose not to place.
+   */
+  labelFontSize: Record<string, number>;
   houses: { number: number; cuspLongitude: number; angle: number; midAngle: number }[];
   points: WheelPoint[];
   chords: { a: string; b: string; type: AspectType; orb: number }[];
@@ -177,14 +200,56 @@ const DROPPED_LABEL_STUB = 8;
 const LEADER_THRESHOLD_DEG = 0.5;
 
 /**
- * The smallest whole-degree nudge that clears every label already placed in this
- * band, or `null` when the band is exhausted. Anchors never move; only the label
- * does, so a displaced position can never be mistaken for a real one.
+ * A label that has been placed in one band: where it sits, how wide it is in degrees at
+ * that band's radius, and how many characters it has.
  */
-function placeLabel(angle: number, occupied: number[]): number | null {
+type PlacedLabel = { angle: number; widthDegrees: number; characters: number };
+
+/**
+ * Design type size for a label with room, and the advance of one character as a fraction
+ * of the type size for the sans face both emitters use. Deliberately generous: a label
+ * that is set too large can overlap its neighbour, while one set slightly too small
+ * cannot. The PDF uses the same constants, so page and PDF agree without either
+ * re-deriving the policy.
+ */
+export const LABEL_FONT_MAX = 10;
+export const LABEL_ADVANCE = 0.62;
+/** Halo padding, in the same degrees of arc — the unit the fit rule compares. */
+const LABEL_PADDING_DEG = 1.5;
+
+/** Degrees of arc a label of `characters` needs at `fontSize` on a ring of `radius`. */
+function labelWidthDegrees(characters: number, fontSize: number, radius: number): number {
+  const arc = characters * LABEL_ADVANCE * fontSize;
+  return (arc / (2 * Math.PI * radius)) * 360;
+}
+
+/**
+ * The type size this label may be set at in this band, or `null` when even the smallest
+ * readable size would collide with a label already placed. Type size is capped by the
+ * nearest neighbour's demand, so a crowded ring shrinks labels rather than overlapping
+ * them — and a label that cannot fit at `WHEEL_MIN_LABEL_FONT` is not placed at all.
+ *
+ * Arc length alone is not clearance: unrotated text extends horizontally, so the
+ * comparison is against the arc subtended by half of each label plus padding, which is
+ * the strictest of the neighbouring directions for text set along the ring.
+ */
+function placeLabel(angle: number, characters: number, radius: number, occupied: PlacedLabel[]): { angle: number; fontSize: number } | null {
   for (const nudge of LABEL_NUDGES) {
     const candidate = normalize(angle + nudge);
-    if (occupied.every(placed => circularSeparation(candidate, placed) >= WHEEL_MIN_LABEL_SEPARATION_DEG)) return candidate;
+    // Candidate order is fixed (0, −1, +1, …) so the choice is deterministic; the first
+    // nudge that clears every placed label at some readable size wins.
+    let fontSize = LABEL_FONT_MAX;
+    for (const placed of occupied) {
+      const separation = circularSeparation(candidate, placed.angle);
+      // This label's half-width plus the neighbour's half-width plus padding must fit in
+      // the separation between them.
+      const share = separation - placed.widthDegrees / 2 - LABEL_PADDING_DEG;
+      if (share <= 0) { fontSize = 0; break; }
+      // Half of what is left, expressed in degrees, converted back to arc length.
+      const allowed = ((share * 2 * Math.PI * radius) / 360) / (characters * LABEL_ADVANCE);
+      fontSize = Math.min(fontSize, allowed);
+    }
+    if (fontSize >= WHEEL_MIN_LABEL_FONT) return { angle: candidate, fontSize: Math.min(LABEL_FONT_MAX, fontSize) };
   }
   return null;
 }
@@ -228,31 +293,39 @@ export function projectWheel(facts: ChartFacts | null | undefined, locale: Local
   const anchorLongitude = normalize(ascendant.longitude);
   const projected = projectPoints(facts, anchorLongitude);
 
-  const bandA: number[] = [];
-  const bandB: number[] = [];
+  const bandA: PlacedLabel[] = [];
+  const bandB: PlacedLabel[] = [];
   const points: WheelPoint[] = [];
   const unlabelled: string[] = [];
+  const labelFontSize: Record<string, number> = {};
   for (const item of projected) {
     const label = pointName(item.id, locale);
     const anchor = wheelPoint(item.angle, WHEEL_RADII.outer);
     let band: "A" | "B" | null = null;
     let labelAngle = item.angle;
+    let fontSize = 0;
+    const characters = [...label].length;
     if (validLabel(label)) {
-      const inBandA = placeLabel(item.angle, bandA);
+      // A label is only ever placed where it fits at a readable size; band A is tried
+      // first, then band B, then the label is dropped and recorded. Anchors never move.
+      const inBandA = placeLabel(item.angle, characters, WHEEL_RADII.labelBandA, bandA);
       if (inBandA !== null) {
         band = "A";
-        labelAngle = inBandA;
-        bandA.push(inBandA);
+        labelAngle = inBandA.angle;
+        fontSize = inBandA.fontSize;
+        bandA.push({ angle: inBandA.angle, widthDegrees: labelWidthDegrees(characters, inBandA.fontSize, WHEEL_RADII.labelBandA), characters });
       } else {
-        const inBandB = placeLabel(item.angle, bandB);
+        const inBandB = placeLabel(item.angle, characters, WHEEL_RADII.labelBandB, bandB);
         if (inBandB !== null) {
           band = "B";
-          labelAngle = inBandB;
-          bandB.push(inBandB);
+          labelAngle = inBandB.angle;
+          fontSize = inBandB.fontSize;
+          bandB.push({ angle: inBandB.angle, widthDegrees: labelWidthDegrees(characters, inBandB.fontSize, WHEEL_RADII.labelBandB), characters });
         }
       }
     }
     if (band === null) unlabelled.push(item.id);
+    if (band !== null) labelFontSize[item.id] = round3(fontSize);
     const radius = band === "A" ? WHEEL_RADII.labelBandA
       : band === "B" ? WHEEL_RADII.labelBandB
       : WHEEL_RADII.outer + DROPPED_LABEL_STUB;
@@ -351,6 +424,17 @@ export function projectWheel(facts: ChartFacts | null | undefined, locale: Local
     radii: { ...WHEEL_RADII },
     anchorLongitude,
     signs,
+    // Four minor ticks per sign, measured from that sign's own projected boundary. The
+    // boundary itself is the only full-length line, so the ring cannot read as a scale
+    // that disagrees with the plotted zodiac.
+    labelFontSize,
+    ticks: signs.flatMap(sign => Array.from({ length: 4 }, (_, offset) => ({
+      index: sign.index * 4 + offset,
+      // Offsets are degrees along the zodiac (7.5° = a quarter of a sign), then projected
+      // like everything else — so a tick sits at a fixed distance from its own boundary.
+      angle: round3(wheelAngle(sign.index * 30 + offset * 7.5, anchorLongitude)),
+      full: offset === 0,
+    }))),
     houses,
     points,
     chords,

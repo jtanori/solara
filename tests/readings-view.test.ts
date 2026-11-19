@@ -5,8 +5,12 @@ import { before, after, test as nodeTest } from "node:test";
 import { and, eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { db, pool, coordinationPool } from "../src/db";
-import { users, readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, readingGenerationAttempts as attempts } from "../src/db/schema";
-import { calculateSolarReturn } from "../src/lib/solar";
+import { users, readings, readingDocuments, readingGenerationRuns as runs, readingGenerationConsents as consents, readingGenerationAttempts as attempts, readingChartFacts } from "../src/db/schema";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ReadingPageView } from "../src/components/reading-page-view";
+import { calculateSolarReturn, solarReturnFacts } from "../src/lib/solar";
+import { baseFactsRow } from "../src/readings/chart-facts";
 import { contentKey } from "../src/lib/content";
 import { loadReadingPresentation, ReadingViewStore, type ReadingViewer } from "../src/readings/reading-view";
 import { READING_LIMITS, ReadingViewError, type ReadingSelector } from "../src/readings/presentation";
@@ -42,12 +46,18 @@ after(async () => {
   } finally { await Promise.all([pool.end(), coordinationPool.end()]); }
 });
 
-async function account(locale: Locale = "en", edition: "free" | "partial-overview" | "partial-sun" | "paid" | "none" = "free") {
+async function account(locale: Locale = "en", edition: "free" | "partial-overview" | "partial-sun" | "paid" | "none" = "free", withFacts = false) {
   const [user] = await db.insert(users).values({ name: "Synthetic viewer", email: `${randomUUID()}@example.com`, passwordHash: "unused-test-hash", emailVerifiedAt: verified }).returning({ id: users.id });
   createdUsers.push(user.id);
   const [chart] = await db.insert(readings).values({ userId: user.id, year: 2026, input: readingChartInput, result }).returning();
   const document = { ...frozenReading(locale, edition === "none" ? "free" : edition), id: randomUUID(), readingId: chart.id };
   const viewer: ReadingViewer = { id: user.id, emailVerifiedAt: verified, plan: "free" };
+  // The same row the save path writes, so a view built here has verified facts to project.
+  if (withFacts) {
+    const row = baseFactsRow(solarReturnFacts, readingChartInput, result);
+    if (!("row" in row)) throw new Error(`fixture facts rejected: ${row.rejection}`);
+    await db.insert(readingChartFacts).values({ readingId: chart.id, ...row.row });
+  }
   if (edition !== "none") {
     await db.insert(readingDocuments).values({ id: document.id, readingId: chart.id, locale, contentVersion: document.contentVersion, chartVersion: document.chartVersion, tier: document.tier, document });
     await db.insert(runs).values({ userId: user.id, readingId: chart.id, documentId: document.id, locale, status: edition.startsWith("partial") ? "partial" : "completed", consumedAt: verified, contentVersion: document.contentVersion });
@@ -112,6 +122,29 @@ test("reader: pinned document never falls back to a different owned, archived or
   const view = await loadReadingPresentation(owner.viewer, owner.chart.id, "es", { kind: "document", id: owner.document.id }, deps);
   assert.equal(view.content.kind === "saved-reading" && view.content.id, owner.document.id);
   assert.equal(await store.stillOwned(owner.viewer.id, owner.chart.id, owner.document.id), true);
+});
+
+test("reader: saved editions render their table in the edition's language, not the reader's", async () => {
+  // A saved English document viewed with a Spanish interface declares `lang="en"`. The
+  // numerical table is part of that document, so it is built in English — a Spanish table
+  // under an English `<main>` is a mixed-language page and, in the PDF, a mixed-language
+  // document. The notes path has no saved locale and still follows the request.
+  const owner = await account("en", "free", true);
+  const saved = await loadReadingPresentation(owner.viewer, owner.chart.id, "es", { kind: "auto" }, deps);
+  assert.equal(saved.content.kind, "saved-reading");
+  assert.equal(saved.content.locale, "en");
+  assert.ok(saved.chart.baseFacts, "the base chart carries its verified facts");
+  const table = (saved.chart.calculation ?? []).map(block => JSON.stringify(block)).join(" ");
+  assert.match(table, /Whole sign/, "the table names its house system in the document's language");
+  assert.equal(/Signo completo|Casa \d/.test(table), false, "no Spanish row text in an English document");
+  // The same reader, same chart, chart edition requested in Spanish: that *is* Spanish.
+  const notes = await loadReadingPresentation(owner.viewer, owner.chart.id, "es", { kind: "chart" }, deps);
+  assert.equal(notes.content.locale, "es");
+  assert.match((notes.chart.calculation ?? []).map(block => JSON.stringify(block)).join(" "), /Signo completo/);
+  // Rendered, the two agree: `<main lang>` and the table are in the same language.
+  const html = renderToStaticMarkup(createElement(ReadingPageView, { view: saved, locale: "es", selector: { kind: "auto" } }));
+  assert.ok(html.includes('lang="en"'));
+  assert.ok(html.includes("Whole sign"));
 });
 
 test("reader: canonical-other-chart is linked, never relabeled as the requested chart", async () => {

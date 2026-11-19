@@ -5,6 +5,7 @@ import { ChartWheel } from "@/components/chart-wheel";
 import { ReadingBlockView, ReadingContentView } from "@/components/reading-sections";
 import { localeName, type Locale } from "@/lib/i18n";
 import { projectWheel } from "@/lib/wheel";
+import type { ChartFacts } from "@/lib/chart";
 import { houseSystemLabel } from "@/readings/base-presentation";
 import { readingEditionQuery, type ReadingPresentation, type ReadingSelector } from "@/readings/presentation";
 import {
@@ -13,27 +14,47 @@ import {
 } from "@/readings/presentation-copy";
 import { chartDetails, chartDisclaimer, chartPlacements, returnDate } from "@/readings/presentation-format";
 
+/**
+ * The facts this presentation's wheel may be drawn from.
+ *
+ * A paid edition keeps its verified facts on the presentation (`wheelFacts`) because they
+ * are not part of its hashed chart summary; a base chart keeps them on the chart itself.
+ * One accessor, so no caller has to know which — and nothing else in the payload is
+ * consulted, so a chart with neither renders no wheel rather than a fabricated one.
+ */
+export function wheelFactsOf(view: Pick<ReadingPresentation, "chart" | "wheelFacts">): ChartFacts | null {
+  return view.wheelFacts ?? view.chart.baseFacts ?? null;
+}
+
 /** Server-only markup. Only small control props cross a client boundary. */
 export function ReadingPageView({ view, locale, selector, controls, deleteControl }: { view: ReadingPresentation; locale: Locale; selector: ReadingSelector; controls?: ReactNode; deleteControl?: ReactNode }) {
   const { chart, content, availability } = view;
   const es = locale === "es";
   const saved = content.kind === "saved-reading";
   const symbols = ["☉", "☽", "↗", "⌂"];
-  // Base charts carry verified whole-sign facts; paid editions carry their pinned
-  // Placidus snapshot. Either way the wheel is one projection of saved facts — never a
-  // cast at render time, which is why nothing here reaches for `solarReturnFacts`.
-  const houseSystem = chart.baseFacts?.houseSystem ?? (chart.result.houseSystem === "Placidus" ? "placidus" : "whole-sign");
-  const geometry = chart.baseFacts ? projectWheel(chart.baseFacts, locale) : null;
+  // Base charts carry verified whole-sign facts on the chart; a paid edition carries its
+  // pinned Placidus facts on the presentation, because they are not part of its hashed
+  // chart summary. Either way the wheel is one projection of saved facts — never a cast
+  // at render time, which is why nothing here reaches for `solarReturnFacts`.
+  const wheelFacts = wheelFactsOf(view);
+  const houseSystem = wheelFacts?.houseSystem ?? (chart.result.houseSystem === "Placidus" ? "placidus" : "whole-sign");
+  // The wheel is drawn in the edition's language, with the rest of the saved calculation,
+  // so a chart and its table never disagree about which language they are in. Chart notes
+  // have no saved locale and fall back to the interface's.
+  const chartLocale = content.locale;
+  const geometry = wheelFacts ? projectWheel(wheelFacts, chartLocale) : null;
+  // A table pointer is only printed when there is a table to point at.
+  const hasTable = (chart.calculation?.length ?? 0) > 0;
   const wheel = geometry
-    ? <ChartWheel geometry={geometry} locale={locale} chartName={chart.name} returnInstant={returnDate(chart, locale)} />
-    : <p className="small muted" style={{ maxWidth: 250 }}>{es
-      ? "No hay rueda para esta carta. La tabla numérica de abajo es la referencia autoritativa."
-      : "There is no wheel for this chart. The numerical table below is the authoritative reference."}</p>;
-  // Every omission is named; a null geometry contributes the two codes it can never carry
+    ? <div className="chart-cell"><ChartWheel geometry={geometry} locale={chartLocale} chartName={chart.name} returnInstant={returnDate(chart, chartLocale)} /></div>
+    : <div className="chart-cell"><p className="small muted" style={{ maxWidth: 250 }}>{(es
+      ? hasTable ? "No hay rueda para esta carta. La tabla numérica de abajo es la referencia autoritativa." : "No hay rueda para esta carta."
+      : hasTable ? "There is no wheel for this chart. The numerical table below is the authoritative reference." : "There is no wheel for this chart.")}</p></div>;
+  // Every omission is named; a null geometry contributes the code it can never carry
   // itself, so the reader is told why the wheel is absent rather than left to wonder.
   const wheelNotices: WheelNoticeCode[] = geometry
     ? [...geometry.omissions]
-    : [chart.baseFacts ? "ascendant_unavailable" : "facts_unavailable"];
+    : [wheelFacts ? "ascendant_unavailable" : "facts_unavailable"];
   return <main className="app-page reading-page"><div className="app-wrap">
     <Link href="/dashboard" className="back-link"><ArrowLeft size={15} /> {es ? "Volver a mis cartas" : "Back to my charts"}</Link>
     <div className="chart-header"><div style={{ minWidth: 0, overflowWrap: "anywhere" }}>
@@ -46,7 +67,7 @@ export function ReadingPageView({ view, locale, selector, controls, deleteContro
       {saved && <p><Link className="plain-link" href={`/reading/${chart.id}?edition=chart`}>{es ? "Ver carta y notas ilustrativas por separado" : "View chart and illustrative notes separately"}</Link></p>}
       {!saved && <p><Link className="plain-link" href={`/reading/${chart.id}`}>{es ? "Consultar interpretación guardada" : "Check for a saved interpretation"}</Link></p>}
     </div>{wheel}</div>
-    <div className="notice" style={{ marginTop: 25 }}>{readingCalculationNotice(geometry !== null, locale)}</div>
+    <div className="notice" style={{ marginTop: 25 }}>{readingCalculationNotice(locale)}</div>
     {wheelNotices.length > 0 && <ul className="notice" style={{ marginTop: 12, paddingLeft: 34 }} role="status">
       {wheelNotices.map(code => <li key={code}>{WHEEL_NOTICE_COPY[code][locale]}</li>)}
     </ul>}

@@ -12,8 +12,9 @@
  * is asserted here is the projection, the markup and the copy.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -66,6 +67,21 @@ const geometry = (chartFacts = facts, locale: (typeof LOCALES)[number] = "en") =
 /** Plot coordinates printed into the SVG, in document order. */
 const anchors = (html: string) => [...html.matchAll(/<circle cx="([\d.]+)" cy="([\d.]+)" r="2\.4"/g)]
   .map(match => ({ x: Math.round(Number(match[1]) * 1000) / 1000, y: Math.round(Number(match[2]) * 1000) / 1000 }));
+/** Chords as drawn: the pair they claim plus the four printed coordinates. */
+const chords = (html: string) => [...html.matchAll(/<line[^>]*data-chord="([^"|]+)\|([^"]+)"([^>]*)>/g)]
+  .map(match => {
+    const attr = (name: string) => Number(new RegExp(`\\s${name}="([^"]+)"`).exec(match[3]!)?.[1]);
+    return { a: match[1]!, b: match[2]!,
+      from: { x: attr("x1"), y: attr("y1") }, to: { x: attr("x2"), y: attr("y2") } };
+  });
+/**
+ * The chord ring at a plotted angle, stated here independently of the renderer: a chord
+ * runs between the two anchors on the aspect ring, whose radius the geometry publishes.
+ */
+const onAspectRing = (angle: number) => {
+  const radius = projectWheel(facts, "en")!.radii.aspectRing;
+  return { x: 220 + radius * Math.cos(angle * Math.PI / 180), y: 220 + radius * Math.sin(angle * Math.PI / 180) };
+};
 /** Point labels: the marked, sized-to-fit ones — not sign names or house numbers. */
 const labels = (html: string) => [...html.matchAll(/<text[^>]*font-weight="600"[^>]*>([^<]*)<\/text>/g)].map(match => match[1]!);
 const textOf = (block: ReadingBlock) => "title" in block && block.title ? `${block.title}\n${JSON.stringify(block)}` : JSON.stringify(block);
@@ -97,6 +113,25 @@ for (const locale of LOCALES) {
     // Chords are the return-chart aspects only: no chord endpoint carries a natal name.
     assert.equal((html.match(/<line[^>]*stroke="(#a86658|#7a9290)"/g) ?? []).length, geometry(facts).chords.length);
     assert.equal(html.includes("natal-"), false, "no cross-aspect endpoint may reach the SVG");
+    // And the drawn geometry is the stored one: every chord's four coordinates are the
+    // aspect ring at the two plotted angles. Counting alone would pass a substitution that
+    // swapped a return body for a natal one of the same count, so the endpoints are parsed.
+    const drawn = chords(html);
+    assert.equal(drawn.length, geometry(facts).chords.length);
+    assert.deepEqual(drawn.map(chord => `${chord.a}/${chord.b}`),
+      geometry(facts).chords.map(chord => `${chord.a}/${chord.b}`));
+    for (const chord of drawn) {
+      const from = projected.points.find(point => point.id === chord.a);
+      const to = projected.points.find(point => point.id === chord.b);
+      assert.ok(from && to, `${chord.a}/${chord.b} must both be plotted points`);
+      for (const [plotted, expected] of [[chord.from, onAspectRing(from.angle)], [chord.to, onAspectRing(to.angle)]]) {
+        assert.ok(Math.abs(plotted.x - expected.x) < 1e-6 && Math.abs(plotted.y - expected.y) < 1e-6,
+          `${chord.a}/${chord.b} endpoint ${JSON.stringify(plotted)} is not on the aspect ring at ${JSON.stringify(expected)}`);
+      }
+      // A chord is a straight line between two *same-count* points on one ring, so its
+      // length fixes the arc it spans: no endpoint can be silently rotated.
+      assert.equal(chord.a === chord.b, false);
+    }
     // And every drawn chord is a *stored return aspect*, not merely a plausible pair: the
     // cross-aspect list is strictly larger (40 vs 22), so a wheel that mixed the two in
     // would either draw more chords or draw a pair that only the cross list contains.
@@ -268,7 +303,7 @@ test("page: a legacy chart renders no wheel, keeps its cards and explains how to
     assert.equal(html.includes(marker), false, `legacy page must not carry ${marker}`);
   }
   assert.ok(html.includes(WHEEL_NOTICE_COPY.facts_unavailable.en), "the reason is stated");
-  assert.ok(html.includes("Save a new chart"), "and so is how to get one");
+  assert.ok(WHEEL_NOTICE_COPY.facts_unavailable.en.includes("save a new chart"), "and so is how to get one");
   // The four existing placement cards, and no numerical table to imply facts we lack.
   assert.equal((html.match(/class="placement-card"/g) ?? []).length, 4);
   assert.equal(html.includes("<details"), false, "no saved calculation panel without facts");
@@ -277,9 +312,21 @@ test("page: a legacy chart renders no wheel, keeps its cards and explains how to
   const chartMode = page(legacy, "en", { controls });
   assert.equal(chartMode.includes("GENERATION_CONTROLS_SENTINEL"), false);
   assert.ok((page(legacy, "en", { selector: { kind: "auto" }, controls })).includes("GENERATION_CONTROLS_SENTINEL"));
-  // The disclaimer keeps its decorative sentence only where no wheel replaced it.
-  assert.ok(html.includes(readingCalculationNotice(false, "en")));
-  assert.ok(html.includes("The wheel is decorative, not a plot of your placements."));
+  // The caveat is the preliminary-calculation sentence, and nothing is claimed about a
+  // decorative wheel: this page drew no wheel at all, so a sentence about one would be
+  // describing a drawing that is not there. The vocabulary still exists for the surfaces
+  // that do render a decorative wheel.
+  assert.ok(html.includes(readingCalculationNotice("en")));
+  assert.equal(html.includes("The wheel is decorative, not a plot of your placements."), false);
+  assert.equal(html.includes(DECORATIVE_WHEEL_LABEL.en), false);
+  // A chart with no facts has no table either, so the copy must not point at one it never
+  // renders, and it must not diagnose *why* the facts are missing — the view cannot tell
+  // "saved before positions" from "the saved row failed to verify".
+  assert.equal(html.includes("numerical table below"), false, "no pointer to a table that is not rendered");
+  assert.equal(html.includes("saved before complete positions"), false, "no diagnosis the view cannot make");
+  assert.ok(html.includes(WHEEL_NOTICE_COPY.facts_unavailable.en));
+  // And a chart that *does* have a table still gets the pointer.
+  assert.ok(page(baseChart({ calculation: baseCalculationBlocks(facts, "en") })).includes("numerical table below"));
 });
 
 test("page: a high-latitude chart renders no wheel and never an invented horizon", () => {
@@ -320,14 +367,141 @@ test("page: the saved-calculation summary names the edition's own house system",
 
 // ------------------------------------------------------------------ surfaces
 
+/**
+ * Every module under `root` that imports `target`, resolved the way the bundler does.
+ *
+ * Two things make this a real guard rather than a grep. It walks the whole tree, so a file
+ * nobody listed is still scanned; and it resolves both specifier forms — the `@/` alias
+ * and relative paths — against the extension order Next uses, so `./astro-wheel`,
+ * `@/components/astro-wheel`, `"@/components/astro-wheel"` in a re-export and a directory
+ * import all land on the same module. A specifier that resolves to something else, like
+ * `@/components/chart-wheel`, does not count as importing the target.
+ */
+function importersOf(target: string, root: string, seen = new Set<string>()): string[] {
+  const modules = readdirSync(root, { withFileTypes: true, recursive: true })
+    .filter(entry => entry.isFile() && /\.(ts|tsx)$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name))
+    .map(entry => resolve(entry.parentPath, entry.name))
+    .filter(file => !file.includes(`${sep}node_modules${sep}`));
+  const targetFile = resolveFile(resolve(target));
+  const importers: string[] = [];
+  for (const file of modules) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const specifier of specifiersOf(readFileSync(file, "utf8"))) {
+      if (resolveModule(specifier, root, file) === targetFile) { importers.push(relative(root, file)); break; }
+    }
+  }
+  // Back to the repository-relative module paths used elsewhere in this suite.
+  return importers.map(file => `src/${file}`).sort();
+}
+
+/** Resolve one specifier to a file inside `root`, or null when it is not in the project. */
+function resolveModule(specifier: string, root: string, from = ""): string | null {
+  const base = specifier.startsWith("@/")
+    ? resolve(root, specifier.slice(2))
+    : specifier.startsWith(".")
+      ? resolve(dirname(from), specifier)
+      : null;
+  return base === null ? null : resolveFile(base);
+}
+
+/**
+ * The module specifiers a file actually imports, lexed rather than grepped.
+ *
+ * A regex over raw text cannot tell `import x from "y"` from the same words inside a string
+ * or a comment, and on a file that *documents* an import it would report an importer that
+ * does not exist. This tokenises the file first — comments and string bodies are consumed
+ * whole — and then takes the specifier only where the grammar has one: after `from`, after
+ * a bare `import`, and inside `import(...)`.
+ */
+function specifiersOf(source: string): string[] {
+  const tokens: { kind: "word" | "string" | "punct"; value: string }[] = [];
+  for (let index = 0; index < source.length;) {
+    const char = source[index]!;
+    if (char === "/" && source[index + 1] === "/") {
+      const end = source.indexOf("\n", index);
+      index = end < 0 ? source.length : end + 1;
+    } else if (char === "/" && source[index + 1] === "*") {
+      const end = source.indexOf("*/", index + 2);
+      index = end < 0 ? source.length : end + 2;
+    } else if (char === '"' || char === "'" || char === "`") {
+      let cursor = index + 1;
+      let value = "";
+      while (cursor < source.length && source[cursor] !== char) {
+        value += source[cursor] === "\\" ? (cursor++, source[cursor]) : source[cursor];
+        cursor += 1;
+      }
+      tokens.push({ kind: "string", value: value ?? "" });
+      index = cursor + 1;
+    } else if (/[A-Za-z_$]/.test(char)) {
+      let cursor = index;
+      while (cursor < source.length && /[\w$]/.test(source[cursor]!)) cursor += 1;
+      tokens.push({ kind: "word", value: source.slice(index, cursor) });
+      index = cursor;
+    } else if (/\s/.test(char)) {
+      index += 1;
+    } else {
+      tokens.push({ kind: "punct", value: char });
+      index += 1;
+    }
+  }
+  const specifiers: string[] = [];
+  for (const [index, token] of tokens.entries()) {
+    const next = tokens[index + 1];
+    if (token.kind === "word" && token.value === "from" && next?.kind === "string") specifiers.push(next.value);
+    if (token.kind === "word" && token.value === "import") {
+      if (next?.kind === "string") specifiers.push(next.value);
+      else if (next?.value === "(" && tokens[index + 2]?.kind === "string") specifiers.push(tokens[index + 2]!.value);
+    }
+  }
+  return specifiers;
+}
+
+/** The file an extensionless module path names, in the order Next resolves it. */
+function resolveFile(base: string): string | null {
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) {
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+  }
+  return null;
+}
+
+test("AstroWheel scan: the resolver finds alias, relative and re-export imports, and misses lookalikes", () => {
+  // The guard above is only worth its runtime if it would fail on a fourth importer. This
+  // builds one in a scratch tree — nested a directory deeper, importing by relative path —
+  // plus an alias re-export, and proves the scan reports all three while ignoring the two
+  // specifiers that merely look similar.
+  const dir = mkdtempSync(join(tmpdir(), "astrowheel-scan-"));
+  try {
+    const write = (path: string, body: string) => {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), body);
+    };
+    write("components/astro-wheel.tsx", "export function AstroWheel() { return null; }\n");
+    write("components/chart-wheel.tsx", "export function ChartWheel() { return null; }\n");
+    write("app/page.tsx", 'import { AstroWheel } from "@/components/astro-wheel";\n');
+    write("app/deeper/nested.tsx", 'import { AstroWheel } from "../..//components/astro-wheel";\n');
+    write("components/re-export.ts", 'export { AstroWheel } from "@/components/astro-wheel";\n');
+    // Same module name, different module — and a lookalike that is not an import at all.
+    write("app/lookalike.tsx", 'import { ChartWheel } from "@/components/chart-wheel";\nconst note = "import { AstroWheel } from \'@/components/astro-wheel\'";\n');
+    assert.deepEqual(importersOf(join(dir, "components/astro-wheel"), dir), [
+      "src/app/deeper/nested.tsx", "src/app/page.tsx", "src/components/re-export.ts",
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("AstroWheel is confined to the three decorative surfaces, with its label intact", () => {
   // The decorative wheel must never appear on a reading page — asserted above for both a
   // legacy and a factual chart — and must remain where no chart exists.
+  //
+  // The scan resolves imports the way the bundler does — the `@/` alias and relative
+  // paths, with the usual extension order — over the whole of `src`, so a fourth importer
+  // anywhere (a new page, a nested component, a re-export) is caught rather than missed by
+  // a list of files someone remembered to add.
   const allowed = ["src/app/page.tsx", "src/app/sample/page.tsx", "src/components/usage-guide.tsx"];
-  const importers = ["src/app/page.tsx", "src/app/sample/page.tsx", "src/components/usage-guide.tsx",
-    "src/components/reading-page-view.tsx", "src/components/chart-wheel.tsx"]
-    .filter(file => readFileSync(resolve(file), "utf8").includes("@/components/astro-wheel"));
-  assert.deepEqual(importers.sort(), allowed.slice().sort(), "AstroWheel may only be imported by the three decorative surfaces");
+  const importers = importersOf("src/components/astro-wheel", resolve("src"));
+  assert.deepEqual(importers, allowed.slice().sort(), "AstroWheel may only be imported by the three decorative surfaces");
   for (const file of allowed) {
     assert.ok(readFileSync(resolve(file), "utf8").includes("<AstroWheel"), `${file} still renders it`);
   }
@@ -354,15 +528,16 @@ test("page: nothing casts a chart at render time and the saved-copy surfaces are
       assert.equal(code(source).includes(forbidden), false, `${name}: ${forbidden} must not appear in page rendering`);
     }
   }
-  // The comment that names them explains the rule and is deliberately still there.
-  assert.ok(page.includes("never a\n  // cast at render time") || page.includes("cast at render time"));
+  // The comment that names them explains the rule and is deliberately still there, on the
+  // line that chooses the wheel's source facts.
+  assert.ok(page.includes("never a cast") && page.includes("at render time"));
   // The wheel renders `WheelGeometry` and nothing else: it imports the projection, not a
   // second copy of the angle rule.
   assert.ok(wheel.includes('from "@/lib/wheel"'));
   assert.equal(/function\s+wheelAngle|\*\s*Math\.cos\([^)]*\*\s*DEG\)[^;]*180/.test(wheel), false);
   // Base blocks attach to the already-optional calculation; the paid path keeps its own
   // builder untouched, which is what makes `page-paid-output-changed` impossible.
-  assert.ok(view.includes("baseCalculationBlocks(chart.baseFacts, locale)"));
+  assert.ok(view.includes("baseCalculationBlocks(verifiedChart.baseFacts, presentation.content.locale)"));
   assert.ok(view.includes("paidCalculationBlocks(snapshot, edition.locale)"));
   assert.equal(view.includes("baseCalculationBlocks(snapshot"), false);
   assert.equal(readFileSync(resolve("src/readings/paid-presentation.ts"), "utf8").includes("baseCalculationBlocks"), false);
@@ -371,12 +546,40 @@ test("page: nothing casts a chart at render time and the saved-copy surfaces are
   assert.ok(page.includes("wheelNotices.map"));
 });
 
-test("page: the wheel is bounded by its container and the container is bounded by the grid", () => {
+test("page: the wheel is bounded by its container, and only this page is resized", () => {
   const css = readFileSync(resolve("src/app/globals.css"), "utf8");
   // Both the wide and the narrow rule cap the drawing, so an SVG with a fixed view box
-  // cannot overflow a half-width or 200%-density viewport.
-  assert.ok(css.includes(".chart-wheel { width:360px; max-width:100%; height:auto; display:block; }"));
-  assert.ok(css.includes(".chart-wheel { width:280px; max-width:100%; height:auto; }"));
+  // cannot overflow a half-width or 200%-density viewport — and both are scoped to the
+  // reading page, so no other `.chart-header` surface inherits this one's geometry.
+  assert.ok(css.includes(".reading-page .chart-wheel { width:360px; max-width:100%; height:auto; display:block; }"));
+  assert.ok(css.includes(".reading-page .chart-wheel { width:280px; max-width:100%; height:auto; }"));
+  assert.ok(css.includes(".reading-page .chart-header { grid-template-columns:1fr 380px; }"));
+  // The shared theme is what it was before this slice: `/sample` and the other
+  // `.chart-header` surfaces keep a 270px track and a 250px drawing.
+  assert.ok(css.includes(".chart-header { display:grid; grid-template-columns:1fr 270px;"), "shared track restored");
+  assert.ok(css.includes(".chart-wheel { width:250px; }"), "shared drawing size restored");
+  assert.ok(css.includes(".chart-wheel { width:190px; }"), "shared mobile size restored");
+  // Nothing unscoped may carry the widened values: every `.reading-page .chart-*` rule is
+  // namespaced to this screen, and no bare `.chart-header`/`.chart-wheel` rule holds them.
+  for (const rule of css.match(/\.reading-page \.chart-[\w-]+ \{[^}]*\}/g) ?? []) {
+    assert.ok(rule.startsWith(".reading-page .chart-"), `unscoped reading rule: ${rule}`);
+  }
+  // Each widened declaration is owned by the reading-page rules above, or by one of the
+  // decorative rules that already carried that width before this slice.
+  const ownerSelector = (index: number) => {
+    const head = css.slice(css.lastIndexOf("}", index), index).split("}").pop()!;
+    return head.slice(0, head.indexOf("{")).replace(/\/\*[\s\S]*?\*\//g, "").trim();
+  };
+  const allowedOwners = [".reading-page .chart-header", ".reading-page .chart-wheel", ".about-wheel",
+    ".about-copy p,.sample-copy p,.section-lede"];
+  for (const widened of [/grid-template-columns:1fr 380px/, /width:360px/, /width:280px/]) {
+    const found = [...css.matchAll(new RegExp(widened.source, "g"))];
+    assert.ok(found.length > 0, `${widened} must exist`);
+    for (const match of found) {
+      assert.ok(allowedOwners.includes(ownerSelector(match.index!)), `${widened} leaked into ${ownerSelector(match.index!)}`);
+    }
+  }
+
   const html = page(withFacts());
   assert.ok(html.includes('class="chart-wheel"'), "the factual wheel reuses the existing class");
   // The anchor dots are marked, so "how many positions are plotted" is a count, not a

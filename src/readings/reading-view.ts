@@ -237,33 +237,41 @@ export async function loadReadingPresentation(
     throw new ReadingViewError("service_unavailable");
   }
   if (!chartRow) throw new ReadingViewError("not_found");
-  const chart = withBaseFacts(readChart(chartRow), await storedFacts(store, user.id, readingId), user.id);
-  // Base charts get their numerical facts from the same verified facts row the wheel is
-  // drawn from (issue #154). Attached here, on the already-optional `calculation`, so the
-  // page and the PDF pick them up through the existing block renderers. A chart with no
-  // facts row keeps `calculation` absent and therefore renders no table — nothing is cast
-  // at render time to fill the gap.
-  if (chart.baseFacts) chart.calculation = baseCalculationBlocks(chart.baseFacts, locale);
+  const verifiedChart = withBaseFacts(readChart(chartRow), await storedFacts(store, user.id, readingId), user.id);
+  /**
+   * Base charts get their numerical facts from the same verified facts row the wheel is
+   * drawn from (issue #154), attached to the already-optional `calculation` so the existing
+   * page and PDF block renderers display them.
+   *
+   * The blocks are localized in the **edition's** locale, not the interface's: a saved
+   * English document viewed with a Spanish UI declares `lang="en"` and renders its table
+   * under an English summary, so Spanish row text inside it would be a mixed-language
+   * table. Chart notes have no saved locale, so they take the requested one.
+   */
+  const withBlocks = (presentation: ReadingPresentation): ReadingPresentation => {
+    if (!verifiedChart.baseFacts) return presentation;
+    return { ...presentation, chart: { ...presentation.chart, calculation: baseCalculationBlocks(verifiedChart.baseFacts, presentation.content.locale) } };
+  };
 
   const run = snapshot?.run?.id ? snapshot.run : null;
   let generation = snapshot ? generationView(run) : null;
   const document = snapshot?.document?.id ? snapshot.document : null;
 
-  if (selector.kind === "document" && (run?.readingId !== chart.id || run.documentId !== selector.id || !document)) {
+  if (selector.kind === "document" && (run?.readingId !== verifiedChart.id || run.documentId !== selector.id || !document)) {
     throw new ReadingViewError("not_found");
   }
   if (run?.readingId && !snapshot?.runReadingOwned) {
     // A corrupt cross-owner pointer must not become a link or expose that ID.
     generation = null;
     availability = "document_unavailable";
-  } else if (run?.readingId && run.readingId !== chart.id) {
+  } else if (run?.readingId && run.readingId !== verifiedChart.id) {
     availability = "other_chart";
   } else if (run?.documentId) {
     const coherent = document && run.consumedAt && ["completed", "partial", "legacy"].includes(run.status) &&
       run.locale === document.locale && run.contentVersion === document.contentVersion && document.tier === "free";
     const decoded = coherent && document.serialized !== null
       ? readStoredDocument(document.serialized, document, { legacy: run.status === "legacy" }) : null;
-    if (decoded?.ok) return { chart, content: decoded.value, generation, availability: "ready" };
+    if (decoded?.ok) return withBlocks({ chart: verifiedChart, content: decoded.value, generation, availability: "ready" });
     if (selector.kind === "document") throw new ReadingViewError("document_unavailable");
     availability = "document_unavailable";
     if (generation) generation = { ...generation, documentId: null };
@@ -271,9 +279,9 @@ export async function loadReadingPresentation(
     availability = "history_unavailable";
   }
   let notes: Awaited<ReturnType<typeof getReadingNotes>> | null = null;
-  try { notes = await (deps.notes ?? getReadingNotes)({ ...chart.result, houseSystem: "Whole sign" }, locale); }
+  try { notes = await (deps.notes ?? getReadingNotes)({ ...verifiedChart.result, houseSystem: "Whole sign" }, locale); }
   catch { log.warn("readings.view_unavailable", { userId: user.id, code: "notes_unavailable" }); }
-  return { chart, content: chartNotes(chart, notes, locale, user.plan === "paid"), generation, availability };
+  return withBlocks({ chart: verifiedChart, content: chartNotes(verifiedChart, notes, locale, user.plan === "paid"), generation, availability });
 }
 
 /** Explicit paid selection never consults today's subscription, notes or chart result. */
@@ -295,7 +303,12 @@ async function loadPaidPresentation(store: ReadingViewStore, userId: string, rea
     if (document.edition?.profile !== run.profile || document.edition?.snapshotHash !== edition.snapshotHash || JSON.stringify(document.edition?.expectedSections) !== manifest) throw new Error("invalid provenance");
     const decoded = readStoredDocument(edition.serialized, { ...edition, tier: "paid" }, { allowPaid: true, expectedSections: run.expectedSections });
     if (!decoded.ok) throw new Error("invalid document");
-    return { chart: { ...snapshot.chart, calculation: paidCalculationBlocks(snapshot, edition.locale) }, content: decoded.value, generation: null, availability: "ready" };
+    // `snapshot.facts` is already hash-verified above and already pinned in the immutable
+    // edition row, so exposing it here adds no new trust: it is the same facts the paid
+    // table is built from. It goes on the presentation, never into `snapshot.chart` —
+    // that object is a hash input and `readChart` would strip the extra key regardless.
+    return { chart: { ...snapshot.chart, calculation: paidCalculationBlocks(snapshot, edition.locale) },
+      content: decoded.value, generation: null, availability: "ready", wheelFacts: snapshot.facts };
   } catch {
     throw new ReadingViewError("document_unavailable");
   }

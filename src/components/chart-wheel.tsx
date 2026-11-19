@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 import type { Locale } from "@/lib/i18n";
-import { WHEEL_MAX_LABEL_CHARS, type WheelGeometry, type WheelPoint } from "@/lib/wheel";
+import { WHEEL_MAX_LABEL_CHARS, WHEEL_MIN_LABEL_FONT, type WheelGeometry } from "@/lib/wheel";
 import { houseSystemLabel } from "@/readings/base-presentation";
 
 /**
@@ -31,38 +31,6 @@ export type ChartWheelProps = {
 };
 
 const DEG = Math.PI / 180;
-/** Design size for a label with room, and the floor below which a label is still set. */
-const LABEL_FONT_MAX = 10;
-const LABEL_FONT_MIN = 6.5;
-
-/**
- * The largest type size at which this label fits the arc between it and its nearest
- * neighbour in the same band, capped at the design size.
- *
- * The projection guarantees nine degrees of separation at the band radius; nine degrees
- * is ~27 units at radius 170, which is narrower than "True Node" at the design size. Rather
- * than move a label the projection placed, the label is set to the size its allotted arc
- * can hold. Derived from the geometry alone, so it is deterministic and identical in the
- * PDF.
- */
-function labelFontSize(geometry: WheelGeometry, point: WheelPoint, band: "A" | "B"): number {
-  const radius = band === "A" ? geometry.radii.labelBandA : geometry.radii.labelBandB;
-  const separation = (a: number, b: number) => {
-    const difference = Math.abs(((a - b) % 360 + 360) % 360) % 360;
-    return difference > 180 ? 360 - difference : difference;
-  };
-  // Narrowest arc this label shares with a neighbour in the same band. The bound is
-  // pairwise — half of this label plus half of its neighbour must fit — and 0.6 is a
-  // deliberately generous advance estimate for the sans face, so the pair cannot touch.
-  let smallest = Infinity;
-  for (const other of geometry.points) {
-    if (other.id === point.id || other.band !== band) continue;
-    const gap = separation(other.labelAngle, point.labelAngle) * DEG * radius;
-    const combined = [...point.label].length + [...other.label].length;
-    smallest = Math.min(smallest, (2 * gap) / (Math.max(1, combined) * 0.6));
-  }
-  return smallest === Infinity ? LABEL_FONT_MAX : Math.max(LABEL_FONT_MIN, Math.min(LABEL_FONT_MAX, smallest));
-}
 
 /** A point on a concentric ring, at the geometry's own scale. Never a position of its own. */
 function labelPoint(geometry: WheelGeometry, angle: number, radius: number) {
@@ -104,13 +72,14 @@ export function ChartWheel({ geometry, locale, chartName, returnInstant, classNa
       </g>;
     })}
 
-    {/* Minor ticks: four per sign, between the sign ring and the outer edge. */}
-    {Array.from({ length: 48 }, (_, index) => {
-      const angle = index * 7.5;
-      const inner = index % 3 === 0 ? radii.signRing : radii.signRing + (radii.outer - radii.signRing) * 0.55;
-      return <line key={`tick-${index}`}
-        x1={centre + inner * Math.cos(angle * DEG)} y1={centre + inner * Math.sin(angle * DEG)}
-        x2={centre + radii.outer * Math.cos(angle * DEG)} y2={centre + radii.outer * Math.sin(angle * DEG)}
+    {/* Ticks at fixed offsets from each projected sign boundary: four per sign, only the
+        boundary itself full-length. The positions come from the geometry, so the page and
+        the PDF cannot drift apart on where a degree mark sits. */}
+    {geometry.ticks.map(tick => {
+      const inner = tick.full ? radii.signRing : radii.signRing + (radii.outer - radii.signRing) * 0.5;
+      return <line key={`tick-${tick.index}`}
+        x1={centre + inner * Math.cos(tick.angle * DEG)} y1={centre + inner * Math.sin(tick.angle * DEG)}
+        x2={centre + radii.outer * Math.cos(tick.angle * DEG)} y2={centre + radii.outer * Math.sin(tick.angle * DEG)}
         stroke="#c2b9ac" strokeWidth="0.5" />;
     })}
 
@@ -139,7 +108,8 @@ export function ChartWheel({ geometry, locale, chartName, returnInstant, classNa
       });
       const a = inner(from); const b = inner(to);
       const strong = chord.type === "conjunction" || chord.type === "opposition";
-      return <line key={`chord-${index}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+      return <line key={`chord-${index}`} data-chord={`${chord.a}|${chord.b}`} data-chord-type={chord.type}
+        x1={a.x} y1={a.y} x2={b.x} y2={b.y}
         stroke={index % 2 === 0 ? "#a86658" : "#7a9290"} strokeWidth={strong ? 0.9 : 0.6}
         opacity={strong ? 0.85 : 0.6} />;
     })}
@@ -153,7 +123,7 @@ export function ChartWheel({ geometry, locale, chartName, returnInstant, classNa
       {point.band === null
         ? <title>{es ? `${point.label}: etiqueta omitida por espacio` : `${point.label}: label omitted for space`}</title>
         : <text x={point.labelPosition.x} y={point.labelPosition.y} textAnchor="middle" dominantBaseline="middle"
-          fontSize={labelFontSize(geometry, point, point.band)} fontWeight="600" fill="#3c342f"
+          fontSize={geometry.labelFontSize[point.id] ?? WHEEL_MIN_LABEL_FONT} fontWeight="600" fill="#3c342f"
           stroke="#fbfaf5" strokeWidth="2.4" paintOrder="stroke">{point.label.slice(0, WHEEL_MAX_LABEL_CHARS)}</text>}
     </g>)}
   </svg>;
