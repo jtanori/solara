@@ -8,7 +8,7 @@ import { chartDetails, chartDisclaimer, chartPlacements, returnDate, savedDate }
 import { PDF_FONT, pdfGlyphsSupported, pdfLines } from "@/readings/pdf-fonts";
 import { projectWheel, type WheelGeometry } from "@/lib/wheel";
 import { wheelDrawingText, wheelOmissionText } from "@/readings/wheel-labels";
-import { PdfChartWheel } from "@/components/pdf-chart-wheel";
+import { PdfChartWheel, PdfWheelNotes } from "@/components/pdf-chart-wheel";
 import { houseSystemLabel } from "@/readings/base-presentation";
 import { PDF_FIXED_LAYOUT_LIMITS, ReadingPdfError, type ReadingPdfInput } from "@/readings/pdf-contract";
 
@@ -147,7 +147,9 @@ export function SolarReturnDocument({ chart, content, wheelFacts, renderer, onPa
   const wheelBlock = geometry
     ? <View key="wheel" wrap={false} style={{ marginTop: 14, marginBottom: 16 }}>
         <Text style={s.heading} minPresenceAhead={30}>{es ? "Rueda factual" : "Factual wheel"}</Text>
-        <PdfChartWheel geometry={geometry} locale={locale} chartName={chart.name} renderer={renderer} />
+        <PdfWheelNotes geometry={geometry} locale={locale} chartName={chart.name} renderer={renderer} position="before" />
+        <PdfChartWheel geometry={geometry} renderer={renderer} />
+        <PdfWheelNotes geometry={geometry} locale={locale} chartName={chart.name} renderer={renderer} position="after" />
         {wheelOmissionText(geometry.omissions, locale).map((text, index) => (
           <Text key={`omission-${index}`} style={s.small}>{wrap(text, 499, 9)}</Text>
         ))}
