@@ -168,7 +168,10 @@ Run by the coding agent unless marked *(operator)*:
    changes `drizzle/` the policy returns `refuse-production` and the script
    exits before merging. Re-running the idempotent migrate step is by design.
 7. If `deploy:required`: staging QA smoke on the touched surfaces (sign-in,
-   map, PDF gate, Stripe test webhook, password reset, `/api/health`).
+   map, PDF gate, Stripe test webhook, password reset, `/api/health`). Where the
+   change has a surface-specific manual checklist, run that instead of inventing
+   steps — e.g. the factual wheel and numerical facts:
+   [`operations/staging-qa-solar-wheel-s1c.md`](operations/staging-qa-solar-wheel-s1c.md).
 8. Nothing to update for opened/closed issues: GitHub is the record (ADR 009). There is no
    backlog file, so there is nothing that can lag. Run `npm run backlog:snapshot` only if you
    need an offline copy; the result is gitignored.
