@@ -15,3 +15,4 @@ only exists on the operator's laptop is the failure #76 was filed about.
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-11-11T07:28Z | staging | `d7d7634` | 133 | none — `No drizzle/ changes` | merged; Vercel success on merge SHA; verify green | n/a — staging has no automatic rollback |
 | 2026-11-16T18:40Z | staging | `3eac8c9` | 142 | applied (staging) | ok | — |
+| 2026-11-18T23:19Z | staging | `f8f20ae` | 156 | applied (staging) | ok | — |
