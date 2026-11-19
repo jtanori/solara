@@ -1,6 +1,7 @@
 import type { ReactElement } from "react";
 import type { Locale } from "@/lib/i18n";
-import { WHEEL_MAX_LABEL_CHARS, WHEEL_MIN_LABEL_FONT, type WheelGeometry } from "@/lib/wheel";
+import { WHEEL_MIN_LABEL_FONT, type WheelGeometry } from "@/lib/wheel";
+import { wheelLabelText } from "@/readings/wheel-labels";
 import { houseSystemLabel } from "@/readings/base-presentation";
 
 /**
@@ -124,7 +125,7 @@ export function ChartWheel({ geometry, locale, chartName, returnInstant, classNa
         ? <title>{es ? `${point.label}: etiqueta omitida por espacio` : `${point.label}: label omitted for space`}</title>
         : <text x={point.labelPosition.x} y={point.labelPosition.y} textAnchor="middle" dominantBaseline="middle"
           fontSize={geometry.labelFontSize[point.id] ?? WHEEL_MIN_LABEL_FONT} fontWeight="600" fill="#3c342f"
-          stroke="#fbfaf5" strokeWidth="2.4" paintOrder="stroke">{point.label.slice(0, WHEEL_MAX_LABEL_CHARS)}</text>}
+          stroke="#fbfaf5" strokeWidth="2.4" paintOrder="stroke">{wheelLabelText(point.label)}</text>}
     </g>)}
   </svg>;
 }

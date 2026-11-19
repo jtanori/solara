@@ -5,26 +5,13 @@ import { ChartWheel } from "@/components/chart-wheel";
 import { ReadingBlockView, ReadingContentView } from "@/components/reading-sections";
 import { localeName, type Locale } from "@/lib/i18n";
 import { projectWheel } from "@/lib/wheel";
-import type { ChartFacts } from "@/lib/chart";
 import { houseSystemLabel } from "@/readings/base-presentation";
-import { readingEditionQuery, type ReadingPresentation, type ReadingSelector } from "@/readings/presentation";
+import { readingEditionQuery, wheelFactsOf, type ReadingPresentation, type ReadingSelector } from "@/readings/presentation";
 import {
   AVAILABILITY_COPY, DECORATIVE_WHEEL_LABEL, editionTitle, readingCalculationNotice,
   WHEEL_NOTICE_COPY, type WheelNoticeCode,
 } from "@/readings/presentation-copy";
 import { chartDetails, chartDisclaimer, chartPlacements, returnDate } from "@/readings/presentation-format";
-
-/**
- * The facts this presentation's wheel may be drawn from.
- *
- * A paid edition keeps its verified facts on the presentation (`wheelFacts`) because they
- * are not part of its hashed chart summary; a base chart keeps them on the chart itself.
- * One accessor, so no caller has to know which — and nothing else in the payload is
- * consulted, so a chart with neither renders no wheel rather than a fabricated one.
- */
-export function wheelFactsOf(view: Pick<ReadingPresentation, "chart" | "wheelFacts">): ChartFacts | null {
-  return view.wheelFacts ?? view.chart.baseFacts ?? null;
-}
 
 /** Server-only markup. Only small control props cross a client boundary. */
 export function ReadingPageView({ view, locale, selector, controls, deleteControl }: { view: ReadingPresentation; locale: Locale; selector: ReadingSelector; controls?: ReactNode; deleteControl?: ReactNode }) {

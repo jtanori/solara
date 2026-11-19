@@ -150,7 +150,15 @@ test("paid-first intent queues without provider work, survives browser closure, 
   const renderer = new ReadingPdfRenderer();
   const pdf = await handleReadingPdf(new Request(`https://app.invalid/api/readings/${a.chart.id}/pdf?paidEdition=${finished.editionId}`), a.chart.id, {
     user: async () => a.viewer, locale: "es", throttle: async () => null, renderer: { render: async projected => {
-      assert.deepEqual(projected, { chart: view.chart, content: view.content });
+      /**
+       * The PDF input gained `wheelFacts` in S1-d (#155): the same facts the page projected
+       * its wheel from, so the PDF cannot draw a different chart. A paid edition keeps them
+       * on the presentation, not on `chart`, which is exactly why the handler must forward
+       * them explicitly — this assertion is what proves it does.
+       */
+      assert.deepEqual(projected, { chart: view.chart, content: view.content, wheelFacts: view.wheelFacts });
+      assert.ok(projected.wheelFacts, "a paid edition's pinned facts reach the PDF");
+      assert.equal(projected.wheelFacts?.houseSystem, "placidus", "the PDF draws the edition's own house system");
       return renderer.render(projected);
     } },
   });
@@ -812,7 +820,9 @@ for (const loss of ["expiry", "revocation", "withdrawal", "owner_loss"] as const
   const renderer = new ReadingPdfRenderer();
   const pdf = await handleReadingPdf(new Request(`https://app.invalid/api/readings/${a.chart.id}/pdf?paidEdition=${finished.editionId}`), a.chart.id, {
     user: async () => a.viewer, locale: "es", throttle: async () => null, renderer: { render: async projected => {
-      assert.deepEqual(projected, { chart: view.chart, content: view.content }); return renderer.render(projected);
+      assert.deepEqual(projected, { chart: view.chart, content: view.content, wheelFacts: view.wheelFacts });
+      assert.ok(projected.wheelFacts, "a partially published edition's pinned facts reach its PDF");
+      return renderer.render(projected);
     } },
   });
   assert.equal(pdf.status, 200);

@@ -1,7 +1,20 @@
+import type { ChartFacts } from "@/lib/chart";
 import type { ReadingChart, ReadingContent } from "@/readings/presentation";
 
-/** This is the entire worker input. No user, consent, raw document or run object. */
-export type ReadingPdfInput = { chart: ReadingChart; content: ReadingContent };
+/**
+ * This is the entire worker input. No user, consent, raw document or run object.
+ *
+ * `wheelFacts` is the already-verified facts the page projected its wheel from
+ * (`wheelFactsOf`), not a second lookup: the PDF re-projects the same facts with the same
+ * `projectWheel` call, so page and PDF cannot disagree about what was saved. It is optional
+ * because a legacy chart and a high-latitude chart legitimately have no wheel, and a PDF
+ * built without facts renders no drawing rather than a fabricated one.
+ *
+ * These are derived positions — the same privacy class as `chart.calculation`, never birth
+ * data, name or place. `READING_LIMITS.baseFactsBytes` bounds them, and `PDF_INPUT_BYTES`
+ * already accounts for that in both the parent and the child.
+ */
+export type ReadingPdfInput = { chart: ReadingChart; content: ReadingContent; wheelFacts?: ChartFacts };
 export type PdfFailureCode = "pdf_unavailable" | "pdf_capacity" | "pdf_timeout" | "pdf_aborted" | "pdf_input_limit" | "pdf_output_limit" | "pdf_page_limit" | "pdf_glyphs" | "pdf_memory_limit";
 export class ReadingPdfError extends Error {
   constructor(readonly code: PdfFailureCode) { super(code); this.name = "ReadingPdfError"; }

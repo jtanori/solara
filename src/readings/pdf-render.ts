@@ -19,7 +19,9 @@ export class ReadingPdfRenderer {
   async render(input: ReadingPdfInput, signal?: AbortSignal): Promise<PdfRenderResult> {
     if (this.active) throw new ReadingPdfError("pdf_capacity");
     if (signal?.aborted) throw new ReadingPdfError("pdf_aborted");
-    const serialized = JSON.stringify({ chart: input.chart, content: input.content });
+    // The facts ride with the chart into the worker, so both sides serialize one object and
+    // one bound (`PDF_INPUT_BYTES`) covers what a single render actually receives.
+    const serialized = JSON.stringify(input);
     const textLength = input.content.sections.flatMap(sectionText).reduce((sum, text) => sum + text.length, 0);
     if (Buffer.byteLength(serialized) > PDF_INPUT_BYTES ||
       input.content.sections.length > 11 || input.content.sections.some(section => section.blocks.length > 30) ||
