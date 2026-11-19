@@ -1,9 +1,9 @@
 import React from "react";
 import type { WheelGeometry } from "@/lib/wheel";
 import { WHEEL_MIN_LABEL_FONT, WHEEL_VIEW_BOX } from "@/lib/wheel";
-import { houseSystemLabel } from "@/readings/base-presentation";
 import type { Locale } from "@/lib/i18n";
-import { wheelAccessibleName, wheelLabelText, wheelOmissionText } from "@/readings/wheel-labels";
+import { houseSystemLabel } from "@/readings/base-presentation";
+import { wheelAccessibleName, wheelLabelText } from "@/readings/wheel-labels";
 
 /**
  * The factual wheel in the PDF (issue #155, slice 1-d).
@@ -19,57 +19,48 @@ import { wheelAccessibleName, wheelLabelText, wheelOmissionText } from "@/readin
  *
  * - SVG `Text` here is laid out by React-PDF's own engine, which honours `textAnchor` and
  *   `dominantBaseline` but reflows text it thinks is too wide. A label is a single short
- *   token, so its box is `WHEEL_VIEW_BOX` units wide and the halo/`paintOrder` trick the
- *   page uses to punch a background behind each label is replaced by an explicit filled
- *   `Rect` behind the text. PDF has no `paintOrder`, so a stroked glyph would paint the
- *   stroke on top of the fill and thicken the letters.
+ *   token, so its box is `WHEEL_VIEW_BOX` units wide.
+ * - Labels are painted with **no background halo**, unlike the page. The page punches one
+ *   with `paintOrder="stroke"`, where the halo is the glyph outline and can only ever cover
+ *   what the glyph covers. React-PDF has neither `paintOrder` nor glyph-outline strokes, so
+ *   the only equivalent is an opaque rectangle behind the label — and that rectangle is
+ *   sized from geometry, not from the glyphs, so it covers whatever lies beside them. Every
+ *   placed label sits on the sign band, so every such rectangle covered a zodiac name
+ *   (Gemini, Taurus in the fixture). Given the choice between a label occasionally crossing
+ *   a chord and a zodiac name silently disappearing, the page's copy is the one that has to
+ *   stay readable: the wheel's purpose is to show where things are. This is a real
+ *   fidelity gap against the page emitter, recorded here rather than papered over.
  * - There is no `role="img"`: a PDF page is already text for assistive technology. The
- *   accessible *name* is emitted as visible text instead (`wheelAccessibleName`), so the
- *   same words reach a reader who only has the PDF.
+ *   accessible *name* and the table pointer are emitted as visible document text around the
+ *   drawing (`PdfWheelNotes`), so the same words reach a reader who only has the PDF.
  * - Rust/inset radii, chord colours and tick geometry are copied verbatim from the page
  *   component; `tests/readings-wheel-pdf.test.ts` compares the emitted coordinate sets of
  *   both emitters from one fixture, so a divergence fails a test rather than shipping.
  */
 
-type SvgRenderer = Pick<typeof import("@react-pdf/renderer"), "Svg" | "G" | "Circle" | "Line" | "Rect" | "Text">;
+type SvgRenderer = Pick<typeof import("@react-pdf/renderer"), "Svg" | "G" | "Circle" | "Line" | "Text">;
 
-/** The page draws the wheel at 360pt wide; 340 keeps it inside A4's 499pt body with margins. */
-export const PDF_WHEEL_POINTS = 340;
+/**
+ * The drawing's box, in points. It equals the geometry's `viewBox` on purpose: the SVG is
+ * authored in geometry units, so a 1:1 box makes one geometry unit one point and the label
+ * font sizes arrive at their designed size (9pt, matching body copy) instead of being scaled
+ * down — at 340pt the same labels came out at 6.95pt, smaller than the text around them.
+ * 440pt fills A4's 499pt text column and leaves the block well inside the page body.
+ */
+export const PDF_WHEEL_POINTS = WHEEL_VIEW_BOX;
 const DEG = Math.PI / 180;
 
 function polar(angle: number, radius: number, centre: number) {
   return { x: centre + radius * Math.cos(angle * DEG), y: centre + radius * Math.sin(angle * DEG) };
 }
 
-/**
- * Conservative label box for the halo rectangle: the geometry's own type size is in
- * view-box units, and 0.62 em per character is the widest the embedded Noto Sans advance
- * measured at (0.683 em/char in the browser suite). Used only to size a background, never
- * to decide placement — placement is already final.
- */
-function haloBox(point: { labelPosition: { x: number; y: number }; label: string }, fontSize: number) {
-  const width = wheelLabelText(point.label).length * fontSize * 0.7 + 1.6;
-  const height = fontSize * 1.35;
-  return {
-    x: point.labelPosition.x - width / 2,
-    y: point.labelPosition.y - height / 2,
-    width,
-    height,
-  };
-}
-
-export function PdfChartWheel({ geometry, locale, chartName, renderer }: {
+export function PdfChartWheel({ geometry, renderer }: {
   geometry: WheelGeometry;
-  locale: Locale;
-  chartName: string;
   renderer: SvgRenderer;
 }): React.ReactElement {
-  const { Svg, G, Circle, Line, Rect, Text } = renderer;
+  const { Svg, G, Circle, Line, Text } = renderer;
   const centre = geometry.viewBox / 2;
   const { radii } = geometry;
-  const system = houseSystemLabel(geometry.houseSystem, locale);
-  const { title, description, tableNote } = wheelAccessibleName(chartName, system, locale);
-  const omissions = wheelOmissionText(geometry.omissions, locale);
   const point = (id: string) => geometry.points.find(candidate => candidate.id === id);
 
   return (
@@ -83,9 +74,6 @@ export function PdfChartWheel({ geometry, locale, chartName, renderer }: {
          mutation that "removes wrap={false}" cannot reintroduce a split wheel here. */
       style={{ marginBottom: 10 }}
     >
-      {/* Accessible name as text. A PDF has no img role; the words still reach a reader. */}
-      <Text x={0} y={-14} style={{ fontSize: 9 }}>{title}</Text>
-
       <Circle cx={centre} cy={centre} r={radii.outer} fill="#FBF7F2" stroke="#8f897d" strokeWidth={0.9} />
       <Circle cx={centre} cy={centre} r={radii.signRing} fill="none" stroke="#aaa598" strokeWidth={0.7} />
       {geometry.signs.map(sign => {
@@ -146,12 +134,9 @@ export function PdfChartWheel({ geometry, locale, chartName, renderer }: {
           x2={candidate.leader.to.x} y2={candidate.leader.to.y}
           stroke="#bda999" strokeWidth={0.5} />
       ))}
-      {geometry.points.map(candidate => {
-        const box = candidate.band === null ? null : haloBox(candidate, geometry.labelFontSize[candidate.id] ?? WHEEL_MIN_LABEL_FONT);
-        return (
+      {geometry.points.map(candidate => (
           <G key={`point-${candidate.id}`}>
             <Circle cx={candidate.anchor.x} cy={candidate.anchor.y} r={2.4} fill="#947d6f" />
-            {box && <Rect x={box.x} y={box.y} width={box.width} height={box.height} fill="#FBF7F2" />}
             {candidate.band !== null && (
               <Text
                 x={candidate.labelPosition.x}
@@ -163,11 +148,33 @@ export function PdfChartWheel({ geometry, locale, chartName, renderer }: {
               >{wheelLabelText(candidate.label)}</Text>
             )}
           </G>
-        );
-      })}
-
-      {/* Name, omissions and the pointer to the table, as text under the drawing. */}
-      <Text x={0} y={WHEEL_VIEW_BOX + 12} style={{ fontSize: 8 }} fill="#65564a">{`${description} ${tableNote}`}</Text>
+      ))}
     </Svg>
   );
+}
+
+/**
+ * The wheel's words, as ordinary document text around the drawing.
+ *
+ * Inside the `Svg` they were clipped away: the strings reached the content stream (every
+ * glyph assertion passed, text extraction found them) while the painted page showed
+ * nothing, because an `Svg` clips to its own viewport. Text extraction cannot see missing
+ * pixels; the emitted raster can. As siblings they sit outside the clip, wrap at the real
+ * page width instead of the 340pt square, and stay inside the same unbreakable `View`, so
+ * the words and the wheel they describe can never be split by a page break.
+ */
+export function PdfWheelNotes({ geometry, locale, chartName, renderer, position }: {
+  geometry: WheelGeometry;
+  locale: Locale;
+  chartName: string;
+  renderer: { Text: SvgRenderer["Text"] };
+  position: "before" | "after";
+}): React.ReactElement {
+  const { Text } = renderer;
+  const { title, description, tableNote } = wheelAccessibleName(
+    chartName, houseSystemLabel(geometry.houseSystem, locale), locale,
+  );
+  return position === "before"
+    ? <Text style={{ fontSize: 9, color: "#3c342f", marginBottom: 6 }}>{title}</Text>
+    : <Text style={{ fontSize: 8, color: "#65564a", marginTop: 6, marginBottom: 10 }}>{description} {tableNote}</Text>;
 }

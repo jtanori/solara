@@ -76,7 +76,7 @@ function walk(node: unknown, visit: (n: Node) => void): void {
 
 function pdfTreeGeometry(geometry: ReturnType<typeof projectWheel>) {
   assert.ok(geometry);
-  const tree = PdfChartWheel({ geometry, locale: "en", chartName: "Fixture", renderer: renderer as never });
+  const tree = PdfChartWheel({ geometry, renderer: renderer as never });
   const lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
   const circles: { cx: number; cy: number; r: number }[] = [];
   let images = 0;
@@ -161,7 +161,7 @@ test("PDF wheel: the emitted coordinates are the geometry's own, and the drawing
 test("PDF wheel: labels are drawn at the geometry's own type size, never re-derived", async () => {
   const geometry = projectWheel(fixtureFacts(), "en");
   assert.ok(geometry);
-  const tree = PdfChartWheel({ geometry, locale: "en", chartName: "Fixture", renderer: renderer as never });
+  const tree = PdfChartWheel({ geometry, renderer: renderer as never });
   const sizes: number[] = [];
   walk(tree, node => {
     if (node.type !== renderer.Text) return;
@@ -198,7 +198,7 @@ test("PDF wheel: the glyph set contains every wheel string and the wheel block c
 
   // The unbreakable-block guarantee is a property of the `Svg` primitive: React-PDF lists it
   // in NON_WRAP_TYPES, so the type refuses a `wrap` prop and no caller can opt in to splitting.
-  const tree = PdfChartWheel({ geometry, locale: "en", chartName: "Fixture", renderer: renderer as never });
+  const tree = PdfChartWheel({ geometry, renderer: renderer as never });
   const svgProps = (tree as unknown as { props: Record<string, unknown> }).props;
   assert.equal("wrap" in svgProps, false, "the emitter does not pass a wrap prop it cannot honour");
   assert.equal(svgProps.viewBox, `0 0 ${WHEEL_VIEW_BOX} ${WHEEL_VIEW_BOX}`);
@@ -282,3 +282,91 @@ test("PDF wheel: parent and child spell the input bound the same way", async () 
   // And the serializer sends one object, so what the parent measures is what the child reads.
   assert.ok(render.includes("JSON.stringify(input)"), "the parent serializes the whole input, facts included");
 });
+
+/**
+ * The two defects the raster caught and text extraction could not.
+ *
+ * Both were "passing" by every assertion above: the strings were in the content stream, the
+ * glyph set was complete, the coordinates were right. They were invisible on the page. These
+ * tests encode what the eye caught, so the class cannot come back silently.
+ *
+ * They are geometric rather than pixel-diffing on purpose: a snapshot would fail for every
+ * future intentional change, while these fail only when the specific invariant breaks.
+ */
+/**
+ * No opaque halo is painted behind the labels, and that is a deliberate difference from the
+ * page — so it is asserted rather than left to drift back.
+ *
+ * The page punches a halo with `paintOrder="stroke"`: the halo *is* the glyph outline, so it
+ * can only cover what the glyph covers. React-PDF has neither `paintOrder` nor outline
+ * strokes, leaving an opaque rectangle sized from geometry. Every placed label sits on the
+ * sign band, so such a rectangle covered a zodiac name (Gemini and Taurus in this fixture)
+ * with the page colour — the glyphs stayed in the content stream, so nothing failed, but a
+ * reader lost two sign names. The raster is what showed it.
+ *
+ * If a future change reintroduces a background box, this fails and the author has to say why
+ * covering a sign name is acceptable.
+ */
+test("PDF wheel: labels are painted without an opaque background box", () => {
+  const geometry = projectWheel(fixtureFacts(), "en")!;
+  const tree = PdfChartWheel({ geometry, renderer: renderer as never }) as unknown as { props: { children: unknown } };
+  const rects: unknown[] = [];
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    const element = node as { type?: unknown; props?: { children?: unknown } };
+    if (element.type === "RECT" || element.type === renderer.Rect) rects.push(element);
+    if (element.props) walk(element.props.children);
+  };
+  walk(tree.props.children);
+  assert.deepEqual(rects, [], "the wheel paints no filled rectangles");
+  // And the labels themselves are still there: absence of a halo must not mean absence of text.
+  assert.ok(geometry.points.filter(point => point.band !== null).length > 5, "labels are still placed");
+});
+
+/**
+ * The wheel's text sits on the page, not above it.
+ *
+ * The accessible name and the caption were once `<Text>` children of the `Svg` at
+ * `y = -14` and `y = viewBox + 12` — outside the drawing's viewport, so `Svg` clipped them.
+ * Extraction still reported them, which is why they survived three rounds of tests. A glyph
+ * that is claimed but not painted is a worse defect than a missing one: the document looks
+ * unfinished and nothing fails.
+ */
+test("PDF wheel: the title and caption are painted inside the page body", async () => {
+  for (const locale of ["en", "es"] as const) {
+    const { inspected } = await render(withWheel(locale));
+    const page = inspected.pages.find(candidate =>
+      candidate.items.some(item => item.text === (locale === "es" ? "Rueda factual" : "Factual wheel")));
+    assert.ok(page, `${locale}: the wheel has a page`);
+
+    // Both strings must be present as painted text, not merely in the glyph set. Matching is
+    // done on the page's items joined in content order: a caption wraps across several text
+    // runs, so a phrase regex against any single run finds nothing even when the words are on
+    // the sheet — which is how the first version of this test "failed" on a correct PDF.
+    const joined = normalizePdfText(page.items.map(item => item.text).join(" "));
+    const titleCopy = locale === "es" ? "Carta factual de Synthetic Reading" : "Factual chart for Synthetic Reading";
+    const captionCopy = locale === "es"
+      ? "La tabla numérica de esta misma página es el equivalente autoritativo de este dibujo."
+      : "The numerical table on this same page is the authoritative equivalent of this drawing.";
+    assert.ok(joined.includes(titleCopy), `${locale}: the accessible name is painted`);
+    assert.ok(joined.includes(captionCopy), `${locale}: the table pointer is painted`);
+
+    // Geometry, not just presence: a leaked SVG viewBox transform keeps the string and moves
+    // the glyphs. While the drawing was 340pt wide over a 440-unit viewBox, this title was
+    // painted at 6.95pt instead of 9pt and the caption at 6.18pt instead of 8pt.
+    const decorated = [
+      { pattern: new RegExp(`^${titleCopy.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"), size: 9, what: "title" },
+      { pattern: /retorno solar, casas de|chart for the solar return/u, size: 8, what: "caption" },
+    ];
+    for (const { pattern, size, what } of decorated) {
+      const found = page.items.find(item => pattern.test(item.text));
+      assert.ok(found, `${locale}: the ${what} is found for measurement`);
+      assert.ok(Math.abs(found.size - size) < 0.6,
+        `${locale}: the ${what} is drawn at ${found.size.toFixed(2)}pt, not ${size}pt`);
+      assert.ok(found.y > 60 && found.y < 800, `${locale}: the ${what} sits inside the body (y=${found.y.toFixed(1)})`);
+      assert.ok(found.x >= 40 && found.x < 555, `${locale}: the ${what} sits inside the margins (x=${found.x.toFixed(1)})`);
+    }
+  }
+});
+
