@@ -71,6 +71,9 @@ const compileStylesheet = async () => (await postcss([tailwindcss()])
   .process(readFileSync("src/app/globals.css", "utf8"), { from: "src/app/globals.css" })).css
   .replace(/@import\s+url\((["']?)https?:\/\/[^)"']*\1\)\s*;?/g, "");
 const markup = renderToStaticMarkup(createElement(ReadingPageView, { view, locale: "en", selector: { kind: "chart" } }));
+/** A chart one year later: the second fixture the review named for label overlap. */
+const later = solarReturnFacts({ ...readingChartInput, year: 2030 },
+  calculateSolarReturn({ ...readingChartInput, year: 2030 }));
 
 /**
  * The served page. The wheel sits in its own grid cell exactly as `.chart-header` lays it
@@ -80,6 +83,17 @@ const markup = renderToStaticMarkup(createElement(ReadingPageView, { view, local
 const servedDocument = (css: string, wheelMarkup = markup, pageClass = "reading-page") => `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head>
 <body><main class="app-page ${pageClass}"><div class="app-wrap">${wheelMarkup}</div></main></body></html>`;
+
+/**
+ * A reading page for another fixture, rendered through the same component, so the two
+ * charts the review named can be measured in their own languages.
+ */
+const pageFor = (locale: "en" | "es", chartFacts = facts) => {
+  const chartRow: ReadingChart = { ...chart, baseFacts: chartFacts, calculation: baseCalculationBlocks(chartFacts, locale) };
+  const other: ReadingPresentation = { ...view, chart: chartRow,
+    content: chartNotes(chartRow, { sun: "SUN_NOTE", moon: "", ascendant: "", house: "" }, locale, false) };
+  return renderToStaticMarkup(createElement(ReadingPageView, { view: other, locale, selector: { kind: "chart" } }));
+};
 
 /** The page as served, with the decorative `/sample` header for the out-of-scope check. */
 const SAMPLE_HEADER = `<div class="chart-header"><div><h1>Sample</h1><p>copy</p></div>
@@ -97,8 +111,11 @@ before(async () => {
   server = createServer((request, response) => {
     if (request.url === "/wheel.css") { response.setHeader("Content-Type", "text/css"); response.end(servedCss); return; }
     response.setHeader("Content-Type", "text/html; charset=utf-8");
-    response.end(servedDocument(servedCss, request.url === "/sample" ? SAMPLE_HEADER : markup,
-      request.url === "/sample" ? "sample-page" : "reading-page"));
+    if (request.url === "/sample") { response.end(servedDocument(servedCss, SAMPLE_HEADER, "sample-page")); return; }
+    const alternates: Record<string, string> = {
+      "/es": pageFor("es"), "/later-en": pageFor("en", later), "/later-es": pageFor("es", later),
+    };
+    response.end(servedDocument(servedCss, alternates[request.url ?? "/"] ?? markup));
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address(); assert.ok(address && typeof address === "object");
@@ -210,6 +227,70 @@ test("browser wheel: the narrow layout reflows instead of clipping the wheel", a
   assert.equal(size.width, 280, "the narrow rule sizes the wheel");
   assert.deepEqual(size.inkOverflow, []);
   writeFileSync(`${EVIDENCE}/measurements.json`, JSON.stringify(measured, null, 2));
+});
+
+/**
+ * Real glyph boxes, with the browser's own font metrics and the emitters' halo: pairing
+ * every two labels and requiring a gap in *at least* one axis. Two boxes that touch in both
+ * axes are an overlap a reader sees, whatever the font sizes were judged to be.
+ */
+for (const [path, label] of [["/", "en 2026"], ["/es", "es 2026"], ["/later-en", "en 2030"], ["/later-es", "es 2030"]] as const) {
+  test(`browser wheel: no two labels overlap on the ${label} fixture, across bands`, async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 1000 }, deviceScaleFactor: 2 });
+    try {
+      await offline(page);
+      await page.goto(`${origin}${path}`);
+      const labels = await page.evaluate(() => {
+        const svg = document.querySelector("svg.chart-wheel")!;
+        return Array.from(svg.querySelectorAll("g[data-point] text")).map(text => {
+          const box = (text as SVGGraphicsElement).getBBox();
+          return { id: text.parentElement!.getAttribute("data-point")!, band: text.parentElement!.getAttribute("data-band")!,
+            text: text.textContent!, x: box.x, y: box.y, width: box.width, height: box.height };
+        });
+      });
+      assert.ok(labels.length >= 10, `${label}: labels are drawn`);
+      assert.ok(new Set(labels.map(item => item.band)).size > 1, `${label}: both bands are in use`);
+      // The halo: the renderer strokes `strokeWidth=2.4` behind each glyph, so the painted
+      // box is 1.2 larger on every side. Two haloes must not touch either.
+      const HALO = 1.2;
+      for (let i = 0; i < labels.length; i += 1) for (let j = i + 1; j < labels.length; j += 1) {
+        const a = labels[i]!, b = labels[j]!;
+        const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) + 2 * HALO;
+        const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) + 2 * HALO;
+        assert.ok(overlapX <= 0 || overlapY <= 0,
+          `${label}: ${a.text} (${a.band}) overlaps ${b.text} (${b.band}) by ${overlapX.toFixed(2)} × ${overlapY.toFixed(2)} SVG units`);
+      }
+    } finally { await page.close(); }
+  });
+}
+
+test("browser wheel: the wheel subtree declares the language its own text is in", async () => {
+  // The divergent case — an English interface on a Spanish saved edition — needs a stored
+  // edition, so it is asserted in the paid integration suite. What is checked here is the
+  // invariant that makes it work: the cell's `lang` is the language of the wheel's own
+  // accessible name, never the interface's by accident.
+  // The harness document is English throughout (it is not a Next render, so there is no
+  // per-request `<html lang>`); what matters is that the cell overrides it to the language
+  // of the wheel's own text, which is what a screen reader reads the subtree in.
+  for (const [path, locale] of [["/", "en"], ["/es", "es"]] as const) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, deviceScaleFactor: 1 });
+    try {
+      await offline(page);
+      await page.goto(`${origin}${path}`);
+      const wheel = await page.evaluate(() => {
+        const svg = document.querySelector("svg.chart-wheel")!;
+        const cell = svg.closest(".chart-cell")!;
+        return { cell: cell.getAttribute("lang"), inherited: cell.parentElement!.closest("[lang]")?.getAttribute("lang") ?? null,
+          title: svg.querySelector("title")!.textContent!,
+          description: svg.querySelector("desc")!.textContent! };
+      });
+      assert.equal(wheel.inherited, "en", `${path}: the surrounding document is English`);
+      assert.equal(wheel.cell, locale, `${path}: the wheel declares its own language`);
+      // And the declared language is the one the text is actually written in.
+      assert.match(wheel.title, locale === "es" ? /^Carta factual de/ : /^Factual chart for /);
+      assert.match(wheel.description, locale === "es" ? /equivalente autoritativo/ : /authoritative equivalent/);
+    } finally { await page.close(); }
+  }
 });
 
 test("browser wheel: /sample keeps the decorative sizes this slice did not change", async () => {

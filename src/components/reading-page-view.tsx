@@ -46,7 +46,11 @@ export function ReadingPageView({ view, locale, selector, controls, deleteContro
   // A table pointer is only printed when there is a table to point at.
   const hasTable = (chart.calculation?.length ?? 0) > 0;
   const wheel = geometry
-    ? <div className="chart-cell"><ChartWheel geometry={geometry} locale={chartLocale} chartName={chart.name} returnInstant={returnDate(chart, chartLocale)} /></div>
+    // The wheel is drawn in the edition's language, so its subtree declares that language:
+    // a screen reader on an English interface must not pronounce a Spanish chart name, or
+    // the English instruction to the authoritative table, with English phonetics. The
+    // declaration is on this cell only — the notices beside it stay in the interface's.
+    ? <div className="chart-cell" lang={chartLocale}><ChartWheel geometry={geometry} locale={chartLocale} chartName={chart.name} returnInstant={returnDate(chart, chartLocale)} /></div>
     : <div className="chart-cell"><p className="small muted" style={{ maxWidth: 250 }}>{(es
       ? hasTable ? "No hay rueda para esta carta. La tabla numérica de abajo es la referencia autoritativa." : "No hay rueda para esta carta."
       : hasTable ? "There is no wheel for this chart. The numerical table below is the authoritative reference." : "There is no wheel for this chart.")}</p></div>;

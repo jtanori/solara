@@ -44,6 +44,16 @@ for (const profile of PAID_PROFILES) for (const locale of ["en", "es"] as const)
     assert.ok(view.wheelFacts, "the paid presentation carries its verified facts");
     assert.equal(view.wheelFacts!.houseSystem, "placidus");
     assert.equal(html.includes('data-wheel-system="placidus"'), true, "the paid page draws a Placidus wheel");
+    // `uiLocale` is deliberately the *opposite* of the edition's language, so this is the
+    // divergent case: the wheel's text is in `locale`, and the subtree that holds it must
+    // say so — otherwise a screen reader reads a Spanish chart name with English phonetics.
+    const cell = /<div class="chart-cell"([^>]*)>/.exec(html);
+    assert.ok(cell, "the wheel sits in its own cell");
+    assert.equal(/lang="([a-z]{2})"/.exec(cell![1]!)?.[1], locale, "the wheel subtree declares the edition's language");
+    assert.notEqual(locale, uiLocale);
+    // The UI notices beside it stay in the interface's language.
+    assert.ok(html.includes(uiLocale === "es" ? "Este cálculo es preliminar" : "This is a preliminary calculation"),
+      "adjacent UI copy is the interface's language");
     const pageWheel = projectWheel(view.wheelFacts!, locale);
     assert.ok(pageWheel, "the pinned snapshot projects");
     // The drawn anchors are the snapshot's longitudes, projected — not a re-cast for this
