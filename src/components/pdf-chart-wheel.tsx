@@ -1,6 +1,7 @@
 import React from "react";
 import type { WheelGeometry } from "@/lib/wheel";
 import { WHEEL_MIN_LABEL_FONT, WHEEL_VIEW_BOX } from "@/lib/wheel";
+import { PDF_FONT } from "@/readings/pdf-fonts";
 import type { Locale } from "@/lib/i18n";
 import { houseSystemLabel } from "@/readings/base-presentation";
 import { wheelAccessibleName, wheelLabelText } from "@/readings/wheel-labels";
@@ -39,6 +40,7 @@ import { wheelAccessibleName, wheelLabelText } from "@/readings/wheel-labels";
  */
 
 type SvgRenderer = Pick<typeof import("@react-pdf/renderer"), "Svg" | "G" | "Circle" | "Line" | "Text">;
+type DocumentText = Pick<typeof import("@react-pdf/renderer"), "Text">["Text"];
 
 /**
  * The drawing's box, in points. It equals the geometry's `viewBox` on purpose: the SVG is
@@ -54,9 +56,11 @@ function polar(angle: number, radius: number, centre: number) {
   return { x: centre + radius * Math.cos(angle * DEG), y: centre + radius * Math.sin(angle * DEG) };
 }
 
-export function PdfChartWheel({ geometry, renderer }: {
+export function PdfChartWheel({ text, geometry, renderer }: {
+  /** The title and caption, from the document's single `WheelCopy`. */
+  text: { title: string; caption: string };
   geometry: WheelGeometry;
-  renderer: SvgRenderer;
+  renderer: SvgRenderer & { Text: DocumentText };
 }): React.ReactElement {
   const { Svg, G, Circle, Line, Text } = renderer;
   const centre = geometry.viewBox / 2;
@@ -64,7 +68,20 @@ export function PdfChartWheel({ geometry, renderer }: {
   const point = (id: string) => geometry.points.find(candidate => candidate.id === id);
 
   return (
-    <Svg
+    <>
+      {/* The wheel's words, as ordinary document text around the drawing.
+       *
+       * Inside the `Svg` they were clipped away: the strings reached the content stream (every
+       * glyph assertion passed, text extraction found them) while the painted page showed
+       * nothing, because an `Svg` clips to its own viewport. Text extraction cannot see missing
+       * pixels; the emitted raster can. As siblings they sit outside the clip, wrap at the real
+       * page width instead of the 440-unit square, and stay inside the same unbreakable `View`,
+       * so the words and the wheel they describe can never be split by a page break.
+       *
+       * They arrive as `text` rather than being recomputed here so that the layout and the
+       * glyph gate read one object: see `wheelCopy`. */}
+      <Text style={{ fontSize: 9, color: "#3c342f", marginBottom: 6 }}>{text.title}</Text>
+      <Svg
       width={PDF_WHEEL_POINTS}
       height={PDF_WHEEL_POINTS}
       viewBox={`0 0 ${WHEEL_VIEW_BOX} ${WHEEL_VIEW_BOX}`}
@@ -83,7 +100,8 @@ export function PdfChartWheel({ geometry, renderer }: {
         return (
           <G key={`sign-${sign.index}`}>
             <Line x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke="#b3aa9d" strokeWidth={0.7} />
-            <Text x={label.x} y={label.y} textAnchor="middle" dominantBaseline="middle" style={{ fontSize: 9 }} fill="#6f665c">{sign.label}</Text>
+            <Text x={label.x} y={label.y} textAnchor="middle" dominantBaseline="middle"
+              style={{ fontSize: 9, fontFamily: PDF_FONT, fontWeight: 400 }} fill="#6f665c">{sign.label}</Text>
           </G>
         );
       })}
@@ -105,7 +123,8 @@ export function PdfChartWheel({ geometry, renderer }: {
             return (
               <G key={`house-${house.number}`}>
                 <Line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#a8a195" strokeWidth={0.8} />
-                <Text x={mid.x} y={mid.y} textAnchor="middle" dominantBaseline="middle" style={{ fontSize: 8.5 }} fill="#7d7469">{String(house.number)}</Text>
+                <Text x={mid.x} y={mid.y} textAnchor="middle" dominantBaseline="middle"
+                  style={{ fontSize: 8.5, fontFamily: PDF_FONT, fontWeight: 400 }} fill="#7d7469">{String(house.number)}</Text>
               </G>
             );
           })}
@@ -143,38 +162,14 @@ export function PdfChartWheel({ geometry, renderer }: {
                 y={candidate.labelPosition.y}
                 textAnchor="middle"
                 dominantBaseline="middle"
-                style={{ fontSize: geometry.labelFontSize[candidate.id] ?? WHEEL_MIN_LABEL_FONT, fontWeight: 700 }}
+                style={{ fontSize: geometry.labelFontSize[candidate.id] ?? WHEEL_MIN_LABEL_FONT, fontFamily: PDF_FONT, fontWeight: 700 }}
                 fill="#3c342f"
               >{wheelLabelText(candidate.label)}</Text>
             )}
           </G>
       ))}
-    </Svg>
+      </Svg>
+      <Text style={{ fontSize: 8, color: "#65564a", marginTop: 6, marginBottom: 10 }}>{text.caption}</Text>
+    </>
   );
-}
-
-/**
- * The wheel's words, as ordinary document text around the drawing.
- *
- * Inside the `Svg` they were clipped away: the strings reached the content stream (every
- * glyph assertion passed, text extraction found them) while the painted page showed
- * nothing, because an `Svg` clips to its own viewport. Text extraction cannot see missing
- * pixels; the emitted raster can. As siblings they sit outside the clip, wrap at the real
- * page width instead of the 340pt square, and stay inside the same unbreakable `View`, so
- * the words and the wheel they describe can never be split by a page break.
- */
-export function PdfWheelNotes({ geometry, locale, chartName, renderer, position }: {
-  geometry: WheelGeometry;
-  locale: Locale;
-  chartName: string;
-  renderer: { Text: SvgRenderer["Text"] };
-  position: "before" | "after";
-}): React.ReactElement {
-  const { Text } = renderer;
-  const { title, description, tableNote } = wheelAccessibleName(
-    chartName, houseSystemLabel(geometry.houseSystem, locale), locale,
-  );
-  return position === "before"
-    ? <Text style={{ fontSize: 9, color: "#3c342f", marginBottom: 6 }}>{title}</Text>
-    : <Text style={{ fontSize: 8, color: "#65564a", marginTop: 6, marginBottom: 10 }}>{description} {tableNote}</Text>;
 }

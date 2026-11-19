@@ -716,6 +716,58 @@ drawing — so the next instance fails a test.
 is not running. `tests/readings-wheel-pdf.test.ts` rebuilds in `before()`; hand-written
 probes must do the same.
 
+### Absent wheel explains itself
+
+A chart without facts draws no wheel, and **says why**: one headed block carrying the same
+sentence the page shows. This reverses an earlier decision in this slice, recorded here
+rather than quietly rewritten.
+
+The original argument was that a sentence would insert a line into every frozen paid edition.
+That confused two documents. Every existing snapshot is a chart with no facts at all, which
+takes the same path before and after — its text is byte-identical apart from the intended
+sentence — so freezing was never at risk. What the silence actually produced was a PDF with
+no drawing and no reason for it, which is the failure the plan's Missing data section names.
+
+The copy is index-selected exactly as on the page: a document that carries calculation blocks
+is told the table in the PDF is authoritative; one that does not gets the short sentence, so
+the PDF never points at a table it did not render. `tests/pdf.test.ts` was regenerated
+intentionally, with the eight changed text lines and eight hashes reviewed as rasters in both
+locales.
+
+### What the raster caught that assertions did not
+
+Three defects in this slice were invisible to every text-level check and were found only by
+rendering the PDF to an image and looking at it. They are recorded because each is a way a
+future slice can be green and wrong:
+
+1. **Clipped text.** The accessible name and the table pointer were `<Text>` children of the
+   `Svg`, at `y = -14` and `y = viewBox + 12` — outside the drawing's viewport. `Svg` clips to
+   its own viewport, so both were painted nowhere. The strings were still in the content
+   stream, so glyph coverage passed and `inspectPdf` extracted them. Text extraction cannot
+   see missing pixels.
+2. **A generous halo that erased its neighbours.** The page punches a halo with
+   `paintOrder="stroke"`, where the halo *is* the glyph outline. React-PDF has no
+   `paintOrder`, so the equivalent is an opaque rectangle — and a rectangle sized from the
+   projection's deliberately conservative collision constants covers whatever lies beside the
+   label. Every placed label sits on the sign band, so every rectangle covered a zodiac name
+   (Gemini, Taurus in the fixture) with page colour while leaving all glyphs in the stream.
+   The wheel now paints no background at all; the price is a label occasionally crossing a
+   chord, which is a better trade than a sign name disappearing.
+3. **A leaked scale factor.** With the drawing 340pt wide over a 440-unit viewBox, sibling
+   text inherited the viewBox transform: the 9pt title was painted at 6.95pt and the 8pt
+   caption at 6.18pt. Sizing the box to the viewBox (`PDF_WHEEL_POINTS = WHEEL_VIEW_BOX`)
+   removes the factor entirely rather than compensating for it.
+
+Two of these were only reachable by eye, but all three are now asserted — the painted size and
+in-page position of the title and caption, and the absence of any filled rectangle in the
+drawing — so the next instance fails a test.
+
+**Harness trap worth remembering:** `ReadingPdfRenderer` renders through the prebuilt
+`.pdf/worker.mjs`, not through `src/`. Rendering from an ad-hoc probe without first running
+`node scripts/build-pdf.mjs` inspects a stale bundle and reports conclusions about code that
+is not running. `tests/readings-wheel-pdf.test.ts` rebuilds in `before()`; hand-written
+probes must do the same.
+
 ### Absent wheel adds no text
 
 A chart without facts gains **no wheel block at all** — no heading and no missing-wheel
@@ -768,21 +820,37 @@ shared module) · `pdf-halo-returns` (paint an opaque box behind the labels) ·
 `pdf-snapshot-blind-update` (a test that fails if snapshots are regenerated without
 the recorded manual review note).
 
-All six code mutations were run and each is killed by a named test:
+All ten mutations were run and each is killed by a named test:
 
 | mutation | killed by |
 | --- | --- |
-| wheel labels omitted from the glyph set | glyph-set test (test 5) |
-| one-sided change to the input bound | parent/child spelling test (test 10) |
-| locally recomputed chord angle | coordinate-equality test (test 3) |
-| anchor primitives removed | coordinate-equality test (test 3) |
-| `wheelFacts` dropped from the serialized input | wheel-present and paid-edition tests (1, 2, 7, 8) |
-| an opaque halo returned to the labels | no-background-box test (test 11) |
+| wheel labels omitted from the glyph set | glyph-set test |
+| surrounding wheel copy omitted from the glyph set | glyph-set test |
+| one-sided change to the input bound | parent/child spelling test |
+| payload no longer normalized (facts serialized twice) | parent/child spelling test |
+| locally recomputed chord angle | coordinate-parity test |
+| **only a chord's second endpoint moved** | coordinate-parity test |
+| anchor primitives removed | coordinate-parity test |
+| `wheelFacts` dropped from the serialized input | wheel-present and paid-edition tests |
+| **`fontFamily` removed from the SVG text nodes** | font-substitution and Type1-resource tests |
+| **`wrap={false}` removed from the enclosing `View`** | title/caption co-location test |
 
-`pdf-wheel-splits-page` was dropped as a target, not skipped: `Svg` is in
-`@react-pdf/layout`'s `NON_WRAP_TYPES`, so there is no prop to remove and no state in
-which the block paginates. A mutation test for it would assert a property of the
-library, not of this code.
+Two of these escaped the first time they were run, which is why they are called out. Moving
+only a chord's *second* endpoint passed the parity test, because it compared `x1`/`y1` and
+counted anchors without checking where they were; segments are now compared as an unordered
+multiset of both endpoints, and anchors by position. Removing `fontFamily` passed everything,
+because no test examined which face drew the glyphs; the drawing now proves it with a
+character Noto covers and WinAnsi does not.
+
+`pdf-wheel-splits-page` is a **wrapper-level** mutation, not an `Svg` one. An earlier
+draft dropped this target on the reasoning that `Svg` is in `@react-pdf/layout`'s
+`NON_WRAP_TYPES` and so cannot paginate — true, and beside the point. The primitive keeps
+the *drawing* in one piece; it says nothing about the block that holds the heading, the
+drawing and the caption. Removing `wrap={false}` from that enclosing `View` splits the words
+from the drawing, and only the title/caption co-location test notices: the page-delta and
+`Svg`-only checks both still pass. It is in the table above for that reason.
+
+The `Svg` needs no `wrap` prop and must not be given one.
 
 ---
 
