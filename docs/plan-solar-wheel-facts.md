@@ -833,7 +833,7 @@ shared module) · `pdf-halo-returns` (paint an opaque box behind the labels) ·
 `pdf-snapshot-blind-update` (a test that fails if snapshots are regenerated without
 the recorded manual review note).
 
-All fourteen mutations were run and each is killed by a named test:
+All sixteen mutations were run and each is killed by a named test:
 
 | mutation | killed by |
 | --- | --- |
@@ -851,6 +851,8 @@ All fourteen mutations were run and each is killed by a named test:
 | **`wheelAbsentReason` collapsed to one code** | two-reasons test (EN and ES) |
 | **an extra label painted in the PDF's SVG only** | PDF-region vs rendered-page multiset |
 | **every Placidus anchor shifted +18 on x in the PDF** | paid edition vs the snapshot's projection |
+| **the whole PDF drawing scaled 1.02x** | x-translation and baseline-slope assertions |
+| **only labels at one type size displaced** | baseline slope, not a constant offset |
 
 Six of these escaped when first tried, which is why they are called out. Four were escapes in
 the *tests*, not the product, and they share one shape: the assertion's *expectation* was
@@ -863,6 +865,23 @@ taken from the emitter or the projection rather than from the other rendered sur
 - The paid test searched `projectWheel(snapshot.facts)` for anchors instead of reading the
   emitted tree, so shifting every Placidus anchor passed.
 - The absence block had only one sentence to assert, so any line satisfied it.
+
+Two more were found by self-review before the reviewer saw them, and both were assertions that
+were true by accident:
+
+- The label-region helper asserted a **single constant y offset** for every label, with a
+  1.5pt tolerance. The real mapping is affine in the font size (`dy = 130.24 + 0.357 * size`,
+  worst residual 0.0004pt), because SVG centres the glyph box and React-PDF places the
+  baseline. The constant-offset claim passed only because the fixture's labels span 7–10pt, a
+  range whose 1.07pt spread sits under the tolerance; a 12pt label would have failed while the
+  drawing was correct. The slope is now derived and its residual bounded, which also makes a
+  scaled or rotated drawing fail.
+- The page carrying the drawing was located by "more than half the labels are present". On a
+  paid edition that matched **three** pages — the drawing plus two aspect tables, which list
+  body names as rows — and the first match was right only because the drawing comes first.
+  A house number is the real discriminator (it exists only inside the drawing; the paid tables
+  print "House 12 · Placidus" as part of a longer cell), and the helper now requires exactly
+  one qualifying page.
 
 The rule these produce: **assert against what the other surface painted, never against the
 shared input both surfaces read.** For text that means extracting the PDF's items by measured
