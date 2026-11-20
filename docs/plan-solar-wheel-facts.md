@@ -795,11 +795,19 @@ probes must do the same.
       `wheelLabelTexts(geometry)`, which is the PDF's own function, so it compared geometry
       to itself: changing only the page's painted Pluto label left both parity tests green.
       The page is now rendered through `renderToStaticMarkup`, its `<text>` nodes read out of
-      the markup, and the multisets compared; the same HTML-only mutation fails.
+      the markup, and the multisets compared; the same HTML-only mutation fails. The PDF side
+      is extracted the same way: the drawing's square is located on the page by measuring the
+      offset from labels whose position the geometry dictates exactly (with the scatter of
+      those residuals asserted, so a scale or rotation cannot hide in an offset), every text
+      item inside it is collected, and *those* are compared to the page's `<text>` nodes. An
+      extra label painted only by the PDF fails.
 - [ ] Page and PDF primitives are compared tuple for tuple — every `<line>` and `<circle>`
       the page emits, matched against the PDF tree as an unordered multiset of rounded
       coordinates, ticks included. Counting ticks without comparing their coordinates was
-      the earlier gap: a tick could move and the count still matched.
+      the earlier gap: a tick could move and the count still matched. The paid fixture uses
+      the same discipline against the pinned snapshot: anchors are matched by the projection's
+      own emitted coordinate, cusps, chords and leaders by segment, and the leftover must be
+      exactly the ticks — a shifted Set/Placidus anchor leaves a point unmatched and fails.
 - [ ] A wheel label outside the font subset yields `409 pdf_glyphs` — no boxes, no
       silent drop, no transliteration.
 - [ ] The wheel never splits across pages; the fixed-layout and page-count caps still
@@ -825,7 +833,7 @@ shared module) · `pdf-halo-returns` (paint an opaque box behind the labels) ·
 `pdf-snapshot-blind-update` (a test that fails if snapshots are regenerated without
 the recorded manual review note).
 
-All twelve mutations were run and each is killed by a named test:
+All fourteen mutations were run and each is killed by a named test:
 
 | mutation | killed by |
 | --- | --- |
@@ -841,10 +849,24 @@ All twelve mutations were run and each is killed by a named test:
 | **`wrap={false}` removed from the enclosing `View`** | title/caption co-location test |
 | **only the page's Pluto label changed** (HTML-only drift) | rendered-page parity test |
 | **`wheelAbsentReason` collapsed to one code** | two-reasons test (EN and ES) |
+| **an extra label painted in the PDF's SVG only** | PDF-region vs rendered-page multiset |
+| **every Placidus anchor shifted +18 on x in the PDF** | paid edition vs the snapshot's projection |
 
-Four of these escaped when first tried, which is why they are called out. The last two were
-escapes in the *tests*, not the product: the parity test never rendered the page, and the
-absence block had only one sentence to assert. Moving
+Six of these escaped when first tried, which is why they are called out. Four were escapes in
+the *tests*, not the product, and they share one shape: the assertion's *expectation* was
+taken from the emitter or the projection rather than from the other rendered surface.
+
+- The parity test never rendered the page; it read `wheelLabelTexts(geometry)` — the PDF's
+  own function — so an HTML-only label change passed.
+- Then it still compared a PDF `includes()` over the whole document against that same
+  geometry, so an extra label painted only by the PDF passed.
+- The paid test searched `projectWheel(snapshot.facts)` for anchors instead of reading the
+  emitted tree, so shifting every Placidus anchor passed.
+- The absence block had only one sentence to assert, so any line satisfied it.
+
+The rule these produce: **assert against what the other surface painted, never against the
+shared input both surfaces read.** For text that means extracting the PDF's items by measured
+coordinates; for primitives it means walking the emitted element tree. Moving
 only a chord's *second* endpoint passed the parity test, because it compared `x1`/`y1` and
 counted anchors without checking where they were; segments are now compared as an unordered
 multiset of both endpoints, and anchors by position. Removing `fontFamily` passed everything,
