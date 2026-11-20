@@ -85,10 +85,16 @@ export function PdfChartWheel({ text, geometry, renderer }: {
       width={PDF_WHEEL_POINTS}
       height={PDF_WHEEL_POINTS}
       viewBox={`0 0 ${WHEEL_VIEW_BOX} ${WHEEL_VIEW_BOX}`}
-      /* No `wrap` prop: `Svg` is one of React-PDF's NON_WRAP_TYPES, so it is never
-         paginated whatever the caller does. The unbreakable-block guarantee is a property
-         of the primitive, not of this call — which is stronger than a prop, and is why a
-         mutation that "removes wrap={false}" cannot reintroduce a split wheel here. */
+      /* No `wrap` prop, and none would do anything: `Svg` is one of React-PDF's
+         NON_WRAP_TYPES, so this element is never paginated.
+       *
+       * That protects the *drawing* and nothing else. The heading, this title, and the
+       * caption are ordinary `Text` siblings, and without `wrap={false}` on the enclosing
+       * View in `solar-pdf.tsx` a tight page will break between them — the words on one
+       * page, the wheel they describe on the next. The unbreakable-block guarantee comes
+       * from that wrapper, which is why removing it fails the title/caption co-location
+       * test. An earlier version of this comment claimed the primitive made the wrapper's
+       * prop redundant; that was wrong, and measured wrong. */
       style={{ marginBottom: 10 }}
     >
       <Circle cx={centre} cy={centre} r={radii.outer} fill="#FBF7F2" stroke="#8f897d" strokeWidth={0.9} />

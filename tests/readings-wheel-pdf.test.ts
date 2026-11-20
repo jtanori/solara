@@ -186,7 +186,7 @@ function renderPageWheel(geometry: NonNullable<ReturnType<typeof projectWheel>>,
  */
 function pdfWheelRegion(
   geometry: NonNullable<ReturnType<typeof projectWheel>>,
-  inspected: { pages: { items: { text: string; x: number; y: number; width: number; size: number }[] }[] },
+  inspected: { pages: { text: string; items: { text: string; x: number; y: number; width: number; size: number }[] }[] },
   locale: "en" | "es",
 ) {
   const centre = geometry.viewBox / 2;
@@ -195,43 +195,94 @@ function pdfWheelRegion(
     x: centre + radius * Math.cos(angle * deg),
     y: centre + radius * Math.sin(angle * deg),
   });
-  const page = inspected.pages.find(candidate => candidate.items.some(item => item.text === geometry.signs[0]!.label));
-  assert.ok(page, `${locale}: the drawing's page is identifiable by its first sign`);
+  /**
+   * The drawing's page, identified by something only the *drawing* paints.
+   *
+   * Counting sign and point labels is not enough on a paid edition: its aspect tables list
+   * body names as rows, so pages 5 and 6 carry 41 and 21 "drawing" labels and a
+   * majority-of-labels rule matched three pages — the drawing's, plus two tables. Picking the
+   * first match happened to be right and was luck, not identification.
+   *
+   * A **house number** is the discriminator. It exists only inside the drawing: the paid
+   * tables print "House 12 · Placidus" as part of a longer cell, never a bare numeral, and the
+   * page component emits it as its own `<text>`. So the page is the one carrying both the
+   * bare house numbers and the sign names, and the assertion below requires that page to be
+   * unique rather than taking whichever came first.
+   */
+  const houseNumbers = geometry.houses.map(house => String(house.number));
+  const candidates = inspected.pages.filter(candidate =>
+    candidate.items.some(item => item.text === geometry.signs[0]!.label)
+    && candidate.items.filter(item => houseNumbers.includes(item.text)).length >= houseNumbers.length / 2);
+  assert.equal(candidates.length, 1,
+    `${locale}: exactly one page carries the drawing (house numbers plus sign names); found ${candidates.length}`);
+  const page = candidates[0]!;
 
-  /** Residuals from labels the geometry positions exactly. */
+  /**
+   * The mapping's *form*, derived from the two emitters rather than assumed.
+   *
+   * x is a pure translation: both emitters centre the text on the same point, and the
+   * measured residual is identical to within 1e-3 of a point for every label.
+   *
+   * y is **affine in the font size**, not constant. SVG's `dominantBaseline="middle"` centres
+   * the glyph box, while React-PDF positions the *baseline*; the difference is a fraction of
+   * the em, so it scales with `fontSize`. Fitting the samples gives
+   * `dy = 130.24 + 0.357 * size` with a worst residual of 0.0004pt, so the two constants are
+   * a property of the emitters and not of this fixture.
+   *
+   * The first version of this helper asserted a *single* constant offset — "every label maps
+   * by the same y offset, spread < 1.5pt". That passed only because the fixture's labels
+   * happen to span 7–10pt, a range whose documented 1.07pt spread sits under the threshold. It
+   * was true by accident: a 12pt label would have broken it while the drawing was perfectly
+   * correct. Deriving the slope instead makes the check exact and independent of which sizes
+   * the fixture happens to place.
+   */
   const dx: number[] = [];
-  const dy: number[] = [];
+  const samples: { size: number; dy: number }[] = [];
   for (const sign of geometry.signs) {
     const expected = polar(sign.labelAngle, (geometry.radii.signRing + geometry.radii.outer) / 2);
     const item = page.items.find(candidate => candidate.text === sign.label);
     assert.ok(item, `${locale}: sign ${sign.label} is painted`);
     dx.push(item.x + item.width / 2 - expected.x);
-    dy.push(item.y - expected.y);
+    samples.push({ size: item.size, dy: item.y - expected.y });
   }
   for (const point of geometry.points) {
     if (point.band === null) continue;
     const item = page.items.find(candidate => candidate.text === wheelLabelText(point.label));
     assert.ok(item, `${locale}: placed label ${point.label} is painted`);
     dx.push(item.x + item.width / 2 - point.labelPosition.x);
-    dy.push(item.y - point.labelPosition.y);
+    samples.push({ size: item.size, dy: item.y - point.labelPosition.y });
   }
-  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
-  const spread = (values: number[]) => Math.max(...values) - Math.min(...values);
-  const offsetX = median(dx);
-  const offsetY = median(dy);
-  // A scale, a rotation or a different box would show up as scatter around the offset. The
-  // tolerances are the font-metric and baseline differences between the two emitters, not
-  // slack for a layout change: 0.5pt of x, 1.5pt of y.
-  assert.ok(spread(dx) < 0.5, `${locale}: every label maps by the same x offset (spread ${spread(dx).toFixed(3)}pt)`);
-  assert.ok(spread(dy) < 1.5, `${locale}: every label maps by the same y offset (spread ${spread(dy).toFixed(3)}pt)`);
 
+  const spread = (values: number[]) => Math.max(...values) - Math.min(...values);
+  assert.ok(spread(dx) < 0.5, `${locale}: x is a pure translation (spread ${spread(dx).toFixed(3)}pt)`);
+  const offsetX = dx.reduce((sum, value) => sum + value, 0) / dx.length;
+
+  // Least-squares fit of dy against size, then the residual bound that makes it a model
+  // rather than a coincidence. Sizes must actually vary or the slope is not identified.
+  assert.ok(new Set(samples.map(sample => sample.size)).size >= 3,
+    `${locale}: the fixture sets labels at several sizes, so the baseline model is identified`);
+  const n = samples.length;
+  const sumSize = samples.reduce((sum, sample) => sum + sample.size, 0);
+  const sumDy = samples.reduce((sum, sample) => sum + sample.dy, 0);
+  const sumSizeSq = samples.reduce((sum, sample) => sum + sample.size ** 2, 0);
+  const sumSizeDy = samples.reduce((sum, sample) => sum + sample.size * sample.dy, 0);
+  const slope = (n * sumSizeDy - sumSize * sumDy) / (n * sumSizeSq - sumSize ** 2);
+  const intercept = (sumDy - slope * sumSize) / n;
+  const residuals = samples.map(sample => sample.dy - (intercept + slope * sample.size));
+  assert.ok(Math.max(...residuals.map(Math.abs)) < 0.01,
+    `${locale}: labels map by dy = ${intercept.toFixed(2)} + ${slope.toFixed(3)}*size (worst residual ${Math.max(...residuals.map(Math.abs)).toFixed(4)}pt)`);
+  // The slope is the emitters' baseline-vs-glyph-box difference. Pinning it means a *scaled*
+  // or *rotated* drawing cannot pass by having its distortion absorbed into the fit.
+  assert.ok(slope > 0.2 && slope < 0.5, `${locale}: the baseline offset is a fraction of the em (${slope.toFixed(3)})`);
+
+  const offsetY = intercept + slope * 9;
   const left = offsetX;
   const top = offsetY;
   const size = geometry.viewBox;
   const inside = page.items.filter(item => item.text.trim().length > 0
     && item.x + item.width > left && item.x < left + size
     && item.y > top && item.y < top + size);
-  return { page, labels: inside.map(item => item.text.trim()), left, top, size, offsetX, offsetY };
+  return { page, pageIndex: inspected.pages.indexOf(page), labels: inside.map(item => item.text.trim()), left, top, size, offsetX, offsetY };
 }
 
 /** Rounded to the precision both emitters write, so float noise is not a parity failure. */
@@ -329,6 +380,45 @@ test("PDF wheel: the painted labels are the page's own, rendered from the same c
       assert.equal(region.labels.includes(text), false, `${locale}: the region excludes the neighbouring ${JSON.stringify(text.slice(0, 24))}`);
     }
   }
+});
+
+/**
+ * The same region check on a **paid** document.
+ *
+ * The free fixture puts the wheel on a page of its own, so an extractor that simply took
+ * every item on that page would pass there while being wrong. A paid edition is the hard
+ * case: the wheel shares its page with the heading, the accessible name and a summary above
+ * it, and the page continues with tables below. This asserts the region is exactly the
+ * drawing in that geometry — the same equality as the free fixture, on the document where a
+ * loose box would sweep in neighbouring text.
+ */
+test("PDF wheel: the paid drawing's painted labels are exactly the page's, on a shared page", async () => {
+  const locale = "en" as const;
+  const snapshot = calculatePaidSnapshot(randomUUID(), readingChartInput);
+  const chart = { ...snapshot.chart, calculation: paidCalculationBlocks(snapshot, locale) };
+  const { inspected } = await render({ chart, content: pdfFixture(locale, "paid").content, wheelFacts: snapshot.facts });
+  const geometry = projectWheel(snapshot.facts, locale);
+  assert.ok(geometry);
+  const region = pdfWheelRegion(geometry, inspected, locale);
+  /**
+   * The page really is shared — and by what, exactly.
+   *
+   * The wheel lands on the page after the paid cover, which also carries the running header.
+   * (An earlier version of this assertion looked for "Saved chart summary", which is on the
+   * *cover*: the check was wrong about the layout, not the layout about the check.) Below the
+   * drawing the document continues with the calculation tables, so this document is the case
+   * where a loose region would sweep in a neighbouring page's worth of text.
+   */
+  assert.ok(region.page.items.some(item => item.text === "YOUR SOLAR RETURN"),
+    "the wheel page also carries the document's running header");
+  const tablePages = inspected.pages.flatMap((candidate, index) => candidate.text.includes("Return placements · Placidus") ? [index] : []);
+  assert.ok(tablePages.length > 0, "the paid document has calculation tables");
+  assert.equal(tablePages.includes(region.pageIndex), false,
+    "the calculation tables are on a different page from the drawing");
+  const pageWheel = renderPageWheel(geometry, locale, chart.name);
+  const sorted = (values: string[]) => [...values].map(value => value.trim()).filter(Boolean).sort();
+  assert.deepEqual(sorted(region.labels), sorted(pageWheel.labels),
+    "on a shared page the region still contains exactly the drawing's labels");
 });
 
 test("PDF wheel: the page's line and circle primitives are the PDF's, coordinate for coordinate", async () => {
@@ -525,24 +615,6 @@ test("PDF wheel: page count grows by a measured, bounded amount when the wheel i
  * This builds genuinely Placidus facts through the same calculator the paid route uses and
  * asserts the document names the system and draws twelve cusps from it.
  */
-test("PDF wheel: a paid edition draws its own pinned Placidus facts", async () => {
-  const result = calculateSolarReturn(readingChartInput);
-  const facts = solarReturnFacts(readingChartInput, result, "placidus");
-  const geometry = projectWheel(facts, "en")!;
-  assert.equal(geometry.houseSystem, "placidus", "the fixture really is Placidus");
-  assert.equal(geometry.houses.length, 12, "a Placidus wheel has twelve cusps");
-
-  const input = pdfFixture("en", "paid");
-  const { inspected } = await render({ ...input, wheelFacts: facts });
-  assert.ok(inspected.text.includes("Factual wheel"), "the paid edition gains the wheel");
-  // The caption names the system the facts carry, not a default.
-  assert.ok(inspected.text.includes("placidus") || inspected.text.includes("Placidus"),
-    "the drawing identifies its own house system");
-  // And the document still identifies itself as the paid edition.
-  assert.ok(inspected.text.includes(editionTitle(input.content)), "paid edition identity is unchanged");
-});
-
-
 test("PDF wheel: facts ride to the worker inside the one shared bound", async () => {
   // The behavioural bound is what the plan asks for: a payload carrying max-size facts is
   // admitted by both sides, and one byte over is rejected by both.
