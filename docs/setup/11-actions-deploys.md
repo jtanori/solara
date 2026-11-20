@@ -48,6 +48,7 @@ preview database once #176 or its fallback lands.
 | `staging` | `DATABASE_URL` (direct, staging), `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `staging` |
 | `production` | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `main` |
 | `production-migrations` | `DATABASE_URL` (direct, production), `DATABASE_URL_STAGING_READONLY` | branch `main`, required reviewer = operator, **Prevent self-review OFF** |
+| `production-diagnostics` | `DATABASE_URL_PRODUCTION_READONLY` | branch `main`, read-only role, no reviewer |
 
 Notes:
 
@@ -117,11 +118,13 @@ fallback.
 While a run is waiting:
 
 - `/api/version` on the production domain still reports the **previous** build. That is correct.
-- The drift monitor treats `status: waiting` as healthy until the approval horizon, then alerts.
+- The drift monitor treats a **young** `status: waiting` as healthy until the approval horizon, then
+  alerts. The horizon is measured from the observable start defined in §8, not from first sight.
 - If a newer promotion is merged in the meantime, approving the older run must not deploy stale
-  code: the migrate job re-asserts that `github.sha` still equals the branch head and refuses
-  otherwise. **A stale-run refusal is benign** — it appears as a red run with "superseded by
-  <SHA>" and is not an outage.
+  code: after approval and again immediately before the alias write, the run re-asserts that
+  `github.sha` still equals the branch head and that staging still serves the recorded base.
+  **A stale-run refusal is benign** — it appears as a red run with "superseded by <SHA>" and is not
+  an outage.
 
 ### First production deploy through Actions
 
@@ -134,18 +137,27 @@ malfunction.
 ### Schema-free hotfixes
 
 A direct `hotfix/*` merge or push to `main` is not a merge of `staging`, so it cannot satisfy the
-promotion-shape assertion. The default remains: **all changes reach `main` through `staging`.** If an
-emergency genuinely requires a direct fix:
+promotion-shape assertion. The default remains: **all changes reach `main` through `staging`.**
 
-- dispatch `deploy-production.yml` with `hotfix=true` against the `hotfix/*` ref (operator only);
-- the workflow asserts the diff against the **live commit** touches **no `drizzle/` file** and no
-  schema-bearing path, and it fails otherwise;
-- it still requires `production-migrations` approval, still verifies the candidate and the live
+The dispatch ref is **protected `main`**, never `hotfix/*`: both production environments are
+restricted to `main` (§2), so a `hotfix/*` ref cannot obtain the credentials the path needs. If an
+emergency genuinely requires a direct fix, it is **two steps**:
+
+1. merge the reviewed, schema-free change to protected `main` through the normal merge path;
+2. dispatch the reviewed `deploy-production.yml` on **`main`** for the current verified, merged
+   `main` SHA, with `hotfix=true` (operator only).
+
+On that dispatch the workflow:
+
+- asserts the diff against the **live commit** touches **no `drizzle/` file** and no schema-bearing
+  path, and fails otherwise;
+- still requires `production-migrations` approval, still verifies the candidate and the live
   identity, and still creates a GitHub Deployment;
-- it records in the incident/deployment summary that it bypassed the promotion shape, and why.
+- records in the incident/deployment summary that it bypassed the promotion shape, and why.
 
-This path replaces the promotion-shape assertion for that run. It never permits a schema change — a
-hotfix that needs schema is reverted and promoted normally.
+A `hotfix/*` branch may exist for review, but the deployment runs from `main`. This path replaces
+the promotion-shape assertion for that run. It never permits a schema change — a hotfix that needs
+schema is reverted and promoted normally.
 
 ## 5. Failure handling
 
@@ -154,15 +166,26 @@ hotfix that needs schema is reverted and promoted normally.
 | build | untouched | previous build | fix the build; re-run |
 | migrate | pending batch rolls back as one transaction (`lock_timeout` aborts before commit); a batch that already committed stays | previous build | inspect the run log; the migrate job is idempotent, re-run it |
 | candidate verify | migrated | previous build | candidate was never promoted; fix and re-run |
-| post-promote verify | migrated | previous build re-promoted | deployment failed, schema stayed; fix forward |
+| post-promote verify, **compatible** release | migrated | revert to the recorded prior deployment ID | fix forward or re-run |
+| post-promote verify, **incompatible / unrecorded / no prior** | migrated | **no automatic revert**; alias left as-is, page for forward fix | operator decides: forward fix, or alias move once compatibility is established |
 
-Auto-revert is an **alias move only**. It never reverses a migration. If migration succeeded and
-deployment failed, the schema stays: fix forward, or roll back application code only once
-compatibility is established.
+Auto-revert is **conditional and default-deny**, and it is an **alias move only** — it never reverses
+a migration. It runs only when a prior deployment ID was recorded, the release carries a positive
+compatibility record, and the release has no `no-auto-rollback` mark.
 
-Every failure opens or updates a single incident issue with the SHA, the stage reached, and whether
-the rollback succeeded. On the first Actions deploy there is no previous deployment to revert to;
-the revert step skips and the incident still opens.
+- **Before cutover**, record compatibility in the deploy record/marker as `compatible: yes` with the
+  migration hashes it was verified against. This is usable by the legacy path too. Absence is
+  treated as incompatible.
+- **After cutover**, the workflow reads that record and the `no-auto-rollback` mark set by a
+  `migration:breaking-approved` override.
+
+Readiness being green does **not** prove the previous build works against a newer schema. When the
+conditions do not hold, the alias is not moved automatically: the incident opens and the operator is
+paged for a forward fix. On the first Actions deploy, record the existing stable deployment as the
+prior ID when one exists; only a genuinely absent alias skips the revert cleanly.
+
+Every failure opens or updates a single incident issue with the SHA, the stage reached, the recorded
+prior ID (or "none"), and whether a revert ran or was withheld.
 
 ## 6. Break-glass
 
@@ -179,21 +202,39 @@ the environment secret; the operator dispatches it.
 | `sha` | full 40-char commit | must resolve to a commit on an authorized protected ref |
 | `dry_run` | `true` \| `false` | `false` only for an emergency forward-fix |
 
-Gates for a **write** dispatch (`mode=migrate`, `dry_run=false`):
+**Mode × target is the only routing authority.** Each cell has exactly one allowed ref, environment
+and credential. Anything else is refused before the job starts:
 
-- the ref is an **authorized protected branch** (`main` for production, `staging` for staging) and
-  `sha` equals that branch's reviewed head (or a recorded ancestor) — no arbitrary ref, no fork;
-- the job runs under the **`production-migrations`** environment (approval, Prevent self-review
-  OFF). The production database credential now lives there, not in `production`, so the workflow
-  must request that environment for this path;
-- the **staging hash rehearsal** passes: every pending production hash already exists in staging's
-  `drizzle.__drizzle_migrations`, read with the read-only staging credential;
-- it shares the migration **concurrency group** with `deploy-production.yml`'s migrate job
-  (`cancel-in-progress: false`), so a break-glass run and a release run cannot apply schema
-  concurrently.
+| `env` | `mode` | Allowed ref | Environment | Credential | Approval |
+| --- | --- | --- | --- | --- | --- |
+| `staging` | `migrate` | `staging` | `staging` | `DATABASE_URL` (direct staging) | none (branch-restricted only) |
+| `production` | `migrate` | `main` | `production-migrations` | `DATABASE_URL` (direct production) | **required** |
+| `staging` | `verify` | `staging` | `staging` | `DATABASE_URL` (direct staging, read-only queries only) | none |
+| `production` | `verify` | `main` | `production-diagnostics` | `DATABASE_URL_PRODUCTION_READONLY` | none |
 
-Diagnostics (`mode=verify`) are read-only, need no write approval, and still use the environment
-secret. Their output names hashes and tables — never a URL, host, or credential.
+- `production-diagnostics` is a **separate, least-privilege** environment: branch `main` only, a
+  read-only role, no reviewer. It reads schema metadata only — migration state, table and index
+  names — never application rows. Until it is provisioned, production diagnostics run under
+  `production-migrations` **with the same approval** — a read-only query is not a reason to release
+  the production write credential without approval.
+- A write dispatch additionally requires: the ref is an **authorized protected branch** (`main` for
+  production, `staging` for staging) and `sha` equals that branch's reviewed head (or a recorded
+  ancestor) — no arbitrary ref, no fork.
+- The run **revalidates the approved target and SHA after approval**, immediately before touching the
+  database, using the same SHA-fresh guard as `deploy-production.yml`. An approval for one `sha` never
+  authorises another.
+- The **staging hash rehearsal** passes before a production write: every pending production hash
+  already exists in staging's `drizzle.__drizzle_migrations`, read with the read-only staging
+  credential.
+- The rehearsal and the apply share the **per-target migration concurrency lock** with
+  `deploy-staging.yml`/`deploy-production.yml` (`cancel-in-progress: false`), so a break-glass run and
+  a release run cannot rehearse or apply schema concurrently.
+
+**Diagnostics output contract.** `mode=verify` prints **names only**: migration hashes, table and
+index names, readiness state, and counts. Never a URL, host, endpoint, user, credential, or query
+text. The same contract applies to the incident summary. Fixtures cover the four dispatch cells, an
+unapproved production write, an approval for a superseded SHA, a production diagnostic without the
+read-only environment, and rehearsal/apply racing a release run.
 
 Both modes refuse a target they cannot prove. Neither is safe to run from an agent session.
 
@@ -224,7 +265,23 @@ Two horizons, because two different things can stall:
 | Signal | Age measured from | Alert |
 | --- | --- | --- |
 | Branch head ≠ live commit, or `migrations` ≠ `exact` | first observation of the mismatch | after the short threshold, once, deduplicated |
-| Approval wait (`status: waiting`) | the run **entering** `waiting` (deployment/job `started_at`, not "first seen by the monitor") | after the approval horizon, once, deduplicated |
+| Approval wait (`status: waiting`) | the observable **start of the approval wait** (see below) | after the approval horizon, once, deduplicated |
+
+**The approval-wait start is not a convenience timestamp.** A job `started_at` does not exist until
+the job starts — a job blocked on an environment approval may never start. A deployment's creation
+time is not the transition into `waiting` either. The monitor resolves the start in this order:
+
+1. a **verified API/event timestamp** for the transition into the approval wait — the deployment
+   status `waiting` event or the environment approval-required event, if the API exposes one;
+2. otherwise, the monitor persists its **first observation of `waiting`**, keyed by
+   `(run_id, run_attempt, environment)`, and measures from that persisted instant. A newer attempt
+   gets a new key and a fresh clock; an older attempt's record never suppresses it.
+
+The scheduled poll cadence is the **bounded error** on the start: state the cadence, and treat the
+horizon as `cadence + configured horizon`. A missing timestamp is never "very old" and never "now" —
+it is first-observed, persisted, and deduplicated. Fixtures: absent timestamps, a newer run attempt,
+a young wait (quiet), an overdue wait (one alert), duplicate ticks (no new issue), and an older
+attempt's stale observation not suppressing a new one.
 
 - The stale-commit / stuck-`ahead` horizon is short (for example 20 minutes): nothing legitimate holds
   it that long.
@@ -256,8 +313,31 @@ the record, and workflows never commit to `main`.
 ## 10. Cutover checklist (proves the §0 exception)
 
 Run this per environment, on the running system — not by inspection. Record the evidence in the
-cutover PR and the tracker issue (#178). The `production-migrations` gate is **not in force** until
-every box for production is checked.
+cutover PR and the tracker issue (#178). Complete **baseline** first; the production approval proof
+comes **after** a safe baseline exists, not alongside it. The `production-migrations` gate is **not in
+force** until every box for production is checked.
+
+**Baseline — before either deployer is enabled:**
+
+- [ ] **Stable verified baseline recorded.** The current stable deployment ID/alias, live commit,
+      `/api/version` state and migration state are written down before any cutover step. A no-op
+      merge is not a baseline.
+- [ ] **No pending journal hashes.** `drizzle/meta/_journal.json` has no entry absent from the live
+      environment's `__drizzle_migrations` (or the difference is explicitly the cutover release).
+- [ ] **No schema-bearing diff live → candidate.** `git diff <live-commit> <cutover-candidate>` over
+      `drizzle/` is empty; a schema-bearing commit that is not yet served is not a schema-neutral
+      start.
+
+**Overlap and freeze:**
+
+- [ ] **Schema-neutral freeze held across every overlap step**, including the first post-flip merge:
+      no merge that adds `drizzle/*.sql` to this environment until its cutover is complete.
+- [ ] **Alias ownership proved.** The stable domain resolves to the **Actions-created deployment ID**,
+      not merely a matching SHA.
+- [ ] **One deployer.** The first post-flip merge produced exactly one deployment, created by the
+      workflow.
+
+**Production approval proof — only after the baseline above:**
 
 - [ ] **Same-operator release.** The operator who merged can approve the `production-migrations` job
       with Prevent self-review OFF; no second identity was needed.
@@ -265,11 +345,9 @@ every box for production is checked.
       required status check nor a required deployment; a subsequent merge is unaffected.
 - [ ] **Required checks are non-API-dependent.** The promotion tree-equality signal is advisory; the
       fail-closed identity/run assertion runs post-merge.
-- [ ] **Schema-neutral freeze** held during the overlap (no `drizzle/` merge).
-- [ ] **Alias ownership proved.** The stable domain resolves to the **Actions-created deployment ID**,
-      not merely a matching SHA.
-- [ ] **One deployer.** The first post-flip merge produced exactly one deployment, created by the
-      workflow.
+
+**Closeout:**
+
 - [ ] **Rollback drill (a) and (b)** recorded separately with run links (#76).
 - [ ] **`docs/deploys.md` frozen at cutover** with the date and the cutover run link; historical rows
       unchanged.

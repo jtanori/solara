@@ -80,20 +80,22 @@ deploy-staging.yml:  build ─► migrate staging ─► stage ─► verify can
      │
      ▼ promotion PR (merge commit only) + promotion gate
 deploy-production.yml: build ─► [approval if migrations] ─► migrate ─► stage ─► verify ─► promote ─► verify
-                                                                                   └─ failure: re-promote previous
+                                                                                   └─ failure: conditional alias revert (recorded prior + compatible + no mark)
 drift-monitor (8a/8b): branch HEAD ≠ live, or migrations state stuck  ─► alert
 ```
 
 ## 4. Failure semantics
 
-Every failure leaves production serving something valid, and says so.
+Every failure leaves production in a **known, reported state**: either the previous build, or the
+candidate with an explicit "no revert" decision. Nothing is inferred from email.
 
 | Fails at | Database | Live site | Signal |
 | --- | --- | --- | --- |
 | build | untouched | previous build | red run + incident issue |
 | migrate | pending batch rolls back as one transaction (`lock_timeout` aborts before commit) | previous build | red run + issue |
 | candidate verify | migrated | previous build; candidate never promoted | red run + issue |
-| post-promote verify | migrated | previous build re-promoted (alias only) | red run + issue |
+| post-promote verify, **compatible** release | migrated | revert to the recorded prior deployment ID (alias only) | red run + issue |
+| post-promote verify, **incompatible or unrecorded** | migrated | **no automatic revert**; alias left as-is, page for forward fix | red run + issue + operator decision |
 | approval declined | untouched | previous build | run `waiting` → cancelled |
 
 **"Merged but not live" is a first-class state**, reported by the drift monitor, not inferred from
@@ -101,12 +103,29 @@ email.
 
 ### What auto-revert does and does not mean
 
-- It **re-promotes the previous Vercel deployment** (an alias move). It never runs a down migration
-  and never reverts database state.
-- If migration succeeded and deployment failed, the schema stays. Report the release as failed and
-  fix forward, or roll back application code only once compatibility is established.
-- The alias path is the one part of the current tooling that has never run against the live API.
-  #76's acceptance is a real drill, and [Phase 3, cutover](#13-cutover) step 5 is that drill.
+Auto-revert is **conditional and default-deny**. It is an alias move to the **recorded prior
+deployment ID** — never a down migration, never a database change — and it happens only when all of
+these hold:
+
+1. a prior deployment ID was recorded before the candidate was promoted (the legacy stable
+   deployment counts; record it if the first Actions deploy is not the first deployment ever);
+2. the release carries a **positive compatibility record** — default deny when absent; and
+3. the release does **not** carry the `no-auto-rollback` mark set by a `migration:breaking-approved`
+   override.
+
+The compatibility source before the Actions cutover is the same record the legacy path can write: a
+`compatible: yes` field in the deploy record/marker naming the migration hashes it was checked
+against. After cutover the workflow reads that record and the no-auto-rollback mark. A release with
+no positive record is treated as incompatible.
+
+When the conditions do not hold — a breaking migration, a missing compatibility record, or no prior
+deployment at all — the alias is **not** moved automatically. The previous build may talk to a schema
+it does not understand; readiness being green does **not** prove it works. The run opens the incident
+and pages the operator for a forward fix, or for a deliberate alias move once compatibility is
+established.
+
+The alias path is the one part of the current tooling that has never run against the live API.
+#76's acceptance is a real drill, and [Phase 3, cutover](#13-cutover) step 9 is that drill.
 
 ## 5. Verification: identity, not readiness
 
@@ -147,28 +166,37 @@ endpoint. A persistent `ahead` is the drift monitor's problem, not the gate's.
 
 ## 6. Readiness policy change (ADR 012)
 
-`buildReadiness` moves from set equality to four states:
+`buildReadiness` moves from set equality to four states. The **authoritative** matrix — every
+condition, the precedence rules, the provenance boundary and the accepted residual risk — lives in
+[ADR 012](decisions.md#adr-012--readiness-tolerates-schema-ahead-in-production). It is not restated
+here: two copies drifted once already. The invariants to implement are:
 
-| State | Meaning | Readiness |
-| --- | --- | --- |
-| `exact` | applied == expected | ok |
-| `ahead` | applied ⊃ expected (extras are newer) | **ok** |
-| `behind` | expected ∖ applied non-empty | fatal |
-| `diverged` | applied ∖ expected contains an older or unknown entry | fatal |
+- `ahead` requires `expected ⊂ applied` **and** every extra row's `created_at` strictly greater
+  than the newest expected `when`. For example, expected `{old}` with applied `{old, unknown-new}`
+  is `ahead`, not `diverged`.
+- `behind` requires *nothing extra*. Any missing expected row **and** any extra row together is
+  `diverged`.
+- An older or equal-timestamp extra is `diverged`; an empty manifest is `diverged`.
+- The identity-verified database endpoint is the only trusted source (issue 3); `#167` is the
+  fixture contract for every cell, including the forged-newer case that is accepted as residual risk.
 
 No numeric cap on `ahead`. The cap provided no safety — a fourth unknown migration is no more
 dangerous than a second — and every extra knob becomes a test matrix. The bound is **time**:
-`/api/version` reports `ahead` indefinitely, and the drift monitor alerts after 20 minutes.
+`/api/version` reports `ahead` indefinitely, and the drift monitor alerts after the configured
+horizon.
 
 **This removes the last automated signal that a rollback is schema-incompatible.** Today
 `unexpected > 0` is fatal, which is how an operator learns that rolling back the application is
 unsafe. After this change, a rolled-back build reports green. The compensating controls are:
 
 1. a **blocking** destructive-DDL lint on every PR that adds `drizzle/*.sql` (issue 4a);
-2. expand/contract discipline for breaking changes (issue 11);
+2. expand/contract discipline for breaking changes, carried from ADR 008 into Phases 1–2 — not only
+   documented in the issue 11 rewrite;
 3. persistent `ahead` reporting plus a time-bounded alert (issue 8a).
 
 Issue 4a must merge before or with this change. That is an ordering constraint, not a preference.
+A rollback also requires recorded compatibility and no **no-auto-rollback** mark — readiness being
+green does **not** mean the previous build still works after a breaking migration (see §4).
 
 `/api/ready` also stops reporting `ok:false` during the migrate→deploy window and after an Instant
 Rollback. Both are currently outages by construction.
@@ -182,8 +210,10 @@ Rollback. Both are currently outages by construction.
 | `staging` | `DATABASE_URL` (staging, direct), `VERCEL_*`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `staging` only |
 | `production` | `VERCEL_*`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `main` only |
 | `production-migrations` | `DATABASE_URL` (production, direct), `DATABASE_URL_STAGING_READONLY` | branch `main` only, **required reviewer: operator, Prevent self-review OFF** |
+| `production-diagnostics` | `DATABASE_URL_PRODUCTION_READONLY` | branch `main` only, read-only role, no reviewer |
 
-`staging` and `production` already exist with no protection rules. `production-migrations` is new.
+`staging` and `production` already exist with no protection rules. `production-migrations` and
+`production-diagnostics` are new.
 
 Why the split: code-only deploys go out automatically; anything that changes the production schema
 pauses for the operator, even when an agent merged it.
@@ -212,18 +242,25 @@ One module, used at app boot, in `db-run.ts`, and in `drizzle.config.ts`:
 Endpoint = first hostname label with `-pooler` stripped. Pooler hosts are rejected for migration
 URLs. Fail closed on unknown or unset.
 
-**Transitional preview scope (`ALLOW_PREVIEW_ON_STAGING=1`).** Until #176 (per-PR databases) or the
-documented fallback lands, previews may share the generic Preview env scope, and #168's guard
-provides `ALLOW_PREVIEW_ON_STAGING=1` to permit it. The exception is bounded:
+**Preview database guard — enforce a decision before cutover.** The prerequisite is that the guard
+**enforces** one of three states. Enabling `ALLOW_PREVIEW_ON_STAGING=1` is one option, not the
+prerequisite by itself.
 
-- it is enabled **only** after the Phase 0 audit verifies that preview routing actually resolves to
-  staging and that the credential granted is **read-only**;
-- a preview may **read** staging and must **never** migrate it, and must **never** reach production;
-- if routing cannot be verified, the strict guard is not enabled until an isolated preview database
-  is proven or the fallback (drop the preview-readiness requirement) is taken.
+1. **Isolated preview database (proven)** — strict guard; the preview endpoint is neither staging
+   nor production.
+2. **Read-only staging exception (verified)** — `ALLOW_PREVIEW_ON_STAGING=1`, only after Phase 0
+   proves routing actually resolves to staging and the credential granted is **read-only**; a
+   preview may read staging, must never migrate it, and must never reach production.
+3. **No database access (quarantined)** — if neither can be proven, remove the hosted database
+   credential from previews (or disable DB-backed previews) **before** taking the fallback.
 
-`ALLOW_PREVIEW_ON_STAGING` is recorded in the Phase 0 audit and is a **hard prerequisite for Actions
-cutover (#171) and for #176** — not an optional cleanup item.
+The fallback — dropping the preview-readiness merge signal — **does not remove database access**.
+Taking it without state 3 leaves unverified previews using the same unverified URL. That is the trap
+this ordering exists to close.
+
+The guard decision (#168) is a **hard prerequisite for Actions cutover (#171)**; #176 may follow,
+but the quarantine fallback must be available **before #171**, not after it. It is recorded in the
+Phase 0 audit.
 
 ## 8. Migration detection and the rehearsal gate
 
@@ -324,21 +361,36 @@ Why each line exists:
   `main~1`. If staging advanced and its live tree changed, the promotion fails and must be re-opened
   from the new tip.
 
-**Freshness is rechecked, not assumed.** The SHA-fresh guard (`github.sha` still equals the branch
-head) runs as the **first step of the migrate job** after approval and again at the start of the
-deploy job — before migrating and before moving the alias. A superseded run refuses and reports
-*benign*, not an outage.
+**Freshness and staging identity are rechecked at every protected boundary.** The promotion identity
+assertion is not a one-time check:
+
+- after approval, **before the migrate job takes the write lock**: `main` head is still `github.sha`,
+  and staging's live commit is still the recorded `BASE` with no `deploy-staging` run in flight for
+  a newer commit;
+- immediately **before the alias write**: the same two conditions again.
+
+`deploy-production` serializes with `concurrency: deploy-production` and
+`cancel-in-progress: false`, and the migrate job shares the per-target migration lock, so a second
+promotion cannot apply between these checks. A newer merge during candidate staging/verification is
+caught at the next boundary and refuses *benign*. Fixture: merge during candidate verification.
 
 **Schema-free hotfixes.** A direct `hotfix/*` merge or push to `main` is not a merge of staging and
-can never satisfy the shape above. The default policy is that **all changes reach `main` through
-`staging`**. If an emergency genuinely requires a direct fix, the operator uses the break-glass
-deploy path in [guide 11](setup/11-actions-deploys.md) §6: `workflow_dispatch` on
-`deploy-production.yml` with `hotfix=true`, a `hotfix/*` ref, a diff against the live commit that
-**touches no `drizzle/` file**, and explicit approval. That path replaces the promotion assertion; it
-does not weaken it. A schema change may never take it.
+can never satisfy the promotion shape. The default remains: **all changes reach `main` through
+`staging`.** If a direct emergency fix is unavoidable, it is two steps, not a `hotfix/*` ref
+dispatch:
 
-Fixtures for #172/#173: stale dispatch, re-run after staging advances, squashed promotion,
-back-merge, and schema-free hotfix accept/reject.
+1. merge the reviewed, schema-free change to protected `main` through the normal merge path;
+2. dispatch the reviewed `deploy-production.yml` on **protected `main`** for the current verified,
+   merged `main` SHA, with `hotfix=true`. The workflow checks that the diff against the live commit
+   **touches no `drizzle/` file**, still requires `production-migrations` approval, still verifies the
+   candidate and live identity, and still uses the shared serialization.
+
+A `hotfix/*` branch may exist for code review, but the deployment runs from `main`, because both
+production environments are restricted to `main`. A schema change may never take this path. See
+[guide 11](setup/11-actions-deploys.md) §4.
+
+Fixtures for #172/#173: stale dispatch, re-run after staging advances, merge during candidate
+verification, squashed promotion, back-merge, and schema-free hotfix accept/reject.
 
 ## 9. Migration guardrails
 
@@ -349,7 +401,8 @@ For `drizzle/*.sql` added relative to the PR base, fail on `DROP`, `RENAME`,
 requires the `migration:breaking-approved` label (read via the API in CI, not from a cached event
 payload).
 
-The same script carries a **hotfix mode** that rejects *any* `drizzle/` change in a `hotfix/*` PR.
+The same script carries a **hotfix mode** that rejects *any* `drizzle/` change in a `hotfix/*` branch
+or a `hotfix=true` dispatch.
 
 **Why hotfixes are banned from touching `drizzle/`.** Two branches each run `drizzle-kit generate`:
 both append to the single shared `drizzle/meta/_journal.json` with the next `idx` and a
@@ -397,9 +450,11 @@ prerequisite** for 4b, not a parallel nicety.
 
 Today, previews share whatever the Preview env scope provides. That is an **inference, not a
 verified fact**: the repository proves a preview needs *a* database (`src/db/index.ts` throws
-without one) and that a merge is blocked without green preview readiness, but only the Vercel
-dashboard can say whether every preview resolves to staging, to a separate preview DB, or to a
-per-branch Neon URL.
+without one) and that `scripts/deploy.sh` refuses to merge without green preview readiness, but only
+the Vercel dashboard can say whether every preview resolves to staging, to a separate preview DB, or
+to a per-branch Neon URL. **The preview-readiness requirement is `deploy.sh` policy today, not a
+branch-protection or ruleset check.** Changing or dropping it changes what that script does; it does
+not alter branch protection.
 
 Two rules follow:
 
@@ -410,7 +465,13 @@ Two rules follow:
 
 If per-PR Neon branches are not proven end-to-end (runtime variable injection **and** cleanup),
 the fallback is: remove the PR-preview readiness requirement and gate on CI plus the stable staging
-deployment. That is an acceptable outcome, not a failure.
+deployment. **Removing the readiness requirement is a merge-signal change only — it does not remove
+database access.** Take the fallback only with the guard decision in §7 state 3 in place (hosted
+database credential removed from previews, or DB-backed previews disabled); otherwise unverified
+previews keep using the unverified URL. That is an acceptable outcome, not a failure.
+
+**Order:** #168's enforced guard decision lands **before** #171. The fallback and quarantine must be
+available pre-#171; #176 (per-PR databases) may follow.
 
 ## 11. Spikes (unproven — do not implement until recorded)
 
@@ -450,8 +511,15 @@ Hard constraints, not sequencing preferences:
   Without waiting-aware monitoring, the first such release pages you.
 - **5 before 7** — the production rehearsal gate is part of the migrate job.
 - **9 after 8b** — never retire the manual path before the monitor can see workflow-driven state.
+- **Guard enforcement before 6** — #168 must *enforce* isolated preview routing, a verified read-only
+  staging exception, or quarantine (no hosted database credential in previews) before #171. The
+  fallback and quarantine are available pre-#171; per-PR databases (#176) may follow.
+- **Baseline before dual deployers** — before step 2 of §13, record the stable verified
+  deployment/alias, confirm no pending journal hashes and no schema-bearing diff live → candidate,
+  and freeze migrations across every overlap step, including the first post-flip merge.
 - **#175 splits**: script/merge retirement follows 8b; the `db-remote --pr` preview-preflight removal
-  waits for 10 or its documented fallback. **#177 depends on #175**, not merely "related" to it.
+  waits for 10 or its documented fallback. The first part does not wait on the second.
+  **#177 depends on #175**, not merely "related" to it.
 
 The **issue bodies and #178's tracker table are authoritative** for dependencies; this list exists to
 name the orderings that are not obvious. When they disagree, fix the issue and the tracker — do not
@@ -464,20 +532,28 @@ Actions can both deploy the same SHA — so the overlap is **frozen against migr
 until the Actions deployment is proven to own the stable alias.
 
 1. Merge Phases 1–2. Run the §10 cutover checklist in [guide 11](setup/11-actions-deploys.md).
-2. **Enter the schema-neutral freeze:** no merge that adds `drizzle/*.sql` to `staging` or `main`
-   until that environment's cutover step is complete. Code-only merges are allowed.
-3. Merge `deploy-staging.yml` with Vercel Git deploys **still enabled**. Push a no-op commit. Confirm
+2. **Record the stable verified baseline:** live commit, stable deployment ID/alias, `/api/version`
+   state, and migration state. This is the value every later rollback and identity check refers to;
+   a no-op merge is not a baseline.
+3. **Prove the baseline is schema-neutral:** no `drizzle/meta/_journal.json` entry is pending against
+   the live environment, and `git diff <live-commit> <cutover-candidate>` over `drizzle/` is empty. A
+   schema-bearing commit that is not yet served would let a later no-op merge wake both deployers.
+4. **Enter the schema-neutral freeze:** no merge that adds `drizzle/*.sql` to `staging` or `main`
+   until that environment's cutover step is complete. The freeze covers **every** overlap step,
+   including the first post-flip merge — that merge is the one-deployer proof and must not carry
+   schema. Code-only merges are allowed.
+5. Merge `deploy-staging.yml` with Vercel Git deploys **still enabled**. Push a no-op commit. Confirm
    the workflow deploys it, `/api/version` reports that SHA, **and the Actions-created deployment ID
    owns `solara-stg.vercel.app`** — read the alias target, not just the served SHA, because Vercel
    Git may have produced a same-SHA deployment that owns it instead.
-4. Only now flip `"staging": false` in `vercel.json`, in its own PR, and confirm the next merge still
+6. Only now flip `"staging": false` in `vercel.json`, in its own PR, and confirm the next merge still
    deploys via Actions and the alias still resolves to an Actions-created deployment ID.
-5. **Prove one deployer before lifting the staging freeze:** the first post-flip merge produces
+7. **Prove one deployer before lifting the staging freeze:** the first post-flip merge produces
    exactly one new deployment, created by the workflow. If two appear, the flip did not take.
-6. **Production stays on the legacy procedure until its own cutover.** Repeat steps 3–5 for
-   production, in the same order, with its own freeze. Do not apply staging's flip or freeze
-   reasoning to production by assumption.
-7. **Rollback drill — two separate cases, not one:**
+8. **Production stays on the legacy procedure until its own cutover.** Repeat steps 2–7 for
+   production, in the same order, with its own baseline and freeze. Do not apply staging's flip or
+   freeze reasoning to production by assumption.
+9. **Rollback drill — two separate cases, not one:**
    - **(a) Candidate rejection.** Force a build that fails `/api/ready` behind an env flag. Confirm
      the candidate verification blocks promotion and production never serves it; the alias does not
      move.
@@ -507,13 +583,15 @@ is no previous deployment: the revert step skips cleanly and the incident still 
 - [ ] `/api/version` returns commit, tree, release, env, and migration state on both environments.
 - [ ] Readiness is green during the migrate→deploy window and after an alias rollback.
 - [ ] Production schema changes require the operator's approval and prior application on staging.
-- [ ] Promotion PRs are merge-commit-only, enforced server-side, and a schema-free hotfix takes the
-      operator-only break-glass path rather than the promotion path.
-- [ ] Candidates are verified before promotion; a failed promotion re-promotes the previous
-      deployment. Both cases — candidate rejection and post-alias failure — are exercised in a drill
-      (#76) and their evidence recorded separately.
-- [ ] A preview cannot reach production, and previews never migrate a shared database;
-      `ALLOW_PREVIEW_ON_STAGING` is either off or backed by a verified read-only scope.
+- [ ] Promotion PRs are merge-commit-only, enforced server-side, and a schema-free hotfix is merged to
+      `main` then dispatched from `main` with `hotfix=true` rather than taking the promotion path.
+- [ ] Candidates are verified before promotion; a failed compatible promotion reverts to the recorded
+      prior deployment ID, while an incompatible or unrecorded release withholds the revert. Both
+      cases — candidate rejection and post-alias failure — are exercised in a drill (#76) and their
+      evidence recorded separately.
+- [ ] A preview cannot reach production, and previews never migrate a shared database; the preview
+      guard enforces isolated routing, a verified read-only staging exception, or no database access
+      (quarantined) before cutover.
 - [ ] The monitor alerts on a stale live commit, a stuck `ahead`, and an approval waiting past its
       horizon — with a separate horizon for approval waits — and stays quiet for the designed
       waiting state before that horizon.

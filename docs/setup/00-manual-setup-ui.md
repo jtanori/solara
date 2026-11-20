@@ -164,6 +164,7 @@ written. Record names, scopes and plans — never secret values. See
 | Preview env var scopes (which rows are `staging`-only vs all-preview vs all-environments) | |
 | Preview routing verified: which database does a feature preview actually resolve to? (dashboard + a probe, not an inference) | |
 | `ALLOW_PREVIEW_ON_STAGING` set? (only with verified read-only staging access; never production; never migrate) | |
+| Preview guard decision **enforced** (isolated routing / verified read-only staging / quarantine with no hosted DB credential) | |
 | Any `DATABASE_URL` row scoped to **both** Preview and Production? | |
 | Runtime variable injection for a **promoted** candidate: mechanism and scope (production and staging) — prerequisite, not an S1 assumption | |
 
@@ -177,6 +178,7 @@ written. Record names, scopes and plans — never secret values. See
 | Production endpoint ID (`ep-…`) | |
 | Postgres major version (must match `ci.yml`) | |
 | Read-only staging role created for the rehearsal gate? | |
+| Read-only production role created for `production-diagnostics`? | |
 
 ### Vercel environment variables — scope audit
 

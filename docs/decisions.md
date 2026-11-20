@@ -499,19 +499,24 @@ require a PR and the `verify` check, so merges are audited — but audit is not 
 - Promotion is merge-commit-only, enforced server-side: the merge commit's second parent equals the
   **recorded reviewed `staging` commit**, and that commit is an ancestor of `origin/staging`. A
   squash merge of a fast-forwardable promotion produces an identical **tree** and would otherwise
-  pass tree equality while destroying ancestry. A schema-free `hotfix/*` cannot satisfy this shape,
-  so it uses the operator-only break-glass deploy path (no `drizzle/` change, explicit approval)
-  rather than being forced through the promotion gate.
-- Rollback is an alias move to the previous deployment. It never reverts schema. A failed release
-  after a successful migration is fixed forward, or the application is rolled back only once
-  compatibility is established.
+  pass tree equality while destroying ancestry. A schema-free hotfix cannot satisfy this shape: it is
+  merged to protected `main` through the normal merge path, then dispatched from **`main`** for that
+  merged SHA with `hotfix=true` (both production environments are `main`-only), keeping the
+  no-`drizzle/` check, approval and live-identity checks rather than bypassing them.
+- Rollback is **conditional and default-deny**. It is an alias move to the **recorded prior
+  deployment ID**, never a schema change, and only when a positive compatibility record exists and
+  the release carries no *no-auto-rollback* mark. Otherwise the alias is left as-is, the incident
+  opens, and the operator pages for a forward fix (or a deliberate alias move once compatibility is
+  established). Readiness being green does not prove the old build works against a newer schema.
 
 ### Consequences
 - `scripts/deploy.sh` is retired once Deployments-aware monitoring exists; `scripts/promote.sh`
   only opens the promotion PR and watches the resulting run.
 - `migrate.yml` becomes break-glass: verify plus an emergency forward-fix, with an operator dispatch
-  that requires an authorized protected ref, an exact SHA, `production-migrations` approval and the
-  staging hash rehearsal — not a locally exported production URL.
+  that maps mode+target to one protected ref, environment and credential (a production write uses
+  `production-migrations` approval; production diagnostics use a read-only role), revalidates the
+  approved SHA, and runs the staging hash rehearsal under the shared per-target lock — not a locally
+  exported production URL.
 - `docs/deploys.md` is frozen **at cutover**, not before; until then it remains the active legacy
   record.
 - "Merged but not live" becomes a reported state rather than an inference from email.
