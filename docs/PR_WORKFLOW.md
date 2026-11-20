@@ -31,6 +31,33 @@ this repo will never require: approval counts, second reviewers, APPROVE
 events, or a bot check that depends on GitHub API availability being a merge
 gate. `pr-lint` (§2.4) is advisory and fails open for exactly this reason.
 
+**Future-scoped exception — the M5 deploy gate (not yet in force).** Milestone
+M5 ([`docs/plan-deployment-alignment.md`](plan-deployment-alignment.md)) will add
+a `production-migrations` GitHub Environment whose `migrate` job requires
+operator approval before it touches the production schema. That is a **deploy**
+gate, not a **merge** gate, and it is compatible with the catch-22 rule *only*
+under all of the following, which the cutover checklist must prove before the
+exception takes effect:
+
+- the environment is configured with **required reviewer = the operator and
+  Prevent self-review OFF**, so the same identity that merged can release the
+  post-merge job — no second human is ever required;
+- a run that is `waiting` for approval, or whose approval is **denied**, is
+  **never a required status check and never a required deployment** for any
+  current or later merge — the merge has already landed and its outcome must not
+  depend on the deploy result;
+- required PR checks stay **non-API-dependent**. Any live `/api/version` or
+  Actions-API promotion signal is **advisory only**; the fail-closed
+  identity/run assertions run post-merge, server-side, before privileged work.
+
+Until that cutover is recorded in
+[`docs/setup/11-actions-deploys.md`](setup/11-actions-deploys.md), **the current
+merge and deploy instructions in this file and in `AGENTS.md` remain in force**
+and no such gate exists. Adopting it relaxes nothing else: it authorizes no
+approval counts, no APPROVE events, and no second reviewer. A required,
+fail-closed, live-API-backed check is **not** covered by this exception; it would
+need its own amendment here that names an outage fallback.
+
 Known corollary for future work: **CODEOWNERS (#89), if adopted, is
 routing/documentation only** — required-review CODEOWNERS would be a structural
 catch-22 here and must not be configured.
