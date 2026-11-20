@@ -162,7 +162,10 @@ written. Record names, scopes and plans — never secret values. See
 | Protection Bypass for Automation created? | |
 | `git.deploymentEnabled` behaviour for feature-branch previews (spike S1) | |
 | Preview env var scopes (which rows are `staging`-only vs all-preview vs all-environments) | |
+| Preview routing verified: which database does a feature preview actually resolve to? (dashboard + a probe, not an inference) | |
+| `ALLOW_PREVIEW_ON_STAGING` set? (only with verified read-only staging access; never production; never migrate) | |
 | Any `DATABASE_URL` row scoped to **both** Preview and Production? | |
+| Runtime variable injection for a **promoted** candidate: mechanism and scope (production and staging) — prerequisite, not an S1 assumption | |
 
 ### Neon
 
@@ -186,6 +189,11 @@ written. Record names, scopes and plans — never secret values. See
 
 > A `DATABASE_URL` visible to both Preview and Production is the failure mode the boot guard
 > (issue 3) exists to make loud. If one already exists, fix the scope before Phase 3.
+>
+> **Build-time boundary (do not skip).** The build needs `DATABASE_URL` to *exist* but must not be
+> able to connect. Record the build-only, non-routable placeholder mechanism (or the import
+> refactor) and the proof that no hosted credential and no `vercel pull` env file is present in the
+> build workspace or the uploaded artifact. See [guide 11](11-actions-deploys.md) §2.
 
 ### Spikes
 
