@@ -558,13 +558,17 @@ until the Actions deployment is proven to own the stable alias.
      the candidate verification blocks promotion and production never serves it; the alias does not
      move.
    - **(b) Post-alias failure.** Force the failure *after* promotion instead. Record the prior alias
-     target and deployment ID first, then confirm the alias returns to it, `/api/version` reports the
-     previous `commit`, and readiness afterwards is `ahead` or `exact` — never `unexpected`-fatal.
+     target and deployment ID first, then confirm that for a **compatible** release the alias returns
+     to it, `/api/version` reports the previous `commit`, and readiness afterwards is `ahead` or
+     `exact` — never `unexpected`-fatal. A second run without a compatibility record must withhold the
+     revert and leave the alias as-is.
    Record #76's evidence separately for (a) and (b), with run links.
 
 If a deploy fails *after* `deploymentEnabled` is false, the recovery is `workflow_dispatch` on the
-failed workflow, not `git revert` (a revert also needs a deployer). On the first Actions deploy there
-is no previous deployment: the revert step skips cleanly and the incident still opens.
+failed workflow, not `git revert` (a revert also needs a deployer). The first Actions deploy records
+the existing stable deployment as the prior ID when one exists; only a genuinely absent alias skips
+the revert cleanly, and the incident still opens. When compatibility is unrecorded or the release
+carries the no-auto-rollback mark, the revert is withheld — see §4.
 
 ## 14. Consequences and accepted risks
 
