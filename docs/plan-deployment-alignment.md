@@ -94,8 +94,8 @@ candidate with an explicit "no revert" decision. Nothing is inferred from email.
 | build | untouched | previous build | red run + incident issue |
 | migrate | pending batch rolls back as one transaction (`lock_timeout` aborts before commit) | previous build | red run + issue |
 | candidate verify | migrated | previous build; candidate never promoted | red run + issue |
-| post-promote verify, **compatible** release | migrated | revert to the recorded prior deployment ID (alias only) | red run + issue |
-| post-promote verify, **incompatible or unrecorded** | migrated | **no automatic revert**; alias left as-is, page for forward fix | red run + issue + operator decision |
+| post-promote verify, **matching keyed record** | migrated | revert to the recorded prior deployment ID (alias only) | red run + issue |
+| post-promote verify, **absent / mismatched / no prior** | migrated | **no automatic revert**; alias left as-is, page for forward fix | red run + issue + operator decision |
 | approval declined | untouched | previous build | run `waiting` → cancelled |
 
 **"Merged but not live" is a first-class state**, reported by the drift monitor, not inferred from
@@ -109,14 +109,19 @@ these hold:
 
 1. a prior deployment ID was recorded before the candidate was promoted (the legacy stable
    deployment counts; record it if the first Actions deploy is not the first deployment ever);
-2. the release carries a **positive compatibility record** — default deny when absent; and
+2. the release carries a **compatibility record matching this prior ID, candidate SHA and applied
+   hash set** — default deny when absent or mismatched; and
 3. the release does **not** carry the `no-auto-rollback` mark set by a `migration:breaking-approved`
    override.
 
-The compatibility source before the Actions cutover is the same record the legacy path can write: a
-`compatible: yes` field in the deploy record/marker naming the migration hashes it was checked
-against. After cutover the workflow reads that record and the no-auto-rollback mark. A release with
-no positive record is treated as incompatible.
+The release's compatibility record is **operator-written, keyed to the run, and default-deny**. It
+carries `compatible: true`, the actual `prior_deployment_id`, the `candidate_sha`, and the
+`migration_hashes` the release applies. The alias move requires all three to match the run's actual
+prior deployment, candidate, and applied set; a record for another prior build, another candidate, or
+another hash set does not authorize it. Before the Actions cutover the legacy path writes the same
+record in the deploy record/marker; after cutover the workflow reads it. A release with no record, or
+a record that does not match, is treated as incompatible. The `no-auto-rollback` mark overrides any
+record.
 
 When the conditions do not hold — a breaking migration, a missing compatibility record, or no prior
 deployment at all — the alias is **not** moved automatically. The previous build may talk to a schema
@@ -207,7 +212,7 @@ Rollback. Both are currently outages by construction.
 
 | Environment | Holds (names only) | Protection |
 | --- | --- | --- |
-| `staging` | `DATABASE_URL` (staging, direct), `VERCEL_*`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `staging` only |
+| `staging` | `DATABASE_URL` (staging, direct), `DATABASE_URL_STAGING_READONLY`, `VERCEL_*`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `staging` only |
 | `production` | `VERCEL_*`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `main` only |
 | `production-migrations` | `DATABASE_URL` (production, direct), `DATABASE_URL_STAGING_READONLY` | branch `main` only, **required reviewer: operator, Prevent self-review OFF** |
 | `production-diagnostics` | `DATABASE_URL_PRODUCTION_READONLY` | branch `main` only, read-only role, no reviewer |
@@ -361,18 +366,29 @@ Why each line exists:
   `main~1`. If staging advanced and its live tree changed, the promotion fails and must be re-opened
   from the new tip.
 
-**Freshness and staging identity are rechecked at every protected boundary.** The promotion identity
-assertion is not a one-time check:
+**Freshness is checked under the lock, not while waiting for it.** A check taken after approval but
+before the write lock can pass while a newer merge or staging deploy lands during the wait:
 
-- after approval, **before the migrate job takes the write lock**: `main` head is still `github.sha`,
-  and staging's live commit is still the recorded `BASE` with no `deploy-staging` run in flight for
-  a newer commit;
-- immediately **before the alias write**: the same two conditions again.
+- After approval, the migrate job **acquires the per-target migration lock first** — the same lock
+  break-glass uses. The wait is the window a pre-lock check cannot cover.
+- Once the lock is held, it re-reads before any DDL: `main` head is still `github.sha`; staging's
+  live commit is still the recorded `BASE` with no `deploy-staging` run in flight for a newer commit;
+  and the pending hash set is unchanged, with the rehearsal still passing.
+- Any difference releases the lock, refuses, and runs no DDL. A **confirmed supersession** (a newer
+  `main` head or a newer staging deployment) is *benign*. An unreachable API, an unreadable
+  `__drizzle_migrations`, or any hash set that cannot be read is a **verification failure** that
+  fails closed — never benign, never a skip.
+- Immediately **before the alias write**, the deploy job re-reads the same `main`/staging identity
+  and the applied hash set. A confirmed change refuses benign without moving the alias; an
+  unverifiable read fails closed with no alias move.
 
 `deploy-production` serializes with `concurrency: deploy-production` and
 `cancel-in-progress: false`, and the migrate job shares the per-target migration lock, so a second
-promotion cannot apply between these checks. A newer merge during candidate staging/verification is
-caught at the next boundary and refuses *benign*. Fixture: merge during candidate verification.
+promotion or a break-glass write cannot apply between the under-lock check and DDL.
+
+Fixtures for #172/#173: merge during candidate verification; merge or staging deploy while the run
+waits for the lock; break-glass holding the lock and applying a hash before the release acquires it;
+an unavailable API or unreadable hash set reported as a verification failure rather than benign.
 
 **Schema-free hotfixes.** A direct `hotfix/*` merge or push to `main` is not a merge of staging and
 can never satisfy the promotion shape. The default remains: **all changes reach `main` through
@@ -514,9 +530,11 @@ Hard constraints, not sequencing preferences:
 - **Guard enforcement before 6** — #168 must *enforce* isolated preview routing, a verified read-only
   staging exception, or quarantine (no hosted database credential in previews) before #171. The
   fallback and quarantine are available pre-#171; per-PR databases (#176) may follow.
-- **Baseline before dual deployers** — before step 2 of §13, record the stable verified
-  deployment/alias, confirm no pending journal hashes and no schema-bearing diff live → candidate,
-  and freeze migrations across every overlap step, including the first post-flip merge.
+- **Freeze, then baseline, before dual deployers** — before either deployer is enabled, enter a
+  freeze on **any** `drizzle/` change (not only added SQL), then record the stable verified
+  deployment/alias and prove zero pending journal hashes with no schema-bearing diff live →
+  candidate. Hold it across every overlap step, including the first post-flip merge. If the baseline
+  is not neutral, stop and settle it on the legacy path before capturing a fresh one.
 - **#175 splits**: script/merge retirement follows 8b; the `db-remote --pr` preview-preflight removal
   waits for 10 or its documented fallback. The first part does not wait on the second.
   **#177 depends on #175**, not merely "related" to it.
@@ -528,20 +546,22 @@ let a prose line here silently override a missing dependency.
 ## 13. Cutover
 
 Staging first, production second, nothing in one commit. During every overlap step, Vercel Git and
-Actions can both deploy the same SHA — so the overlap is **frozen against migration-bearing merges**
+Actions can both deploy the same SHA — so the overlap is **frozen against any `drizzle/` change**
 until the Actions deployment is proven to own the stable alias.
 
 1. Merge Phases 1–2. Run the §10 cutover checklist in [guide 11](setup/11-actions-deploys.md).
-2. **Record the stable verified baseline:** live commit, stable deployment ID/alias, `/api/version`
+2. **Enter the `drizzle/` freeze first:** no change of any kind under `drizzle/` — SQL,
+   `meta/_journal.json`, snapshots; added, modified or deleted — on `staging` or `main`. Enter it
+   **before** snapshotting the baseline and hold it through the first post-flip proof. Code-only
+   merges are allowed.
+3. **Record the stable verified baseline:** live commit, stable deployment ID/alias, `/api/version`
    state, and migration state. This is the value every later rollback and identity check refers to;
    a no-op merge is not a baseline.
-3. **Prove the baseline is schema-neutral:** no `drizzle/meta/_journal.json` entry is pending against
-   the live environment, and `git diff <live-commit> <cutover-candidate>` over `drizzle/` is empty. A
-   schema-bearing commit that is not yet served would let a later no-op merge wake both deployers.
-4. **Enter the schema-neutral freeze:** no merge that adds `drizzle/*.sql` to `staging` or `main`
-   until that environment's cutover step is complete. The freeze covers **every** overlap step,
-   including the first post-flip merge — that merge is the one-deployer proof and must not carry
-   schema. Code-only merges are allowed.
+4. **Prove the baseline is schema-neutral:** every journal entry is present in the live environment
+   (zero pending hashes, no cutover-release exception), and `git diff <live-commit>
+   <cutover-candidate>` over `drizzle/` is empty. If it is not neutral, **stop the cutover**: settle
+   the pending migration through the legacy path, verify it, re-enter the freeze, capture a **fresh
+   baseline**, and retry. Do not enable the second deployer against the old snapshot.
 5. Merge `deploy-staging.yml` with Vercel Git deploys **still enabled**. Push a no-op commit. Confirm
    the workflow deploys it, `/api/version` reports that SHA, **and the Actions-created deployment ID
    owns `solara-stg.vercel.app`** — read the alias target, not just the served SHA, because Vercel
@@ -551,24 +571,17 @@ until the Actions deployment is proven to own the stable alias.
 7. **Prove one deployer before lifting the staging freeze:** the first post-flip merge produces
    exactly one new deployment, created by the workflow. If two appear, the flip did not take.
 8. **Production stays on the legacy procedure until its own cutover.** Repeat steps 2–7 for
-   production, in the same order, with its own baseline and freeze. Do not apply staging's flip or
-   freeze reasoning to production by assumption.
-9. **Rollback drill — two separate cases, not one:**
-   - **(a) Candidate rejection.** Force a build that fails `/api/ready` behind an env flag. Confirm
-     the candidate verification blocks promotion and production never serves it; the alias does not
-     move.
-   - **(b) Post-alias failure.** Force the failure *after* promotion instead. Record the prior alias
-     target and deployment ID first, then confirm that for a **compatible** release the alias returns
-     to it, `/api/version` reports the previous `commit`, and readiness afterwards is `ahead` or
-     `exact` — never `unexpected`-fatal. A second run without a compatibility record must withhold the
-     revert and leave the alias as-is.
-   Record #76's evidence separately for (a) and (b), with run links.
+   production, in the same order, with its own freeze and fresh baseline. Do not apply staging's flip
+   or freeze reasoning to production by assumption.
+9. **Rollback drill.** Run [guide 11 §7](setup/11-actions-deploys.md#7-rollback-drill-acceptance-for-76)
+   on production — both the matching-record revert and the withheld cases — and record the separate
+   #76 evidence with run links.
 
 If a deploy fails *after* `deploymentEnabled` is false, the recovery is `workflow_dispatch` on the
 failed workflow, not `git revert` (a revert also needs a deployer). The first Actions deploy records
 the existing stable deployment as the prior ID when one exists; only a genuinely absent alias skips
-the revert cleanly, and the incident still opens. When compatibility is unrecorded or the release
-carries the no-auto-rollback mark, the revert is withheld — see §4.
+the revert cleanly, and the incident still opens. When the keyed record is absent or mismatched, or
+the release carries the no-auto-rollback mark, the revert is withheld — see §4.
 
 ## 14. Consequences and accepted risks
 
@@ -589,10 +602,11 @@ carries the no-auto-rollback mark, the revert is withheld — see §4.
 - [ ] Production schema changes require the operator's approval and prior application on staging.
 - [ ] Promotion PRs are merge-commit-only, enforced server-side, and a schema-free hotfix is merged to
       `main` then dispatched from `main` with `hotfix=true` rather than taking the promotion path.
-- [ ] Candidates are verified before promotion; a failed compatible promotion reverts to the recorded
-      prior deployment ID, while an incompatible or unrecorded release withholds the revert. Both
-      cases — candidate rejection and post-alias failure — are exercised in a drill (#76) and their
-      evidence recorded separately.
+- [ ] Candidates are verified before promotion; a failed release reverts to the recorded prior
+      deployment ID only when the keyed record matches this prior ID, candidate SHA and applied hash
+      set, and withholds the revert when the record is absent/mismatched or the no-auto-rollback mark
+      is set. Candidate rejection, the matching revert and every withheld case are exercised in the
+      guide 11 §7 drill (#76), with separate evidence.
 - [ ] A preview cannot reach production, and previews never migrate a shared database; the preview
       guard enforces isolated routing, a verified read-only staging exception, or no database access
       (quarantined) before cutover.

@@ -504,10 +504,12 @@ require a PR and the `verify` check, so merges are audited — but audit is not 
   merged SHA with `hotfix=true` (both production environments are `main`-only), keeping the
   no-`drizzle/` check, approval and live-identity checks rather than bypassing them.
 - Rollback is **conditional and default-deny**. It is an alias move to the **recorded prior
-  deployment ID**, never a schema change, and only when a positive compatibility record exists and
-  the release carries no *no-auto-rollback* mark. Otherwise the alias is left as-is, the incident
-  opens, and the operator pages for a forward fix (or a deliberate alias move once compatibility is
-  established). Readiness being green does not prove the old build works against a newer schema.
+  deployment ID**, never a schema change, and only when an operator-written record matches that prior
+  ID, the candidate SHA and the exact applied migration hash set, and the release carries no
+  *no-auto-rollback* mark. A record for another prior build, candidate or hash set does not
+  authorize the move. Otherwise the alias is left as-is, the incident opens, and the operator pages
+  for a forward fix (or a deliberate alias move once compatibility is established). Readiness being
+  green does not prove the old build works against a newer schema.
 
 ### Consequences
 - `scripts/deploy.sh` is retired once Deployments-aware monitoring exists; `scripts/promote.sh`

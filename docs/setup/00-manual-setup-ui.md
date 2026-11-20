@@ -177,7 +177,7 @@ written. Record names, scopes and plans — never secret values. See
 | Production project / branch (pooled + direct) | |
 | Production endpoint ID (`ep-…`) | |
 | Postgres major version (must match `ci.yml`) | |
-| Read-only staging role created for the rehearsal gate? | |
+| Read-only staging role created for the rehearsal gate and staging diagnostics? | |
 | Read-only production role created for `production-diagnostics`? | |
 
 ### Vercel environment variables — scope audit
