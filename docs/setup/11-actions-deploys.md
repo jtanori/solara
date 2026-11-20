@@ -397,6 +397,7 @@ gate is **not in force** until every box for production is checked.
 
 **Closeout:**
 
-- [ ] **Rollback drill (a) and (b)** recorded separately with run links (#76).
+- [ ] **Rollback drill cases recorded** with run links (#76): candidate rejection, post-alias revert,
+      and the withheld cases.
 - [ ] **`docs/deploys.md` frozen at cutover** with the date and the cutover run link; historical rows
       unchanged.
