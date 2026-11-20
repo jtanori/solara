@@ -1075,3 +1075,50 @@ test("PDF wheel: a pinned paid edition keeps its summary, tables and metadata wh
     assert.equal(metadata(wheeled.inspected.metadata), metadata(bare.inspected.metadata), `${locale}: metadata unchanged, field for field`);
   }
 });
+
+/**
+ * The worker bundle is replaced atomically, so a concurrent suite cannot fork a partial one.
+ *
+ * `node --test` runs each file in its own process, and four suites run `scripts/build-pdf.mjs`
+ * in `before()` — including this one, which is why the guarantee is asserted here. esbuild
+ * opens its outfile and streams into it, so a plain `outfile` leaves the destination as
+ * partial JavaScript for the duration of the write; a worker forked from another file in that
+ * window fails, and which file fails depends on machine speed. That reproduced at about one
+ * read in five hundred under four concurrent builders and showed up as a suite failing at the
+ * *end* of an otherwise passing run.
+ *
+ * The script now builds to `<pid>.tmp` and `rename`s into place. This test pins the property
+ * rather than the implementation: a reader sampling the destination while builders run must
+ * never observe a truncated file.
+ */
+test("PDF worker: concurrent builds serialise and never publish a partial bundle", async () => {
+  const { readFile, readdir, stat } = await import("node:fs/promises");
+  const { spawn } = await import("node:child_process");
+  const target = resolve(".pdf/worker.mjs");
+  const complete = (await readFile(target, "utf8")).length;
+  assert.ok(complete > 100_000, `the bundle is substantial (${complete} bytes)`);
+
+  /**
+   * Six builders at once — more than the four suites that do this in `before()`, and more
+   * than reproduced the original failure.
+   *
+   * Before the lock, this was not only a torn file: two builders copying `standard-fonts`
+   * into the same directory raced, and one died with
+   * `ENOENT ... standard-fonts/HelveticaBold.mjs` while another was publishing it. A failure
+   * of that kind surfaces as an unrelated suite failing, which is why it took three CI
+   * failures to find.
+   */
+  const run = () => new Promise<number | null>((settle, fail) => {
+    const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], { stdio: "ignore" });
+    child.once("close", settle);
+    child.once("error", fail);
+  });
+  const codes = await Promise.all(Array.from({ length: 6 }, run));
+  assert.deepEqual(codes, [0, 0, 0, 0, 0, 0], "every concurrent builder exits successfully");
+
+  const entries = await readdir(resolve(".pdf"));
+  assert.deepEqual(entries.filter(name => /\.tmp$/.test(name)), [], "no temporary bundle survives");
+  assert.ok(entries.includes("worker.mjs.LEGAL.txt"), "the legal sidecar is publishable with the bundle");
+  assert.equal(await stat(resolve(".pdf/.build.lock")).catch(() => null), null, "the lock is released after building");
+  assert.equal((await readFile(target, "utf8")).length, complete, "the published bundle is complete");
+});
