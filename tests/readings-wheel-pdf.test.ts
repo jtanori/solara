@@ -20,6 +20,7 @@ import { paidCalculationBlocks } from "../src/readings/paid-presentation";
 import { randomUUID } from "node:crypto";
 import { editionTitle, WHEEL_NOTICE_COPY } from "../src/readings/presentation-copy";
 import { chartNotes } from "../src/readings/chart-presentation";
+import { chartPlacements } from "../src/readings/presentation-format";
 import { pdfFixture, inspectPdf, normalizePdfText } from "./helpers/reading-pdf";
 import { readingChartInput, frozenReading } from "./helpers/reading-fixtures";
 import type { ReadingPdfInput } from "../src/readings/pdf-contract";
@@ -162,6 +163,77 @@ function renderPageWheel(geometry: NonNullable<ReturnType<typeof projectWheel>>,
   return { labels, lines, circles };
 }
 
+
+/**
+ * The PDF wheel's *painted* text, extracted from the page — not from the geometry.
+ *
+ * This is the missing half of the parity check. Comparing the rendered page against
+ * `wheelLabelTexts(geometry)` proves the page matches the geometry; it says nothing about
+ * what the PDF actually painted, and `includes()` over the whole document is satisfied by a
+ * single matching substring anywhere in it. An extra label inserted into the PDF's SVG left
+ * both parity tests green — the reviewer's mutation.
+ *
+ * The drawing is placed by layout, so the page coordinates are the geometry's own plus a
+ * translation: the SVG is authored in 440 viewBox units and rendered into a 440pt box, so
+ * one unit is one point (that equality is `PDF_WHEEL_POINTS`, asserted separately). The
+ * translation is *measured* from labels whose position the geometry dictates exactly — sign
+ * names (centred in their band) and placed point labels — and the spread of those residuals
+ * is asserted, so a scale or rotation could not be silently absorbed into an offset.
+ *
+ * Then the drawing's square is cut out of the page and every item inside it is returned.
+ * Anything a future emitter paints inside that square shows up here, whether or not the
+ * geometry knows about it.
+ */
+function pdfWheelRegion(
+  geometry: NonNullable<ReturnType<typeof projectWheel>>,
+  inspected: { pages: { items: { text: string; x: number; y: number; width: number; size: number }[] }[] },
+  locale: "en" | "es",
+) {
+  const centre = geometry.viewBox / 2;
+  const deg = Math.PI / 180;
+  const polar = (angle: number, radius: number) => ({
+    x: centre + radius * Math.cos(angle * deg),
+    y: centre + radius * Math.sin(angle * deg),
+  });
+  const page = inspected.pages.find(candidate => candidate.items.some(item => item.text === geometry.signs[0]!.label));
+  assert.ok(page, `${locale}: the drawing's page is identifiable by its first sign`);
+
+  /** Residuals from labels the geometry positions exactly. */
+  const dx: number[] = [];
+  const dy: number[] = [];
+  for (const sign of geometry.signs) {
+    const expected = polar(sign.labelAngle, (geometry.radii.signRing + geometry.radii.outer) / 2);
+    const item = page.items.find(candidate => candidate.text === sign.label);
+    assert.ok(item, `${locale}: sign ${sign.label} is painted`);
+    dx.push(item.x + item.width / 2 - expected.x);
+    dy.push(item.y - expected.y);
+  }
+  for (const point of geometry.points) {
+    if (point.band === null) continue;
+    const item = page.items.find(candidate => candidate.text === wheelLabelText(point.label));
+    assert.ok(item, `${locale}: placed label ${point.label} is painted`);
+    dx.push(item.x + item.width / 2 - point.labelPosition.x);
+    dy.push(item.y - point.labelPosition.y);
+  }
+  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+  const spread = (values: number[]) => Math.max(...values) - Math.min(...values);
+  const offsetX = median(dx);
+  const offsetY = median(dy);
+  // A scale, a rotation or a different box would show up as scatter around the offset. The
+  // tolerances are the font-metric and baseline differences between the two emitters, not
+  // slack for a layout change: 0.5pt of x, 1.5pt of y.
+  assert.ok(spread(dx) < 0.5, `${locale}: every label maps by the same x offset (spread ${spread(dx).toFixed(3)}pt)`);
+  assert.ok(spread(dy) < 1.5, `${locale}: every label maps by the same y offset (spread ${spread(dy).toFixed(3)}pt)`);
+
+  const left = offsetX;
+  const top = offsetY;
+  const size = geometry.viewBox;
+  const inside = page.items.filter(item => item.text.trim().length > 0
+    && item.x + item.width > left && item.x < left + size
+    && item.y > top && item.y < top + size);
+  return { page, labels: inside.map(item => item.text.trim()), left, top, size, offsetX, offsetY };
+}
+
 /** Rounded to the precision both emitters write, so float noise is not a parity failure. */
 const keyed = (values: number[]) => values.map(value => value.toFixed(3)).join(",");
 
@@ -218,27 +290,44 @@ test("PDF wheel: the painted labels are the page's own, rendered from the same c
     const geometry = projectWheel(facts, locale);
     assert.ok(geometry);
     const page = renderPageWheel(geometry, locale, withWheel(locale).chart.name);
-    /**
-     * The page's painted labels, read out of the page's markup.
-     *
-     * Signs, house numbers and placed labels all appear here; the PDF must print the same
-     * multiset. Comparing the *rendered* page to the *rendered* PDF is what makes an
-     * HTML-only drift fail: the old test compared the geometry to itself.
-     */
     assert.ok(page.labels.length >= 20, `${locale}: the page paints its labels (${page.labels.length})`);
-    const placed = page.labels.filter(label => !/^\d+$/.test(label) && !geometry.signs.some(sign => sign.label === label));
-    assert.ok(placed.length >= 10, `${locale}: the page paints placed point labels (${placed.length})`);
 
     const { inspected } = await render(withWheel(locale));
-    const text = normalizePdfText(inspected.text);
-    /** Multiset equality over the page's painted text, not a subset check. */
-    const sorted = (values: string[]) => [...values].sort();
-    const missing = sorted(page.labels).filter((label, index, all) => all.indexOf(label) === index && !text.includes(label));
-    assert.deepEqual(missing, [], `${locale}: every label the page paints is selectable text in the PDF`);
-    // And the PDF draws no label the page does not: the drawing's own point labels, which are
-    // the only ones that could drift, are exactly the page's set.
-    const pdfLabels = wheelLabelTexts(geometry).sort();
-    assert.deepEqual(sorted(placed), pdfLabels, `${locale}: the page's placed labels are the PDF's placed labels`);
+    const region = pdfWheelRegion(geometry, inspected, locale);
+    assert.ok(region.labels.length >= 20, `${locale}: the PDF paints labels inside the drawing (${region.labels.length})`);
+
+    /**
+     * Two rendered multisets, compared to each other.
+     *
+     * Left: the `<text>` nodes of the page's own SVG. Right: every text item the PDF paints
+     * inside the drawing's square, located by measured coordinates. Neither side consults
+     * `wheelLabelTexts` for its expectation — that function asks the *geometry*, and both
+     * emitters could drift from it together without either surface changing.
+     *
+     * A label painted by one surface and not the other is a failure in either direction,
+     * which is what makes an extra PDF-only label (or a missing one) fail rather than pass.
+     */
+    const sorted = (values: string[]) => [...values].map(value => value.trim()).filter(Boolean).sort();
+    assert.deepEqual(sorted(region.labels), sorted(page.labels),
+      `${locale}: the PDF paints exactly the labels the page paints`);
+
+    /**
+     * Nothing outside the drawing is swept into the region.
+     *
+     * The heading sits directly above it and the summary rows above that, so a box drawn too
+     * tall or too wide would pull them in and the multiset comparison would fail for the
+     * wrong reason. Only text that exists *nowhere* in the drawing is used: a placement label
+     * like "Sun" is also a wheel label, so including it would test nothing.
+     */
+    const wheelText = new Set([...geometry.signs.map(sign => sign.label), ...wheelLabelTexts(geometry), ...geometry.houses.map(house => String(house.number))]);
+    const outside = [
+      locale === "es" ? "Rueda factual" : "Factual wheel",
+      ...chartPlacements(withWheel(locale).chart, locale).map(entry => entry.label).filter(label => !wheelText.has(label)),
+    ];
+    assert.ok(outside.length > 1, `${locale}: there is neighbouring text to exclude`);
+    for (const text of outside) {
+      assert.equal(region.labels.includes(text), false, `${locale}: the region excludes the neighbouring ${JSON.stringify(text.slice(0, 24))}`);
+    }
   }
 });
 
@@ -779,30 +868,90 @@ test("PDF wheel: a pinned paid edition keeps its summary, tables and metadata wh
       `${locale}: the bare paid edition still prints its Placidus tables`);
 
     /**
-     * The wheel says Placidus, and says it about *these* facts.
+     * The wheel says Placidus, and says it in its own words.
      *
-     * The points are checked against the snapshot's own longitudes through the shared
-     * `wheelAngle`, so a wheel built from re-cast facts (or the fixture's whole-sign ones)
-     * fails rather than merely looking plausible.
+     * A `Placidus` substring over the whole document proves nothing: the paid calculation
+     * tables print "Return placements · Placidus" themselves, so the wheel could be wrong
+     * and the assertion would still pass — which is how a +18 shift of every Placidus anchor
+     * survived. The house system is read from the wheel's *caption*, inside its own block.
      */
     const geometry = projectWheel(snapshot.facts, locale);
     assert.ok(geometry);
     assert.equal(geometry.houseSystem, "placidus");
-    assert.ok(wheeled.inspected.text.includes("Placidus"));
+    const wheeledCopy = wheelCopy({ chart, content: input.content, geometry, hasFacts: true });
+    assert.ok(wheeledCopy.caption.includes("Placidus"), `${locale}: the wheel's caption names the system`);
+    const block = wheeled.inspected.pages.map(page => page.text).join(" ");
+    const heading = locale === "es" ? "Rueda factual" : "Factual wheel";
+    const trailer = locale === "es" ? "Cálculo preliminar" : "Prototype calculation";
+    const at = block.indexOf(heading);
+    const end = block.indexOf(trailer, at);
+    assert.ok(at >= 0 && end > at, `${locale}: the wheel block is locatable`);
+    assert.ok(block.slice(at, end).includes("Placidus"), `${locale}: the wheel block itself names Placidus`);
+
+    /**
+     * The PDF paints the snapshot's own projection — compared against the **emitted tree**.
+     *
+     * `anchorOf` searched `projectWheel(snapshot.facts)` itself, so it verified the geometry
+     * against itself and could not see the emitter at all: shifting every Placidus anchor in
+     * `pdf-chart-wheel.tsx` by +18 on x left both paid tests green. `pdfTreeGeometry` reads
+     * the primitives the emitter actually built, which is the only thing that can catch it.
+     *
+     * Every anchor is matched to a point by its expected position on the outer ring, and the
+     * *set* of matched points must be all fourteen — so a point that moved matches nothing and
+     * the leftover itself fails. Then each cusp line, chord and leader is required at the
+     * geometry's coordinates, and any leftover primitive is a failure.
+     */
+    const drawn = pdfTreeGeometry(geometry);
     const centre = geometry.viewBox / 2;
     const deg = Math.PI / 180;
-    const anchorOf = (longitude: number) => {
-      const angle = wheelAngle(longitude, snapshot.facts.angles.ascendant!.longitude) * deg;
-      // Anchors sit on the outer ring (the page draws the label inside it); the angle is the
-      // shared projection's own.
-      const point = geometry.points.find(candidate => Math.abs(candidate.anchor.x - (centre + geometry.radii.outer * Math.cos(angle))) < 0.01
-        && Math.abs(candidate.anchor.y - (centre + geometry.radii.outer * Math.sin(angle))) < 0.01);
-      return point;
-    };
-    for (const body of snapshot.facts.bodies) {
-      // Each saved body's longitude lands on a drawn anchor, proving the wheel is *these* facts.
-      assert.ok(anchorOf(body.longitude), `${locale}: ${body.body} at ${body.longitude.toFixed(3)}° is drawn`);
+    const polar = (angle: number, radius: number) => ({
+      x: centre + radius * Math.cos(angle * deg),
+      y: centre + radius * Math.sin(angle * deg),
+    });
+    const keyedPoint = ({ x, y }: { x: number; y: number }) => `${x.toFixed(3)},${y.toFixed(3)}`;
+    const drawnAnchors = new Set(drawn.circles.filter(circle => circle.r <= 10).map(circle => keyedPoint({ x: circle.cx, y: circle.cy })));
+    assert.equal(drawnAnchors.size, geometry.points.length,
+      `${locale}: the wheel paints exactly one anchor per projected point (${drawnAnchors.size} of ${geometry.points.length})`);
+    for (const point of geometry.points) {
+      // `point.anchor` is the geometry's own emitted coordinate — computed from the
+      // *unrounded* angle, which a recomputation from `point.angle` would miss at 3 dp. The
+      // expectation therefore comes from the snapshot's projection and the assertion is
+      // against the emitter's output, which is the comparison that was missing.
+      const expected = keyedPoint(point.anchor);
+      assert.ok(drawnAnchors.has(expected),
+        `${locale}: ${point.id} is painted where the snapshot's projection puts it`);
     }
+    const segmentKey = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+      [keyedPoint(a), keyedPoint(b)].sort().join("|");
+    const drawnSegments = new Map<string, number>();
+    for (const line of drawn.lines) {
+      const key = [keyedPoint({ x: line.x1, y: line.y1 }), keyedPoint({ x: line.x2, y: line.y2 })].sort().join("|");
+      drawnSegments.set(key, (drawnSegments.get(key) ?? 0) + 1);
+    }
+    const expectSegment = (a: { x: number; y: number }, b: { x: number; y: number }, what: string) => {
+      const key = segmentKey(a, b);
+      const remaining = drawnSegments.get(key) ?? 0;
+      assert.ok(remaining > 0, `${locale}: ${what} is painted at the snapshot's coordinates`);
+      drawnSegments.set(key, remaining - 1);
+    };
+    for (const house of geometry.houses) {
+      expectSegment(polar(house.angle, geometry.radii.aspectRing), polar(house.angle, geometry.radii.signRing), `house ${house.number} cusp`);
+    }
+    for (const chord of geometry.chords) {
+      const from = geometry.points.find(candidate => candidate.id === chord.a)!;
+      const to = geometry.points.find(candidate => candidate.id === chord.b)!;
+      expectSegment(polar(from.angle, geometry.radii.aspectRing), polar(to.angle, geometry.radii.aspectRing), `chord ${chord.a}|${chord.b}`);
+    }
+    for (const point of geometry.points) {
+      if (point.leader) expectSegment(point.leader.from, point.leader.to, `${point.id} leader`);
+    }
+    // Sign boundaries are drawn by both emitters from the ring index, not from a tick.
+    for (const sign of geometry.signs) {
+      expectSegment(polar(sign.startAngle, geometry.radii.signRing), polar(sign.startAngle, geometry.radii.outer), `sign ${sign.index} boundary`);
+    }
+    const leftovers = [...drawnSegments.entries()].filter(([, count]) => count > 0).reduce((sum, [, count]) => sum + count, 0);
+    assert.equal(leftovers, geometry.ticks.length,
+      `${locale}: only the ${geometry.ticks.length} ticks are unaccounted for — a stray primitive means the PDF drew something the snapshot does not project`);
 
     /**
      * Everything outside the wheel region is identical and in order.
@@ -815,8 +964,6 @@ test("PDF wheel: a pinned paid edition keeps its summary, tables and metadata wh
      * disappear unnoticed. Page boundaries are not compared because the wheel legitimately
      * adds one.
      */
-    const heading = locale === "es" ? "Rueda factual" : "Factual wheel";
-    const trailer = locale === "es" ? "Cálculo preliminar" : "Prototype calculation";
     const strip = (inspected: Awaited<ReturnType<typeof render>>["inspected"]) => {
       const flat = inspected.pages.map(page => page.text).join(" ");
       const at = flat.indexOf(heading);
