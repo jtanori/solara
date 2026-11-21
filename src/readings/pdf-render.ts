@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PDF_FAILURE_CODES, PDF_IPC_CHUNK_BYTES, PDF_WORKER_HEAP_MB, PDF_WORKER_RSS_BYTES, ReadingPdfError, type PdfFailureCode, type PdfWorkerMessage, type ReadingPdfInput } from "@/readings/pdf-contract";
+import type { ReadingChart } from "@/readings/presentation";
 import { PDF_INPUT_BYTES, READING_LIMITS, sectionText } from "@/readings/presentation";
 
 if (typeof window !== "undefined") throw new Error("pdf-render is server-only");
@@ -12,6 +13,25 @@ export type PdfRenderResult = { buffer: Buffer; pages: number; peakRss: number; 
 
 /** One active process, zero queue. Tests may tighten limits/inject a real fixture
  * child; HTTP clients can never set paths, resource limits or worker options. */
+/**
+ * What actually crosses the IPC boundary: one copy of the facts, not two.
+ *
+ * `ReadingPdfInput` carries the facts twice on a route-shaped request: `chart.baseFacts` is
+ * the stored row the page projected from, and `wheelFacts` is the already-verified value the
+ * handler forwards. Serializing `input` as-is therefore sends both, which on a real base
+ * fixture with its calculation blocks was 27.4 KB rather than the 12.9 KB quoted from a
+ * fixture with neither — enough to make the "one bound covers one render" rationale untrue
+ * in practice.
+ *
+ * So the payload promotes `chart.baseFacts` to `wheelFacts` when the caller did not set one
+ * (the direct-call path), then drops it from the chart. `chart.calculation` is untouched: it
+ * is document content, not a fact cache, and the PDF prints it.
+ */
+export function pdfIpcPayload(input: ReadingPdfInput): Omit<ReadingPdfInput, "chart"> & { chart: Omit<ReadingChart, "baseFacts"> } {
+  const { baseFacts, ...chart } = input.chart;
+  return { ...input, chart, wheelFacts: input.wheelFacts ?? baseFacts };
+}
+
 export class ReadingPdfRenderer {
   private active = false;
   constructor(private readonly options: { directory?: string; limits?: Partial<Limits>; spawn?: ChildFactory } = {}) {}
@@ -19,7 +39,9 @@ export class ReadingPdfRenderer {
   async render(input: ReadingPdfInput, signal?: AbortSignal): Promise<PdfRenderResult> {
     if (this.active) throw new ReadingPdfError("pdf_capacity");
     if (signal?.aborted) throw new ReadingPdfError("pdf_aborted");
-    const serialized = JSON.stringify({ chart: input.chart, content: input.content });
+    // The facts ride with the chart into the worker, so both sides serialize one object and
+    // one bound (`PDF_INPUT_BYTES`) covers what a single render actually receives.
+    const serialized = JSON.stringify(pdfIpcPayload(input));
     const textLength = input.content.sections.flatMap(sectionText).reduce((sum, text) => sum + text.length, 0);
     if (Buffer.byteLength(serialized) > PDF_INPUT_BYTES ||
       input.content.sections.length > 11 || input.content.sections.some(section => section.blocks.length > 30) ||
