@@ -885,12 +885,14 @@ were true by accident:
 
 The rule these produce: **assert against what the other surface painted, never against the
 shared input both surfaces read.** For text that means extracting the PDF's items by measured
-coordinates; for primitives it means walking the emitted element tree. Moving
-only a chord's *second* endpoint passed the parity test, because it compared `x1`/`y1` and
-counted anchors without checking where they were; segments are now compared as an unordered
-multiset of both endpoints, and anchors by position. Removing `fontFamily` passed everything,
-because no test examined which face drew the glyphs; the drawing now proves it with a
-character Noto covers and WinAnsi does not.
+coordinates; for primitives it means walking the emitted element tree.
+
+Two earlier escapes belong to the same family, recorded here because they are the reason the
+parity checks compare whole structures rather than samples. Moving only a chord's *second*
+endpoint passed, because the check compared `x1`/`y1` and counted anchors without asking where
+they were; segments are now an unordered multiset of both endpoints, and anchors are matched by
+position. Removing `fontFamily` passed everything, because no test examined which face drew the
+glyphs; the drawing now proves it with a character Noto covers and WinAnsi does not.
 
 `pdf-wheel-splits-page` is a **wrapper-level** mutation, not an `Svg` one. An earlier
 draft dropped this target on the reasoning that `Svg` is in `@react-pdf/layout`'s
