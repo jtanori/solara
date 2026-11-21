@@ -682,6 +682,26 @@ The child's environment allowlist, fs restriction, network denial, heap/RSS ceil
 single render slot and 15 s deadline are unchanged; no native addon or new dependency is
 introduced, and the wheel needs no image asset.
 
+### Worker-build mutations
+
+The build script became part of this slice for a reason that is not the feature: four suites
+run it concurrently, and it published a package readers can resolve at any moment. Five
+mutations were run against it, each killed by exactly one named test:
+
+| mutation | killed by |
+| --- | --- |
+| build to a temporary basename, then rename it over the final name | the license-footer test |
+| write `package.json` in place before publishing (the truncation window) | the paused-publication reader test |
+| reclaim the lock by mtime age instead of owner liveness | the live-holder test |
+| never reclaim a proven-dead owner's lock | the dead-owner test, and the concurrent-build test |
+| `link` -> `rename` when taking the lock | the live-holder test |
+
+The third and fourth are the two halves of the same finding; the fifth was found by the local
+harness while fixing them, and it is the most instructive. `rename` **overwrites**, so the
+previous "serialisation" did not serialise at all: a second builder took the lock from the
+first, which is exactly the live-eviction the review reported, in a form no amount of lock-age
+reasoning would explain. `link` is atomic *and* fails with `EEXIST`, which is what a lock needs.
+
 ### What the raster caught that assertions did not
 
 Three defects in this slice were invisible to every text-level check and were found only by
@@ -833,7 +853,7 @@ shared module) · `pdf-halo-returns` (paint an opaque box behind the labels) ·
 `pdf-snapshot-blind-update` (a test that fails if snapshots are regenerated without
 the recorded manual review note).
 
-All sixteen mutations were run and each is killed by a named test:
+All sixteen feature mutations were run and each is killed by a named test:
 
 | mutation | killed by |
 | --- | --- |
@@ -854,9 +874,12 @@ All sixteen mutations were run and each is killed by a named test:
 | **the whole PDF drawing scaled 1.02x** | x-translation and baseline-slope assertions |
 | **only labels at one type size displaced** | baseline slope, not a constant offset |
 
-Six of these escaped when first tried, which is why they are called out. Four were escapes in
-the *tests*, not the product, and they share one shape: the assertion's *expectation* was
-taken from the emitter or the projection rather than from the other rendered surface.
+Six of these escaped when first tried, which is why they are called out. Five were escapes in
+the *tests*, and they share one shape: the assertion's *expectation* was taken from the emitter
+or the projection rather than from the other rendered surface. The sixth was not test-side —
+an early revision drew the wheel's text in a face that lacked the glyphs, so the labels were
+absent from real output while the tests passed. That is a confirmed rendering defect, not a
+test artifact, and it is why the glyph assertions inspect the emitted font resources.
 
 - The parity test never rendered the page; it read `wheelLabelTexts(geometry)` — the PDF's
   own function — so an HTML-only label change passed.

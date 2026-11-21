@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { SolarReturnDocument, pdfStrings, wheelCopy } from "../src/components/solar-pdf";
 import { PdfChartWheel, PDF_WHEEL_POINTS } from "../src/components/pdf-chart-wheel";
 import { ChartWheel } from "../src/components/chart-wheel";
@@ -1077,48 +1077,147 @@ test("PDF wheel: a pinned paid edition keeps its summary, tables and metadata wh
 });
 
 /**
- * The worker bundle is replaced atomically, so a concurrent suite cannot fork a partial one.
+ * The build script has two kinds of concurrency to survive, and the previous test only
+ * exercised neither of them properly.
  *
- * `node --test` runs each file in its own process, and four suites run `scripts/build-pdf.mjs`
- * in `before()` — including this one, which is why the guarantee is asserted here. esbuild
- * opens its outfile and streams into it, so a plain `outfile` leaves the destination as
- * partial JavaScript for the duration of the write; a worker forked from another file in that
- * window fails, and which file fails depends on machine speed. That reproduced at about one
- * read in five hundred under four concurrent builders and showed up as a suite failing at the
- * *end* of an otherwise passing run.
+ * It spawned six builders and then read a byte length after `Promise.all` — which cannot
+ * observe a torn file, because by then every builder has finished. The review reproduced two
+ * real windows that it missed: a reader starting while `package.json` is being rewritten in
+ * place, and a live lock being evicted because it merely looked old.
  *
- * The script now builds to `<pid>.tmp` and `rename`s into place. This test pins the property
- * rather than the implementation: a reader sampling the destination while builders run must
- * never observe a truncated file.
+ * These four tests each pause publication at the exact point that used to be unsafe, and
+ * assert from a *separate process* — the way the app and the other suites actually observe it.
  */
-test("PDF worker: concurrent builds serialise and never publish a partial bundle", async () => {
-  const { readFile, readdir, stat } = await import("node:fs/promises");
+
+/** The published package is a set of complete files; a reader is anything that resolves them. */
+const PUBLISHED = ["bootstrap.mjs", "worker.mjs", "worker.mjs.LEGAL.txt", "package.json"];
+
+test("PDF worker: the shipped bundle's own license footer resolves", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { existsSync } = await import("node:fs");
+  // esbuild derives the footer from the outfile it is *given*. Building to a temporary name
+  // and then renaming ships a footer naming a file that never exists — which is exactly what
+  // this PR did before review caught it.
+  const footer = (await readFile(resolve(".pdf/worker.mjs"), "utf8")).match(/For license information please see (\S+?) \*\//);
+  assert.ok(footer, "the worker names a license file");
+  assert.ok(existsSync(resolve(dirname(resolve(".pdf/worker.mjs")), footer![1])), `the linked license file exists: ${footer![1]}`);
+  assert.ok(!/\.\d+\.tmp/.test(footer![1]), `the footer names a published file, not a build temporary: ${footer![1]}`);
+});
+
+test("PDF worker: a reader that starts while publication is paused still loads the package", async () => {
   const { spawn } = await import("node:child_process");
-  const target = resolve(".pdf/worker.mjs");
-  const complete = (await readFile(target, "utf8")).length;
+  const { rm, readFile } = await import("node:fs/promises");
+  const signal = resolve(".venv/pdf-reader-pause");
+  await rm(signal, { force: true });
+
+  /**
+   * The builder pauses with the assets already published and the bundle still old, which is
+   * the worst moment for a reader: `package.json`, fonts and metrics are new, `worker.mjs` is
+   * the previous one. Both states are individually consistent, so a reader must succeed
+   * regardless of which it resolves — it must simply never see a *partial* file.
+   */
+  const builder = new Promise<number | null>((settle, fail) => {
+    const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], {
+      stdio: "ignore", env: { ...process.env, PDF_BUILD_TEST_PAUSE_FILE: signal, PDF_BUILD_TEST_PAUSE_MS: "1500" },
+    });
+    child.once("close", settle); child.once("error", fail);
+  });
+  try {
+    const started = Date.now();
+    for (;;) {
+      if (await readFile(signal, "utf8").catch(() => null)) break;
+      if (Date.now() - started > 30_000) throw new Error("the builder never reached the publication pause");
+      await new Promise(settle => setTimeout(settle, 20));
+    }
+    // A real reader: resolve the package's declared imports and load a standard font, exactly
+    // as `bootstrap.mjs` does when PDFKit registers builtin metrics.
+    const reader = await new Promise<{ code: number | null; out: string; err: string }>((settle, fail) => {
+      const child = spawn(process.execPath, ["-e", `
+        import { createRequire } from "node:module";
+        const require = createRequire(${JSON.stringify(resolve(".pdf") + "/")});
+        require(${JSON.stringify(resolve(".pdf/package.json"))});
+        const font = require(${JSON.stringify(resolve(".pdf/standard-fonts/Helvetica.cjs"))});
+        process.stdout.write("loaded " + typeof font);
+      `], { stdio: ["ignore", "pipe", "pipe"] });
+      let out = ""; let err = "";
+      child.stdout.on("data", chunk => out += chunk);
+      child.stderr.on("data", chunk => err += chunk);
+      child.once("close", code => settle({ code, out, err }));
+      child.once("error", fail);
+    });
+    assert.equal(reader.code, 0, `a reader launched mid-publication loads the package: ${reader.err.split("\n")[0]}`);
+    assert.match(reader.out, /^loaded (object|function)$/);
+  } finally {
+    await rm(signal, { force: true });
+    await builder;
+  }
+});
+
+test("PDF worker: a lock whose owner is alive is not reclaimed, however old it looks", async () => {
+  const { readFile, rm, utimes, writeFile } = await import("node:fs/promises");
+  const { spawn } = await import("node:child_process");
+  const lock = resolve(".pdf/.build.lock");
+  const previous = await readFile(lock, "utf8").catch(() => null);
+  await writeFile(lock, String(process.pid));
+  try {
+    // A 10-minute-old mtime on a *live* holder. The previous implementation reclaimed by age,
+    // and the review reproduced a second builder completing while the holder was mid-publish.
+    const ancient = new Date(Date.now() - 600_000);
+    await utimes(lock, ancient, ancient);
+    const contender = spawn(process.execPath, ["scripts/build-pdf.mjs"], {
+      stdio: "ignore", env: { ...process.env, PDF_BUILD_LOCK_WAIT_MS: "1200" },
+    });
+    const code = await new Promise<number | null>(settle => contender.once("close", settle));
+    assert.notEqual(code, 0, "a contender times out rather than evicting a live holder");
+    assert.equal((await readFile(lock, "utf8")).trim(), String(process.pid), "the live holder's lock survives");
+  } finally {
+    if (previous === null) await rm(lock, { force: true });
+    else await writeFile(lock, previous);
+  }
+});
+
+test("PDF worker: a lock whose owner is dead is reclaimed, and the build succeeds", async () => {
+  const { readFile, rm, writeFile } = await import("node:fs/promises");
+  const { spawn } = await import("node:child_process");
+  const lock = resolve(".pdf/.build.lock");
+  const previous = await readFile(lock, "utf8").catch(() => null);
+  // A pid that cannot be running: the kernel's pid ceiling is well below this.
+  await writeFile(lock, "999999");
+  try {
+    const code = await new Promise<number | null>((settle, fail) => {
+      const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], { stdio: "ignore" });
+      child.once("close", settle); child.once("error", fail);
+    });
+    assert.equal(code, 0, "a builder reclaims a proven-dead lock and completes");
+    assert.equal(await readFile(lock, "utf8").catch(() => null), null, "the lock is released afterwards");
+  } finally {
+    if (previous !== null) await writeFile(lock, previous).catch(() => {});
+  }
+});
+
+test("PDF worker: concurrent builds serialise and publish no partial file", async () => {
+  const { readFile, readdir } = await import("node:fs/promises");
+  const { spawn } = await import("node:child_process");
+  const complete = (await readFile(resolve(".pdf/worker.mjs"), "utf8")).length;
   assert.ok(complete > 100_000, `the bundle is substantial (${complete} bytes)`);
 
   /**
-   * Six builders at once — more than the four suites that do this in `before()`, and more
-   * than reproduced the original failure.
+   * Six builders, more than the four suites that do this in `before()`.
    *
-   * Before the lock, this was not only a torn file: two builders copying `standard-fonts`
-   * into the same directory raced, and one died with
-   * `ENOENT ... standard-fonts/HelveticaBold.mjs` while another was publishing it. A failure
-   * of that kind surfaces as an unrelated suite failing, which is why it took three CI
+   * Before the lock, this was not only a torn file: two builders copying `standard-fonts` into
+   * the same directory raced, and one died with `ENOENT ... HelveticaBold.mjs` while another
+   * published it. That surfaces as an unrelated suite failing, which is why it took three CI
    * failures to find.
    */
   const run = () => new Promise<number | null>((settle, fail) => {
     const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], { stdio: "ignore" });
-    child.once("close", settle);
-    child.once("error", fail);
+    child.once("close", settle); child.once("error", fail);
   });
   const codes = await Promise.all(Array.from({ length: 6 }, run));
   assert.deepEqual(codes, [0, 0, 0, 0, 0, 0], "every concurrent builder exits successfully");
 
   const entries = await readdir(resolve(".pdf"));
   assert.deepEqual(entries.filter(name => /\.tmp$/.test(name)), [], "no temporary bundle survives");
-  assert.ok(entries.includes("worker.mjs.LEGAL.txt"), "the legal sidecar is publishable with the bundle");
-  assert.equal(await stat(resolve(".pdf/.build.lock")).catch(() => null), null, "the lock is released after building");
-  assert.equal((await readFile(target, "utf8")).length, complete, "the published bundle is complete");
+  for (const file of PUBLISHED) assert.ok(entries.includes(file), `the package contains ${file}`);
+  assert.equal((await readFile(resolve(".pdf/worker.mjs"), "utf8")).length, complete, "the published bundle is complete");
 });
