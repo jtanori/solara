@@ -169,6 +169,12 @@ The prototype had unlimited auth attempts, synchronous scrypt, no email channel,
 - Production promotion requires the separate exact-SHA migration-gate PR.
 - #57 remains open until CSP enforcement is verified after the observation window.
 
+> **Superseded at M5 cutover.** The "exact-SHA migration-gate PR" consequence above is replaced by
+> the `production-migrations` approval gate plus the content rehearsal in
+> [ADR 012](#adr-012--readiness-tolerates-schema-ahead-in-production) and
+> [ADR 013](#adr-013--github-actions-is-the-only-deployer-merging-is-the-deploy). Until cutover, the
+> exact-SHA gate remains in force.
+
 ---
 
 ## ADR 008 — One migration path, deploy order and rollback
@@ -197,6 +203,14 @@ The #52 incident came from ad-hoc migration work and database state that did not
 - Rollback expectations are honest: restore or forward fix, not a down-migration.
 - Any new migration must update `src/lib/migration-manifest.ts` and pass `npm run db:check`.
 - The #52 failure mode (database ahead/behind the journal) is now detected before merge and reflected in `/api/ready`.
+
+> **Superseded at M5 cutover.** The `scripts/deploy.sh` verification path above, and the rule that
+> an "unexpected applied hash" is a hard failure, are replaced at cutover by
+> `deploy-production.yml` and by [ADR 012](#adr-012--readiness-tolerates-schema-ahead-in-production)'s
+> `ahead` tolerance; the approval gate is described in
+> [ADR 013](#adr-013--github-actions-is-the-only-deployer-merging-is-the-deploy). The
+> expand/contract, immutable-migration, migrate-before-deploy and forward-fix rules above **remain
+> in force**. Until cutover, the `deploy.sh` path remains the documented procedure.
 
 ---
 
@@ -349,3 +363,164 @@ before deciding which account conveniences belong in the initial release.
   new feature dependency without assessing its current code and material risk.
 - No provider/Stripe spending, hosted data changes, activation, deployment or
   production promotion follows automatically from this product decision.
+
+---
+
+## ADR 012 — Readiness tolerates schema-ahead in production
+
+**Date:** 2026-11-19
+
+**Status:** Accepted; implementation pending (milestone M5, `docs/plan-deployment-alignment.md`)
+
+**Context:** Operator review of the deploy pipeline after a production readiness incident
+
+### Context
+`buildReadiness` compares the applied migration hashes in `drizzle.__drizzle_migrations` with
+`EXPECTED_MIGRATIONS` as an **exact set**, and `tests/readiness.test.ts` pins that as the contract.
+Two consequences were accepted as normal until now:
+
+- Migrations are applied *before* the deployment that needs them (correct ordering), so between
+  `migrate` succeeding and the new build serving, the still-live build sees hashes it does not
+  know and reports `503`. The runbook calls this "expected readiness skew".
+- A Vercel Instant Rollback after a migration restores availability but never restores readiness:
+  the rolled-back build permanently lacks the new hash. Monitors and the next deploy stay red.
+
+Exact equality was doing double duty: detecting "you are pointed at the wrong database" *and*
+forbidding forward-compatible rollout. The first signal is worth keeping; the second is not a
+property a production system can have.
+
+### Decision
+Replace equality with four states: `exact`, `ahead`, `behind`, `diverged`, computed from two hash
+sets — `expected` (the build's `EXPECTED_MIGRATIONS` manifest) and `applied`
+(`drizzle.__drizzle_migrations` on the database the build is connected to).
+
+| Condition | State | Readiness |
+| --- | --- | --- |
+| `expected == applied`, both non-empty | `exact` | ok |
+| `expected` empty (with or without applied rows) or the manifest cannot be read | `diverged` | fatal |
+| `expected ⊂ applied`, and every extra hash's `created_at` is **strictly greater** than the newest `expected` `when` | `ahead` | ok |
+| `expected ∖ applied ≠ ∅` and `applied ∖ expected = ∅` (missing expected only) | `behind` | fatal |
+| `expected ∖ applied ≠ ∅` **and** `applied ∖ expected ≠ ∅` (missing and extra) | `diverged` | fatal |
+| `applied ⊃ expected` but an extra hash's `created_at` is **≤** the newest `expected` `when`, or the ordering is unparseable | `diverged` | fatal |
+
+**Precedence:** `behind` requires *nothing extra*. Any extra row alongside a missing expected row is
+`diverged`, never `behind` or `ahead` — two simultaneous directions cannot both be a clean rollout.
+
+**Provenance and the residual risk.** "Trusted" means exactly two things: the build is connected to
+the database its `APP_DEPLOY_ENV` identity guard expects (issue 3), and the applied rows were written
+through the reviewed migration path (`db-run` → `drizzle-kit migrate`). There is no signature and no
+external oracle. `created_at` is the journal's `when` value — repository generation time, not a
+database-assigned apply time — so an **unknown hash whose journal entry carries a newer `when` is
+indistinguishable from a legitimate future migration** and is classified `ahead` (green). This is
+recorded as the accepted residual risk; it is *not* a promise that an unknown newer hash fails
+closed. Anyone able to write rows can also write a newer timestamp. The controls are the identity
+guard (only the expected endpoint is trusted), the review-only path, the blocking DDL lint, and the
+drift monitor's time bound. An **older** unknown hash, or any extra row alongside a missing expected
+row, is caught as `diverged`. #167 carries these as fixtures: missing+extra, older-extra, equal
+timestamp, forged-future timestamp, and empty manifest.
+
+There is **no numeric cap** on how far ahead a database may be. A fourth unknown migration is no
+more dangerous than a second, and a cap adds a test matrix without adding safety. The bound is
+**time**: `/api/version` reports the state continuously, and the drift monitor alerts when it is
+not `exact` for longer than the observation threshold.
+
+`/api/ready` and `/api/version` expose the state as a **string only** — never counts, tags, or
+table names, consistent with the detail budget already enforced in `src/app/api/ready/handler.ts`.
+
+### Consequences
+- **This removes the last automated signal that a rollback is schema-incompatible.** A rolled-back
+  build now reports green. The compensating controls are mandatory, not optional:
+  1. a *blocking* destructive-DDL lint on every PR that adds `drizzle/*.sql` (#166), merged before
+     or with this change;
+  2. **ADR 008's expand/contract rule, carried forward during Phases 1–2** — not deferred to the
+     #177 documentation rewrite. Additive-first changes, compatible code deployed before old
+     structures are removed, and no migration that depends on the new code being live;
+  3. persistent `ahead` reporting with time-bounded alerting (#165).
+- **Overrides have an owner and an evidence trail.** `migration:breaking-approved` may be applied
+  only by the operator (never by an agent), only with a PR comment naming the destructive
+  statements, the backup/restore plan, and why expand/contract is not possible. The label is read
+  from the API at run time; a green `ahead` plus the label does **not** prove the previous build
+  still works.
+- **An incompatible release must not auto-rollback.** When the destructive lint is overridden, the
+  release is marked *no-auto-rollback*: the deploy workflow's alias revert is disabled for that SHA
+  and recovery is forward-fix only, or a deliberate operator alias move once compatibility is
+  established. A release that does not carry that mark must pass an explicit
+  backward-compatibility check; the default is to require the mark rather than assume compatibility.
+- `docs/PR_WORKFLOW.md`, `docs/setup/01-foundation-and-deployment.md` and the runbooks must stop
+  describing readiness skew as an expected 503, and #76's "readiness-based rollback unavailable"
+  wording is superseded. The rollback procedure in **ADR 008** and the exact-SHA migration-gate
+  consequence in **ADR 007** are superseded **at cutover** by ADR 013's workflow and the
+  `production-migrations` approval; both ADRs carry that link.
+- Displaying `ahead` forever is intentional. A stuck `ahead` is the signal; a passing one is not.
+- **Deployment records:** `docs/deploys.md` stays the active legacy record **until cutover**. At
+  cutover it is frozen with a prospective header, **GitHub Deployments** (created by the
+  `environment:` key) plus workflow job summaries become the authority, and no further rows are
+  appended. Workflows never commit to `main`, so no deploy ever writes a file into the deployed
+  tree.
+- Splitting the four states is a policy change, not a bug fix. Reverting it requires a superseding
+  ADR.
+
+---
+
+## ADR 013 — GitHub Actions is the only deployer; merging is the deploy
+
+**Date:** 2026-11-19
+
+**Status:** Accepted; implementation pending (milestone M5, `docs/plan-deployment-alignment.md`)
+
+**Context:** `scripts/deploy.sh` was the documented deploy path, but it was optional
+
+### Context
+`deploy.sh` wrapped `gh pr merge`, dispatched migrations, waited for Vercel, and recorded the
+result. The actual deploy trigger, however, was Vercel's Git integration reacting to the merge. Any
+merge performed through the GitHub UI, `gh`, or an agent skipped the script entirely: migrations
+ran late or not at all, Vercel deployed regardless, and nothing recorded what happened.
+
+Gate strength that depends on the actor remembering a local script is not a gate. The rulesets
+require a PR and the `verify` check, so merges are audited — but audit is not ordering.
+
+### Decision
+- **Merging is the deploy.** Every push to `staging` and `main` starts the corresponding GitHub
+  Actions workflow. `workflow_dispatch` exists only for break-glass recovery.
+- Vercel's Git auto-deploy is disabled for those two branches **only after** the replacement
+  workflow has been proven against them; feature-branch previews are unchanged until per-PR
+  databases are proven.
+- Deploy order is fixed inside the workflow: **build → migrate → stage → verify candidate →
+  promote → verify live**. A broken build never touches the database; a candidate is never promoted
+  without proving its own identity.
+- Migration-bearing production releases require approval of the `production-migrations`
+  environment. This is a deploy gate, not a merge gate, and it relies on the **future-scoped §0
+  exception** added to `docs/PR_WORKFLOW.md`. Its conditions are load-bearing: required reviewer is
+  the operator with Prevent self-review OFF (the same identity can release the job); a waiting or
+  denied approval is never a required status check or required deployment; and required PR checks
+  remain non-API-dependent. A live `/api/version` or Actions-API promotion signal is **advisory
+  only** — the fail-closed identity and run assertions run post-merge, server-side, before
+  privileged work. An API or endpoint outage must never block a merge.
+- Promotion is merge-commit-only, enforced server-side: the merge commit's second parent equals the
+  **recorded reviewed `staging` commit**, and that commit is an ancestor of `origin/staging`. A
+  squash merge of a fast-forwardable promotion produces an identical **tree** and would otherwise
+  pass tree equality while destroying ancestry. A schema-free hotfix cannot satisfy this shape: it is
+  merged to protected `main` through the normal merge path, then dispatched from **`main`** for that
+  merged SHA with `hotfix=true` (both production environments are `main`-only), keeping the
+  no-`drizzle/` check, approval and live-identity checks rather than bypassing them.
+- Rollback is **conditional and default-deny**. It is an alias move to the **recorded prior
+  deployment ID**, never a schema change, and only when an operator-written record matches that prior
+  ID, the candidate SHA and the exact applied migration hash set, and the release carries no
+  *no-auto-rollback* mark. A record for another prior build, candidate or hash set does not
+  authorize the move. Otherwise the alias is left as-is, the incident opens, and the operator pages
+  for a forward fix (or a deliberate alias move once compatibility is established). Readiness being
+  green does not prove the old build works against a newer schema.
+
+### Consequences
+- `scripts/deploy.sh` is retired once Deployments-aware monitoring exists; `scripts/promote.sh`
+  only opens the promotion PR and watches the resulting run.
+- `migrate.yml` becomes break-glass: verify plus an emergency forward-fix, with an operator dispatch
+  that maps mode+target to one protected ref, environment and credential (a production write uses
+  `production-migrations` approval; production diagnostics use a read-only role), revalidates the
+  approved SHA, and runs the staging hash rehearsal under the shared per-target lock — not a locally
+  exported production URL.
+- `docs/deploys.md` is frozen **at cutover**, not before; until then it remains the active legacy
+  record.
+- "Merged but not live" becomes a reported state rather than an inference from email.
+- Reverting this requires a superseding ADR and a proven replacement deploy path, not just a
+  preference for a local script.

@@ -146,6 +146,67 @@ For **production** (before real customers): repeat with prod direct URL, but onl
 
 ---
 
+## Phase 0 — inventory for the Actions-owned pipeline (M5)
+
+Fill this in **before** issue 6 (`deploy-staging.yml`) or issue 7 (`deploy-production.yml`) is
+written. Record names, scopes and plans — never secret values. See
+[`docs/plan-deployment-alignment.md`](../plan-deployment-alignment.md) §11–13.
+
+### Vercel
+
+| Item | Recorded value |
+| --- | --- |
+| Plan (Hobby / Pro) | |
+| Production branch | |
+| Deployment Protection enabled? | |
+| Protection Bypass for Automation created? | |
+| `git.deploymentEnabled` behaviour for feature-branch previews (spike S1) | |
+| Preview env var scopes (which rows are `staging`-only vs all-preview vs all-environments) | |
+| Preview routing verified: which database does a feature preview actually resolve to? (dashboard + a probe, not an inference) | |
+| `ALLOW_PREVIEW_ON_STAGING` set? (only with verified read-only staging access; never production; never migrate) | |
+| Preview guard decision **enforced** (isolated routing / verified read-only staging / quarantine with no hosted DB credential) | |
+| Any `DATABASE_URL` row scoped to **both** Preview and Production? | |
+| Runtime variable injection for a **promoted** candidate: mechanism and scope (production and staging) — prerequisite, not an S1 assumption | |
+
+### Neon
+
+| Item | Recorded value |
+| --- | --- |
+| Staging project / branch | |
+| Staging endpoint ID (`ep-…`) | |
+| Production project / branch (pooled + direct) | |
+| Production endpoint ID (`ep-…`) | |
+| Postgres major version (must match `ci.yml`) | |
+| Read-only staging role created for the rehearsal gate and staging diagnostics? | |
+| Read-only production role created for `production-diagnostics`? | |
+
+### Vercel environment variables — scope audit
+
+| Variable name | Preview | Production | Branch scope |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | | | |
+| `APP_URL` | | | |
+| `NEXT_PUBLIC_*` (list) | | | |
+| `STRIPE_*` (list) | | | |
+
+> A `DATABASE_URL` visible to both Preview and Production is the failure mode the boot guard
+> (issue 3) exists to make loud. If one already exists, fix the scope before Phase 3.
+>
+> **Build-time boundary (do not skip).** The build needs `DATABASE_URL` to *exist* but must not be
+> able to connect. Record the build-only, non-routable placeholder mechanism (or the import
+> refactor) and the proof that no hosted credential and no `vercel pull` env file is present in the
+> build workspace or the uploaded artifact. See [guide 11](11-actions-deploys.md) §2.
+
+### Spikes
+
+- [ ] **S1** — does `deploymentEnabled: { "staging": false }` suppress feature-branch previews?
+      Does `vercel deploy --prebuilt --env KEY=value` set runtime env or is it build-time only?
+      Record the observed result and the date.
+- [ ] **S2** — can a per-PR Neon branch receive its own runtime `DATABASE_URL` and be cleaned up on
+      close? Record the mechanism, not a credential.
+
+---
+
 ## Quick verification checklist (run locally after UI clicks)
 
 ```bash
