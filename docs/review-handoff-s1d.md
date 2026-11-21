@@ -5,17 +5,23 @@ is quoted from an earlier round or from the PR description.
 
 - **PR:** [#161](https://github.com/jtanori/solara/pull/161) → `staging`
 - **Head:** `4cc8585` · **Base:** `9de566d` (`origin/staging`)
-- **Size:** 7 commits, 15 files, +1980 / −68
+- **Size:** 9 commits (with this round), 16 files, +2181 / −68
 - **Labels:** `type:feature`, `deploy:required`
-- **State:** `MERGEABLE` / `BLOCKED` — two review threads open, no approving review. Nothing
+- **State:** `MERGEABLE` / `BLOCKED` — blocked by **unresolved conversations**, not by a
+  missing approval. `protect-staging` requires conversation resolution and **zero** approving
+  reviews; this repository reviews COMMENT-only and records a SHA-pinned verdict. Nothing
   merged, deployed or promoted.
 
 ## 1. What to review, in priority order
 
 The slice is small; the *tests* are most of it (`tests/readings-wheel-pdf.test.ts` is 1124 of
 the 1980 added lines). Spend the time there. Four rounds of review, plus one self-review, have found six defects in
-this PR's tests and none in the drawing itself, so a test that cannot fail is the dominant
-risk, not a wrong pixel.
+this PR's tests. Five of those six were test-side — assertions that could not fail — but the
+sixth was **not**: an early revision drew the wheel's text in a face that lacked the glyphs,
+so the labels were missing from real output while the tests, which compared the document's
+text items to the projection, still passed. That one was a confirmed rendering defect the
+tests failed to catch, and it is the reason the glyph assertions now inspect the emitted font
+resources rather than the input string list.
 
 | Order | Area | Why first |
 | --- | --- | --- |
@@ -49,13 +55,13 @@ Two consequences worth checking directly:
 | Gate | Result |
 | --- | --- |
 | `npx tsx --test tests/*.test.ts` (`RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1`) | **837 / 837**, 0 fail, 0 skipped — two consecutive full runs, PostgreSQL 17 on loopback |
-| `tests/readings-wheel-pdf.test.ts` | **21 / 21** |
+| `tests/readings-wheel-pdf.test.ts` | **25 / 25** |
 | `npx tsc --noEmit` | clean |
 | `npx eslint src tests scripts --max-warnings=0` | clean |
 | `npm run build` | succeeds |
 | `node scripts/check-pdf-package.mjs` | **220 files, 5.9 MiB** — identical to `staging` |
 | GitHub `verify` / `pr-lint` | pass / pass (4m22s / 5s) |
-| Mutations run | 16, each killed by a named test (§4) |
+| Mutations run | 16 feature + 5 worker-build, each killed by a named test (§4, §5a) |
 
 Snapshots: `tests/fixtures/readings/pdf-snapshots.json` changes by **8 text lines and 8
 hashes** (4 EN + 4 ES), all of them the absent-wheel sentence. Regenerated intentionally and
@@ -142,6 +148,32 @@ concurrent builders and fails if the lock is removed.
 one build (a global setup) instead of serialising, that is a bigger change and belongs in its
 own PR; this one keeps the blast radius small.
 
+## 5a. Late review round: three worker-build blockers
+
+The build script was reviewed separately from the feature and came back with three P1
+findings, all reproduced independently. All three were mine, introduced in `4cc8585`:
+
+| Finding | Cause | Fix |
+| --- | --- | --- |
+| The bundle's license footer named a deleted file | esbuild derives `For license information please see <outfile>.LEGAL.txt` from the outfile it is *given*; building to `worker.mjs.<pid>.tmp` and renaming shipped a footer naming a file that no longer existed | Build under the **final basename** in staging, so the footer is correct as emitted; `check-pdf-package.mjs` now extracts the footer's named file and asserts it exists *and* is traced |
+| The writer lock did not protect readers | `package.json` was truncated and rewritten in place; assets were `cp`ed over live names. A reader forked in that window died with `ERR_INVALID_PACKAGE_CONFIG` — reproduced, then fixed | Nothing is written at a reader-resolvable path. The package is built in `.venv/pdf-build/` and published by per-file `rename` (atomic, overwrites), bundle last |
+| A stale-lock check could evict a live builder | Reclamation was by mtime age; a 60s-old lock belonging to a live builder was deleted mid-publish | Reclaim only when the owner is **proven dead** (`kill(pid, 0)`), re-verifying pid *and* inode before unlinking; release only a lock we still own |
+
+Found while fixing the third, and worth recording because it shows the previous "serialisation"
+was not serialising at all: the acquire path wrote a pid to a private file and `rename`d it onto
+the lock. `rename` **overwrites**, so a second builder silently took the lock from the first —
+the exact eviction the finding describes, in a form no lock-age argument would explain. `link`
+is the correct primitive: atomic *and* `EEXIST` when the target exists. Five mutations, each
+killed by exactly one named test:
+
+| Mutation | Killed by |
+| --- | --- |
+| build to a temporary basename and rename it | the license-footer test |
+| write `package.json` in place before publishing | the paused-publication reader test |
+| reclaim the lock by mtime age | the live-holder test |
+| never reclaim a dead owner's lock | the dead-owner test (and the concurrent-build test) |
+| `link` → `rename` when taking the lock | the live-holder test |
+
 ## 6. Traps that cost time here
 
 1. **`.pdf/` must be rebuilt before any render probe.** `ReadingPdfRenderer` renders through
@@ -188,8 +220,10 @@ both with a reply naming the fix and the mutation that now fails:
 - page/PDF label parity (extra PDF-only label)
 - paid Placidus output (anchor shift)
 
-Everything else is resolved. The PR needs an approving review and those two threads resolved
-before `staging`'s branch policy will allow the merge.
+Everything else is resolved. Per the earlier correction: `staging` requires **conversation
+resolution** and **zero** approving reviews — a formal approving review is not part of the
+branch policy here. The prior threads were actionable findings, not a missing approval, and
+"awaiting approval" is the wrong explanation for a `BLOCKED` state in this repository.
 
 ## 9. Authority
 
