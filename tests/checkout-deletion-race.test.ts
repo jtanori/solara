@@ -2,7 +2,6 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
-import { sql } from "drizzle-orm";
 
 /*
  * The checkout/deletion interleaving (#144).
@@ -684,11 +683,26 @@ test("pool: a stalled checkout holds coordination, not an app-pool connection (#
     application_name: `solara-coordination-test-${token}`,
     allowExitOnIdle: true,
   });
+
+  // The app pool under test is created here with a name only this test uses.
+  // Filtering pg_stat_activity on the shared "solara-app" name counts other
+  // test files' sessions and fails under parallel execution (#197).
+  const appName = `solara-app-test-${token}`;
+  const testAppPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 4,
+    application_name: appName,
+    allowExitOnIdle: true,
+  });
+  const { drizzle } = await import("drizzle-orm/node-postgres");
+  const testDb = drizzle(testAppPool);
+
   let lockCalls = 0;
   const lifecycleLock: typeof withAccountLifecycleLock = (userId, fn, deps) => {
     lockCalls += 1;
     return withAccountLifecycleLock(userId, fn, {
       ...deps,
+      db: testDb,
       pool: lockPool,
       compatPool: lockPool,
       advisoryCompat: true,
@@ -740,11 +754,10 @@ test("pool: a stalled checkout holds coordination, not an app-pool connection (#
     await started;
     assert.equal(lockCalls, 1, "the shipped route used the injected lifecycle lock");
 
-    const { rows } = await db.execute<{ count: number }>(sql`
-      select count(*)::int as count
-      from pg_stat_activity
-      where application_name = 'solara-app' and state = 'idle in transaction'
-    `);
+    const { rows } = await testAppPool.query<{ count: number }>(
+      "select count(*)::int as count from pg_stat_activity where application_name = $1 and state = 'idle in transaction'",
+      [appName],
+    );
     assert.equal(rows[0]?.count, 0, "the stalled checkout holds no app-pool transaction");
 
     const survivors = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
@@ -771,6 +784,7 @@ test("pool: a stalled checkout holds coordination, not an app-pool connection (#
     await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, user.id));
     await db.delete(users).where(eq(users.id, user.id));
     await lockPool.end();
+    await testAppPool.end();
   }
 });
 

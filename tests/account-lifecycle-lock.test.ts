@@ -452,6 +452,10 @@ test("lease: default compatibility uses the coordination pool", gated, async () 
     }, { advisoryCompat: true, waitMs: 1_000 });
 
     await startedPromise;
+    // This scan intentionally uses the default coordination name: the behavior
+    // under test is that the *default* compatibility path uses that pool. A
+    // foreign session can only make this pass, not fail — unlike the app-pool
+    // assertion in checkout-deletion-race.test.ts (#197).
     const { rows } = await probePool.query<{ count: number }>(
       `select count(*)::int as count
        from pg_stat_activity
