@@ -242,6 +242,13 @@ One module, used at app boot, in `db-run.ts`, and in `drizzle.config.ts`:
 | `production` | equals `PROD_DB_ENDPOINT` |
 | `staging` | equals `STAGING_DB_ENDPOINT` |
 | `preview` | neither production nor staging, **unless** the verified transitional exception below is set |
+
+Note: staging is identified from `VERCEL_GIT_COMMIT_REF` (see
+[decision-staging-environment.md](decision-staging-environment.md)), so the staging deployment
+resolves to the `staging` row above, not `preview`. The transitional exception therefore does not
+apply to staging — it is only about whether a feature preview may read staging. If the mapping ever
+regresses, staging falls back to `preview` and this guard rejects the staging database at boot: fail
+closed.
 | `local` | loopback |
 
 Endpoint = first hostname label with `-pooler` stripped. Pooler hosts are rejected for migration
