@@ -10,6 +10,7 @@ scripts/verify-reading-mutations.mjs
 scripts/verify-dependency-mutations.mjs
 scripts/evaluate-paid-readings.ts
 scripts/approve-paid-reading-evaluation.ts
+scripts/sample-genuine-readings.ts
 scripts/lib/paid-evaluation-corpus.ts
 scripts/gen-annual-facts-fixtures.py
 tests
