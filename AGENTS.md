@@ -211,6 +211,7 @@ Full text: [`docs/decisions.md`](docs/decisions.md). Review mechanics: [`docs/CO
 - [ ] Any review is **posted to the PR** (`COMMENT` event, inline findings, reviewed SHA named) — not pasted into chat.
 - [ ] For each test guarding a defect: mutation run, and the result recorded in the PR body.
 - [ ] Freshness: `git fetch origin staging`; if behind, merge the base in (never force-push a pushed branch) and re-run the full gates on the merged tree; open PRs checked for file overlap.
+- [ ] Before concluding a pushed commit is missing: compare `git rev-parse HEAD` with `git ls-remote origin <branch>`. In agent sandboxes the checkout can return to an earlier snapshot while the working tree keeps uncommitted edits, which looks like lost work and is not. Recover by copying the edits aside, `git reset --hard` to the pushed head, and re-applying them — never force-push to "restore" history. Confirm the old head is still an ancestor (`git merge-base --is-ancestor <old> <new>`) before reporting the recovery.
 - [ ] Deploy classification label applied (`deploy:required`/`deploy:skip`) and the PR body carries the attestation, deviations, and mutations sections from the template.
 
 *Keep this file current — it is the contract for the next agent.*
