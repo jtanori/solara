@@ -74,7 +74,7 @@ Settled here; each would otherwise surface mid-review.
 | **D5** | `APP_BUILT_AT` is the stamp's timestamp, captured in `prebuild` | Requirement: build time, not request time. Falls back to the `next.config.ts` evaluation time if the stamp is absent, and that fallback is `unknown`-marked — see D7 |
 | **D6** | `APP_RELEASE_ID` is `<env>-<commit.slice(0,7)>-<builtAt epoch seconds>` by default, overridable by `APP_RELEASE_ID` in the environment | One opaque token that names a *specific artifact*, not a commit. Two builds of the same SHA are different releases, which is the distinction a rollback needs |
 | **D7** | Every field is `"unknown"` rather than absent when it cannot be determined, and `env` degrades `local` | A gate that receives `commit:"unknown"` must fail closed (#173 says so explicitly). An absent field invites `undefined` comparisons that pass |
-| **D8** | `env` is derived: explicit `APP_DEPLOY_ENV` → `VERCEL_ENV` → `local`, and **staging must set `APP_DEPLOY_ENV=staging` explicitly** | `VERCEL_ENV` is only `production`, `preview` or `development` — and the staging deployment is a *preview* deployment (see below), so Vercel reports `preview` for it. Without the explicit variable, staging would report `preview` and #171's gate would be comparing the wrong word |
+| **D8** | `env` is derived: explicit `APP_DEPLOY_ENV` → (`VERCEL_ENV === "preview"` **and** `VERCEL_GIT_COMMIT_REF === "<the staging branch>"` → `staging`) → `VERCEL_ENV` → `local` | `VERCEL_ENV` is only `production`, `preview` or `development`, and the staging deployment is a *preview* deployment, so Vercel reports `preview` for it. The branch ref is the only field that distinguishes staging from a feature preview, and Vercel records it per deployment. Costs no control-plane change; the explicit variable still wins, so a future custom environment is a variable change and not a code change. Decided in [decision-staging-environment.md](decision-staging-environment.md) |
 
 ### Why a stamp file rather than `git` inside `next.config.ts`
 
@@ -86,23 +86,25 @@ stamp is produced once, at the only moment the answer is knowable, and read chea
 ### Verified: Vercel reports `preview` for the staging deployment
 
 Read from the Vercel API for deployment `dpl_Cb6vgmbzBKobR1Xajtw5mq8jJ5rc` (the merge of #161,
-aliased to `solara-stg.vercel.app`): `"target": null`, and the deployment's OIDC claim is
-`"environment": "preview"`. Staging is a preview deployment with a custom alias, not a Vercel
-*Production* deployment — `VERCEL_ENV` there is `preview`.
+served at `solara-stg.vercel.app`): `"target": null`, and the deployment's OIDC claim is
+`"environment": "preview"`. Staging is a preview deployment bound to the `staging` branch and
+served from a branch-linked domain (`list_project_domains` → `git_branch: "staging"`), not a
+Vercel *Production* deployment. `VERCEL_ENV` there is `preview`.
 
-So `APP_DEPLOY_ENV` is not a convenience for the future Actions deployer; it is **required** for
-staging to identify itself correctly. It goes in the Vercel *Preview* environment's variables,
-scoped so production previews (feature branches) are not mislabelled: the same variable cannot
-hold `staging` for every preview, because feature-branch previews must report `preview`.
+So `VERCEL_ENV` alone cannot identify staging, and the value has to come from somewhere else. Two
+sources are available, and they are the same source seen twice: the explicit `APP_DEPLOY_ENV`
+variable, and the branch Vercel records on the deployment (`VERCEL_GIT_COMMIT_REF`, which is
+available at build *and* runtime, and which this project exposes without opt-in via
+`autoExposeSystemEnvs`). Branch-scoped `APP_DEPLOY_ENV=staging` is a control-plane change nothing in
+the repository can make; the branch ref costs nothing.
 
-This is why the resolution order puts `APP_DEPLOY_ENV` first and why the fallback is `local`
-rather than a guess: a build that cannot tell what it is should say so.
-
-**Open for implementation:** the scoping mechanism. Vercel's env vars support per-branch scoping
-in the UI/API, but this repository has no `vercel.json` and no recorded decision about it. The
-cheapest correct option is branch-scoped `APP_DEPLOY_ENV=staging` on the `staging` branch only,
-which is a control-plane change and therefore outside this PR — the code must work with the
-variable present *or* absent, and the test covers both.
+**Decided:** see [decision-staging-environment.md](decision-staging-environment.md). `env` resolves
+`APP_DEPLOY_ENV` → (`VERCEL_ENV === "preview"` **and** `VERCEL_GIT_COMMIT_REF === "staging"` →
+`staging`) → `VERCEL_ENV` → `local`. The explicit variable stays first so a paid custom environment
+can replace the mapping later with no code change, and #171's Actions deploy — which knows it is
+deploying staging — should pass the variable explicitly rather than rely on the mapping. The second
+project option was rejected because it makes staging report `env:"production"`, which is what
+`security-headers.ts` and the #168 guard read to decide production posture.
 
 ### Why not compute the tree SHA in the verification step
 
@@ -182,7 +184,7 @@ Resolution order per field, all resolved **once, at stamp time**:
 | --- | --- |
 | `commit` | `APP_COMMIT_SHA` → `VERCEL_GIT_COMMIT_SHA` → `git rev-parse HEAD` → `"unknown"` |
 | `tree` | `git rev-parse HEAD^{tree}` → `"unknown"` |
-| `env` | `APP_DEPLOY_ENV` → `VERCEL_ENV` → `"local"` |
+| `env` | `APP_DEPLOY_ENV` → (preview + staging branch → `"staging"`) → `VERCEL_ENV` → `"local"` |
 | `builtAt` | `new Date().toISOString()` at stamp time |
 
 `next.config.ts` reads the stamp if present and fills any `"unknown"` from `process.env` at config
@@ -222,6 +224,11 @@ const nextConfig: NextConfig = {
 };
 ```
 
+The staging branch name is **not** a magic string in the resolver: it is a constant in
+`src/lib/build-identity.ts` (`STAGING_BRANCH = "staging"`) so the mapping has one definition and the
+test can name it. If a future staging branch is renamed, that constant and this plan are the two
+places to change.
+
 `src/lib/build-identity.ts` (new): `readBuildIdentity()` — the single reader used by both
 `next.config.ts` and the routes. Routes read `process.env.APP_*`, which `env` has inlined; the
 module exposes one typed accessor so a route never string-matches a variable name.
@@ -246,6 +253,10 @@ factory (`createVersionHandler(env)`) so the test drives it without a server —
 | Test | Asserts |
 | --- | --- |
 | resolution order per field | `APP_COMMIT_SHA` beats `VERCEL_GIT_COMMIT_SHA` beats `git`; `APP_DEPLOY_ENV` beats `VERCEL_ENV` |
+| staging is identified by branch | `VERCEL_ENV=preview` + `VERCEL_GIT_COMMIT_REF=staging` → `env:"staging"` |
+| a feature preview is not staging | `VERCEL_ENV=preview` + `VERCEL_GIT_COMMIT_REF=feature/x` → `env:"preview"`; also `arena/0cabd00f-solara` → `"preview"` |
+| explicit variable wins over the branch | `APP_DEPLOY_ENV=production` + `VERCEL_GIT_COMMIT_REF=staging` → `"production"`, so the future custom environment needs no code change |
+| production unaffected | `VERCEL_ENV=production` → `"production"` regardless of branch ref |
 | absent stamp | every field `"unknown"`, `env` `"local"`, no throw |
 | malformed stamp | same — `JSON.parse` failure is caught, not propagated |
 | stamp with partial fields | resolved fields kept, missing ones `"unknown"` — not silently empty strings |
@@ -313,6 +324,28 @@ curl -s localhost:3000/api/version | jq
 curl -s localhost:3000/api/ready   | jq
 ```
 
+For the staging mapping specifically, the check is on the hosted deployment after merge — #164
+cannot prove it locally, because `VERCEL_ENV` and `VERCEL_GIT_COMMIT_REF` only exist there:
+
+```bash
+# ssoProtection.deploymentType is "all_except_custom_domains", so both *.vercel.app URLs answer a
+# login wall to an anonymous curl. Probe with the automation bypass, or with `vercel curl`, which
+# adds it:
+vercel curl --deployment https://solara-stg.vercel.app/api/version | jq '{env, commit}'
+# expect env:"staging", commit == the merge SHA
+
+vercel curl --deployment https://<feature-preview>.vercel.app/api/version | jq '.env'
+# expect "preview"
+```
+
+An anonymous `curl` returning the SSO page instead of JSON is **not** evidence that the mapping
+failed — it is evidence the probe lacks the bypass. Do not record an HTML/401 body here as a wrong
+`env`.
+
+If it reports `preview`, the fallback is the explicit `APP_DEPLOY_ENV=staging` variable scoped to
+the `staging` branch in Vercel's Preview environment — a control-plane change the operator makes,
+named in the decision record rather than assumed.
+
 The last line is the acceptance box that cannot be checked by unit tests: `builtAt` must be the
 build's, not the request's, and `env` must be `local`.
 
@@ -355,7 +388,9 @@ build's, not the request's, and `env` must be `local`.
 5. **`publicReadiness` is a whitelist.** Adding a field to `Readiness` does not leak it; adding it
    to `PublicReadiness` does. Review the second, not the first.
 6. **`VERCEL_ENV` is `preview` on staging**, not `staging` — verified from the deployment metadata
-   in §3. Any code that branches on `VERCEL_ENV === "staging"` is dead code. Use `APP_DEPLOY_ENV`.
+   in §3. Any code that branches on `VERCEL_ENV === "staging"` is dead code. The mapping goes
+   through `VERCEL_GIT_COMMIT_REF`, and a test pins it so a Vercel behaviour change surfaces as a
+   failing test rather than as a gate passing on the wrong thing.
 7. **The 503 path builds its own object.** `handler.ts` constructs a failure `Readiness` literal;
    `commit` must be added there too or the failure response loses identity exactly when someone
    needs it.
