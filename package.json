@@ -30,6 +30,7 @@
     "backlog:snapshot": "tsx scripts/backlog-snapshot.ts",
     "readings:worker": "tsx scripts/paid-reading-worker.ts",
     "readings:evaluate": "tsx scripts/evaluate-paid-readings.ts",
+    "readings:sample": "tsx scripts/sample-genuine-readings.ts",
     "readings:approve-evaluation": "tsx scripts/approve-paid-reading-evaluation.ts"
   },
   "engines": {
