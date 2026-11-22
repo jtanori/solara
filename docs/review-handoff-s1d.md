@@ -1,11 +1,15 @@
 # Review handoff — S1-d, factual wheel in the PDF (PR #161)
 
-Written 2026-11-20 for the next reviewer. Everything below was measured on **`d154b63`**;
-nothing is quoted from an earlier round or from the PR description.
+Written 2026-11-20 for the next reviewer. The gate table in §3 was measured on **`d3ddb08`**;
+nothing is quoted from an earlier round or from the PR description. The header SHA is
+intentionally not repeated per-round — every revision of this document lags its own commit by
+construction, so the SHA that matters is the one on the PR.
 
 - **PR:** [#161](https://github.com/jtanori/solara/pull/161) → `staging`
-- **Head:** `d154b63` · **Base:** `9de566d` (`origin/staging`)
-- **Size:** 10 commits, 17 files, +2616 / −74
+- **Base:** `9de566d` (`origin/staging`); the head is whatever the PR shows
+- **Size:** 10 commits, 17 files, +2616 / −74 at `d3ddb08`, before this document's own
+  commit. Run `git diff --stat origin/staging...HEAD` for the current figure rather than
+  trusting this line; it goes stale on every revision.
 - **Labels:** `type:feature`, `deploy:required`
 - **State:** `MERGEABLE` / `BLOCKED` — blocked by **unresolved conversations**, not by a
   missing approval. `protect-staging` requires conversation resolution and **zero** approving
@@ -50,18 +54,18 @@ Two consequences worth checking directly:
   is `wrap={false}` on the enclosing `View` in `solar-pdf.tsx`. Removing it fails the
   title/caption co-location test.
 
-## 3. Measured state at `4cc8585`
+## 3. Measured state at `d3ddb08`
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test tests/*.test.ts` (`RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1`) | **841 / 841**, 0 fail, 0 skipped — PostgreSQL 16.2 on loopback, migrations applied |
-| `tests/readings-wheel-pdf.test.ts` | **25 / 25** |
+| `npx tsx --test tests/*.test.ts` (`RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1`) | **842 / 842**, 0 fail, 0 skipped — PostgreSQL 16.2 on loopback, migrations applied |
+| `tests/readings-wheel-pdf.test.ts` | **26 / 26** in ~76 s |
 | `npx tsc --noEmit` | clean |
 | `npx eslint src tests scripts --max-warnings=0` | clean |
 | `npm run build` | succeeds |
 | `node scripts/check-pdf-package.mjs` | **220 files, 5.9 MiB** — identical to `staging` |
-| GitHub `verify` / `pr-lint` | pass / pass (4m22s / 5s) |
-| Mutations run | 16 feature + 5 worker-build (plus the font-gate mutation, §5a) |
+| GitHub `verify` / `pr-lint` | pass / pass (5m2s / 5s on `d3ddb08`) |
+| Mutations run | 16 feature + 6 worker-build (§5a), the last of which is not test-covered and says so |
 
 Snapshots: `tests/fixtures/readings/pdf-snapshots.json` changes by **8 text lines and 8
 hashes** (4 EN + 4 ES), all of them the absent-wheel sentence. Regenerated intentionally and
@@ -234,17 +238,22 @@ State these honestly rather than inheriting them as passed:
 
 ## 8. State of the review threads
 
-**Seven threads are open at `75005dc`**, in three groups, each with a reply naming the fix and
-the mutation that now fails:
+Everything below is a list rather than a count, because the counts move every time the reviewer
+resolves a thread and an earlier version of this section contradicted itself twice for exactly
+that reason. The numbers here were measured on `d3ddb08` via `reviewThreads`: **20 total, 15
+resolved, 5 open.** Re-read them there; do not trust this paragraph's arithmetic.
 
-- four pre-`d154b63` worker-build threads (license footer, reader-visible partial package,
-  live-lock eviction, and this handoff's merge-requirement correction) — fixes landed in
-  `d154b63` and await the reviewer's resolution, not further code
-- the font-gate blocker (regular-weight nodes) and the two remaining partials from that round:
-  the published-manifest check and this document's own stale lines
+Open, and what each one is waiting on:
 
-Six threads are resolved, including the page/PDF label-parity and paid-Placidus findings. Per
-the earlier correction: `staging` requires **conversation
+- three worker-build P1s (license footer, reader-visible partial package, live-lock eviction) —
+  fixed in `d154b63`, awaiting the reviewer's resolution rather than further code
+- the merge-requirement correction to this document — superseded by this section
+- the finding-7 thread, which stayed open over precisely the count that used to be here
+
+Resolved: the font-gate blocker, the published-manifest check, the 60 s reader-test Low, the
+page/PDF label parity, the paid-Placidus geometry, and the earlier test-quality findings.
+
+Per the earlier correction: `staging` requires **conversation
 resolution** and **zero** approving reviews — a formal approving review is not part of the
 branch policy here. The prior threads were actionable findings, not a missing approval, and
 "awaiting approval" is the wrong explanation for a `BLOCKED` state in this repository.
