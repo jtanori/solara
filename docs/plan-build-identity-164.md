@@ -22,8 +22,8 @@ which the previous build answers just as happily.
 
 1. Build-time identity constants in `next.config.ts` `env`: `APP_COMMIT_SHA`, `APP_TREE_SHA`,
    `APP_DEPLOY_ENV`, `APP_BUILT_AT`, `APP_RELEASE_ID`.
-2. `GET /api/version` → `{ ok, commit, tree, release, env, builtAt, migrations }`, `force-dynamic`,
-   `Cache-Control: no-store`.
+2. `GET /api/version` → `{ ok, commit, tree, release, env, builtAt }`, `force-dynamic`,
+   `Cache-Control: no-store`. **No `migrations`** — §4.
 3. `/api/ready` gains `commit`.
 
 **Out of scope** (named so review does not read their absence as an omission)
@@ -103,8 +103,14 @@ the repository can make; the branch ref costs nothing.
 `staging`) → `VERCEL_ENV` → `local`. The explicit variable stays first so a paid custom environment
 can replace the mapping later with no code change, and #171's Actions deploy — which knows it is
 deploying staging — should pass the variable explicitly rather than rely on the mapping. The second
-project option was rejected because it makes staging report `env:"production"`, which is what
-`security-headers.ts` and the #168 guard read to decide production posture.
+project option was rejected because it makes the name `production` true of two different things,
+which every guard that reads it — #168's DB-endpoint rows above all — would then have to
+disambiguate.
+
+Runtime availability of `VERCEL_GIT_COMMIT_REF` is not only a documentation reading: both live
+deployments' **runtime** env lists contain it, so the mapping is observable in the deployed function
+today. `security-headers.ts` also reads `VERCEL_ENV === "production"`, but only to add HSTS — it is
+not an argument against the mapping and is not load-bearing for this decision.
 
 ### Why not compute the tree SHA in the verification step
 
@@ -185,24 +191,59 @@ Resolution order per field, all resolved **once, at stamp time**:
 | `commit` | `APP_COMMIT_SHA` → `VERCEL_GIT_COMMIT_SHA` → `git rev-parse HEAD` → `"unknown"` |
 | `tree` | `git rev-parse HEAD^{tree}` → `"unknown"` |
 | `env` | `APP_DEPLOY_ENV` → (preview + staging branch → `"staging"`) → `VERCEL_ENV` → `"local"` |
+| `release` | `APP_RELEASE_ID` → `<env>-<commit[0:7]>-<builtAt epoch seconds>` (D6); depends on the two fields above, so it is resolved after them |
 | `builtAt` | `new Date().toISOString()` at stamp time |
 
-`next.config.ts` reads the stamp if present and fills any `"unknown"` from `process.env` at config
-evaluation, then passes the result through `env`. Reading the file is wrapped: a missing or
-malformed stamp must not fail a build, it must produce `"unknown"` fields that fail closed
-downstream (#173). That behaviour is a test, not a comment.
+**The order above has exactly one implementation: `scripts/build-stamp.mjs`.** Nothing else resolves
+a field. `readBuildIdentity()` in `src/lib/build-identity.ts` is a *stamp parser* — it reads
+`.build-stamp.json`, validates the shape, and returns the values verbatim; it never consults
+`process.env` to fill a gap, and it never re-derives `env` or `release`. A missing or malformed stamp
+yields `"unknown"` fields (and `env:"local"`), which fail closed downstream (#173). That behaviour is
+a test, not a comment.
+
+Why the split falls there rather than in a shared module:
+
+- The two sides run in **different processes at different times** — the stamp write is a Node 22
+  script under `npm run prebuild`, the read is Next config evaluation and route code. Any shared
+  runtime would have to be importable by both.
+- They cannot share a source file here. `.mjs` is not in the TypeScript program, a `.mjs` script
+  cannot import a `.ts` module without a loader, and the deployment-inputs typecheck fixture runs
+  with `allowJs: false`. That last point was checked rather than assumed: a `.ts` consumer importing
+  a `.mjs` under `allowJs: false` and `strict` fails with
+  `TS7016: Could not find a declaration file for module './shared.mjs'`. So a shared resolver in
+  `src/` would be unavailable to the script at deploy time, and a re-export shim would be a second
+  name over the same bytes — precisely the defect being closed.
+- Duplication instead would be worse than either: two implementations of one order is the exact
+  shape that has already shipped three times in this repository, and it is invisible to a test that
+  only imports one side.
+
+Consequently `release` (`<env>-<commit[0:7]>-<builtAt epoch>`, D6) is also computed at stamp time
+and merely *overridable*: an explicit `APP_RELEASE_ID` is applied **twice** — the script prefers it
+when writing, and `next.config.ts` prefers it when reading — so a stamp override and an env override
+can never disagree about which one won. The explicit value is idempotent under both.
+
+The cost of this choice is stated rather than hidden: `readBuildIdentity()` is not independently
+unit-testable for *resolution*, because it has no resolution logic. Coverage comes from two places
+instead (§8): the resolver is tested directly by importing the script, and the parser is tested
+against synthetic stamps. The stamp artefact is tested end-to-end, which is the contract
+`next.config.ts` actually consumes.
 
 ## 6. Algorithm
 
-`scripts/build-stamp.mjs` (new, ~60 lines, no dependencies):
+`scripts/build-stamp.mjs` (new, ~80 lines, no dependencies) — **the only resolver**, and the source
+of every value in the stamp:
 
-1. Resolve `commit`, `tree`, `env` per §5. `git` is invoked with
+1. Resolve `commit`, `tree`, `env` per §5, then `release` per D6. `git` is invoked with
    `execFileSync("git", [...], { encoding: "utf8" })` and every call is wrapped in a try: a
    non-repository checkout yields `"unknown"`, not a failed build.
 2. Write `.build-stamp.json` with a fixed key order, so two builds of the same inputs produce
    byte-identical stamps modulo `builtAt`.
 3. Print one line naming what it resolved, so the build log answers the question even if the
    endpoint is unreachable later.
+4. Export its pure pieces — the field resolvers, `resolveEnv` and `resolveRelease` — so
+   `tests/build-stamp.test.ts` can import and drive them without running `git` or writing a file.
+   The `import.meta.url === process.argv[1]`-style main guard keeps the import side-effect-free,
+   which is what makes the resolver testable at all.
 
 `package.json`: `"prebuild": "npm run pdf:build && node scripts/build-stamp.mjs"`. Declining to add
 a second `prebuild` script key because npm runs only one; the existing PDF build must not be
@@ -211,27 +252,29 @@ replaced.
 `next.config.ts`:
 
 ```ts
-const identity = readBuildIdentity(); // synchronous, total, never throws
+const stamp = readBuildIdentity(); // parses the stamp; synchronous, total, never throws
 const nextConfig: NextConfig = {
   env: {
-    APP_COMMIT_SHA: identity.commit,
-    APP_TREE_SHA: identity.tree,
-    APP_DEPLOY_ENV: identity.env,
-    APP_BUILT_AT: identity.builtAt,
-    APP_RELEASE_ID: identity.release,
+    APP_COMMIT_SHA: stamp.commit,
+    APP_TREE_SHA: stamp.tree,
+    APP_DEPLOY_ENV: stamp.env,
+    APP_BUILT_AT: stamp.builtAt,
+    // The one field with a read-time override (D6). It cannot change the stamp's
+    // opinion, only supersede it, and the script applied the same precedence.
+    APP_RELEASE_ID: process.env.APP_RELEASE_ID ?? stamp.release,
   },
   ...
 };
 ```
 
-The staging branch name is **not** a magic string in the resolver: it is a constant in
-`src/lib/build-identity.ts` (`STAGING_BRANCH = "staging"`) so the mapping has one definition and the
-test can name it. If a future staging branch is renamed, that constant and this plan are the two
-places to change.
+The staging branch name is **not** a magic string: it is `STAGING_BRANCH = "staging"`, exported from
+`scripts/build-stamp.mjs` and imported by `tests/build-stamp.test.ts`, so the mapping has one
+definition and the test can name it. If a future staging branch is renamed, that constant and this
+plan are the two places to change.
 
-`src/lib/build-identity.ts` (new): `readBuildIdentity()` — the single reader used by both
-`next.config.ts` and the routes. Routes read `process.env.APP_*`, which `env` has inlined; the
-module exposes one typed accessor so a route never string-matches a variable name.
+`src/lib/build-identity.ts` (new): `readBuildIdentity()` — the stamp **parser** described in §5, used
+by `next.config.ts`, and `readAppIdentity()` — one typed accessor over the inlined `process.env.APP_*`
+that routes call, so a route never string-matches a variable name.
 
 `src/app/api/version/handler.ts` + `route.ts`: mirroring the shape of the ready route, including a
 factory (`createVersionHandler(env)`) so the test drives it without a server — the pattern
@@ -248,7 +291,9 @@ factory (`createVersionHandler(env)`) so the test drives it without a server —
 
 ## 8. Test plan
 
-`tests/build-identity.test.ts` (new):
+Two files, because there is one resolver and one parser (§5) and each is tested where it lives.
+
+`tests/build-stamp.test.ts` (new) — imports the resolver functions from `scripts/build-stamp.mjs`:
 
 | Test | Asserts |
 | --- | --- |
@@ -257,11 +302,22 @@ factory (`createVersionHandler(env)`) so the test drives it without a server —
 | a feature preview is not staging | `VERCEL_ENV=preview` + `VERCEL_GIT_COMMIT_REF=feature/x` → `env:"preview"`; also `arena/0cabd00f-solara` → `"preview"` |
 | explicit variable wins over the branch | `APP_DEPLOY_ENV=production` + `VERCEL_GIT_COMMIT_REF=staging` → `"production"`, so the future custom environment needs no code change |
 | production unaffected | `VERCEL_ENV=production` → `"production"` regardless of branch ref |
+| release id shape | `<env>-<7>-<epoch>`, and an explicit `APP_RELEASE_ID` wins |
+| no git, no throw | every resolver called with an empty env and no repository yields `"unknown"`, not an exception |
+| **stamp artefact, staging** | run `node scripts/build-stamp.mjs` with `VERCEL_ENV=preview VERCEL_GIT_COMMIT_REF=staging`, then read the file: it parses as JSON and `env === "staging"` — the artefact `next.config.ts` consumes, not the function that produced it |
+| **stamp artefact, feature branch** | same, with `VERCEL_GIT_COMMIT_REF=feature/x`, → `env === "preview"`; the two cases together are what a drift between writer and reader would break |
+| stamp is byte-stable | two runs with identical inputs and a frozen `builtAt` produce identical bytes; key order is fixed, not incidental |
+
+`tests/build-identity.test.ts` (new) — drives the parser with synthetic stamps:
+
+| Test | Asserts |
+| --- | --- |
 | absent stamp | every field `"unknown"`, `env` `"local"`, no throw |
 | malformed stamp | same — `JSON.parse` failure is caught, not propagated |
 | stamp with partial fields | resolved fields kept, missing ones `"unknown"` — not silently empty strings |
+| parser does not resolve | a stamp saying `env:"staging"` is returned verbatim even when the ambient env says `production` — the parser must not have a second opinion |
 | `builtAt` is stamp time | a stamp with a past timestamp is returned verbatim; it is not `new Date()` at call time |
-| release id shape | `<env>-<7>-<epoch>`, and an explicit `APP_RELEASE_ID` wins |
+| release override is applied once | explicit `APP_RELEASE_ID` supersedes in the config mapping, and the stamp's own value is unchanged |
 
 `tests/version-route.test.ts` (new):
 
@@ -380,7 +436,8 @@ build's, not the request's, and `env` must be `local`.
    from the inlined constant; the test for this is the `builtAt` assertion.
 2. **`next start` re-evaluates `next.config.ts`.** Anything expensive or throwing at config
    evaluation is a production-startup risk. `readBuildIdentity()` is synchronous, total, and
-   returns `"unknown"` rather than throwing.
+   returns `"unknown"` rather than throwing — and because it only parses a file, `next start` on a
+   machine that never ran `prebuild` costs one failed `open`, not a `git` subprocess.
 3. **`.vercelignore` excludes `tests/` and `drizzle/meta`.** The stamp script must be on the
    allowlist by default (it is not excluded) and must not import from `tests/`.
 4. **Vercel's build runs `prebuild` but not `git` reliably.** `VERCEL_GIT_COMMIT_SHA` is the

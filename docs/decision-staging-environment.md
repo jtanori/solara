@@ -55,10 +55,12 @@ is not the merge.
 ## 2. The constraint
 
 **Vercel custom environments are a paid feature, and this project is on Hobby.** Hobby includes
-*no* custom environments; Pro includes one per project; Enterprise twelve. (Vercel pricing, checked 2026-11-13: Hobby $0 with "1 environment per project", Pro $20/mo with
-1 custom environment per project, Enterprise 12. The figures come from a web search of Vercel's
-pricing pages; treat them as indicative and reconfirm on vercel.com before any purchase, since this
-record must not be the reason someone spends money on a wrong number.)
+*no* custom environments; Pro includes one per project; Enterprise twelve. (Vercel pricing, checked 2026-11-13: Hobby $0, **zero custom environments**; Pro $20/mo, one custom
+environment per project; Enterprise, twelve; additional Pro packs of five at $50/mo. An earlier
+revision quoted Hobby as "1 environment per project", which contradicted the sentence it sat in —
+that figure counts standard environments, not custom ones. Treat these numbers as indicative and
+reconfirm on vercel.com before any purchase, since this record must not be the reason someone spends
+money on a wrong number.)
 
 This project is `"plan": "hobby"` — read from the Vercel project API for `solara`, not assumed.
 Hobby is also **non-commercial only**, so a Hobby project cannot host a paid launch indefinitely and
@@ -77,7 +79,7 @@ Separate project, `productionBranch: staging`, its own domain, its own environme
 | **Control-plane cost** | New project, new env var set (a second copy of every secret), new Deployment Protection config and bypass token, and `solara-stg.vercel.app` **moved** — it is currently a branch-linked domain (`git_branch: staging`) in the existing project, so it must be removed there and re-added, which is a live-domain outage window rather than a rename |
 | **Code cost** | None beyond #164 as planned |
 | **Free-tier cost** | Fits: Hobby allows 200 projects. Doubles build minutes for the same commit (one build per project) |
-| **Risk** | Two projects means two sets of environment variables that can drift. The staging database URL now lives in a project whose *production* environment holds it — the same class of mistake the boot guard (#168) exists to catch, but harder: a staging project whose "production" is staging invites exactly one copy-paste error into the real production project |
+| **Risk** | Two projects means two sets of environment variables that can drift. The staging database URL now lives in a project whose *production* environment holds it — the same class of mistake the boot guard (#168) exists to catch, but harder: a staging project whose "production" is staging invites exactly one copy-paste error into the real production project. Every "is this production?" question acquires a second, project-dependent answer |
 | **Reversibility** | Moderate: requires alias move and env var migration back |
 
 The naming problem is the real objection. In a second project, staging is *Production* — so every
@@ -110,7 +112,7 @@ Two preconditions, both verified rather than assumed:
 | --- | --- |
 | **Staging reports** | `env:"staging"`, from the branch the deployment was built from |
 | **Control-plane cost** | **Zero.** No new project, no new env var, no Vercel setting |
-| **Code cost** | Three lines in `readBuildIdentity`, plus a test per branch |
+| **Code cost** | One branch in the stamp resolver's `env` order, plus a test per branch. It is *not* a second resolution path: the stamp resolver is the only implementation (§5 of the plan), so this is a branch in existing code, not three new lines somewhere else |
 | **Free-tier cost** | None |
 | **Risk** | `VERCEL_GIT_COMMIT_REF` is metadata, not a security boundary: anyone who can push to `staging` can make a deployment report `staging`. But anyone who can push to `staging` can already deploy staging, so the field grants nothing they did not have. It is an identity claim, not an authorization claim — and #171's gate also checks `commit` against the merge SHA, which is the check that actually matters |
 | **Reversibility** | Trivial: the explicit `APP_DEPLOY_ENV` variable still wins, so adopting A or C later is one env var, no code change |
@@ -168,18 +170,26 @@ not assumed.
 
 **Adopt B now, plan C as the end state.**
 
-- B costs zero control-plane change and three lines of code, and gives #164 a correct `env` on
-  staging today.
+- B costs zero control-plane change and one branch in the resolver, and gives #164 a correct `env`
+  on staging today.
 - B leaves the explicit `APP_DEPLOY_ENV` override in front, so C (or A) can be adopted later with
   **no code change** — set the variable and it wins.
 - C stays the target for #171, because once the Actions workflow owns deployment it will inject
   runtime variables for a promoted candidate (#162's correction already requires this to be a
   recorded prerequisite), and custom environments are the natural scope for that.
 
-Do **not** adopt A. It inverts the meaning of Vercel's own Production environment for staging, and
-the guard logic in #168 and `security-headers.ts` reads `VERCEL_ENV === "production"` to decide
-security posture. Making staging report `production` to the platform is a safety regression to fix
-a naming problem.
+Do **not** adopt A. It inverts the meaning of Vercel's own Production environment for staging: the
+name `production` would then be true of two different things, and every guard and rule that reads it
+becomes ambiguous — #168's `APP_DEPLOY_ENV` → DB-endpoint rows, "never touch production from
+staging", and the instruction a future agent follows when the two disagree. That is not a
+hypothetical: this repository's guard work already keys off the environment name, and the value
+would stop being answerable without naming which project you meant. Add the live-domain move and it
+is the most invasive of the three for a naming problem.
+
+For accuracy about what breaks: `security-headers.ts` uses `VERCEL_ENV === "production"` for exactly
+one thing, adding HSTS. So a second project reporting `production` would not *weaken*
+`solara-stg`'s headers — it would add HSTS to it. The objection to A is the ambiguity above, not a
+header regression, and an earlier revision of this record overstated that.
 
 ## 5. What changes in this PR
 
