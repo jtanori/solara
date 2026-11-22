@@ -26,7 +26,9 @@ const usage = `Usage:
 Requires the usual READINGS_PROVIDER=chat-completions, READINGS_PROCESSOR_PROFILE,
 READINGS_API_BASE_URL, READINGS_API_KEY, READINGS_CHEAP_MODEL, READINGS_STRONG_MODEL,
 READINGS_MODEL_PRICES and READINGS_PAID_PROFILE configuration. Case ids come from
-tests/fixtures/readings/paid-corpus-v1.json. The hard pilot cap is ${PILOT_HARD_CAP_MICROS / 1_000_000} MXN.`;
+tests/fixtures/readings/paid-corpus-v1.json. The per-invocation cap is ${PILOT_HARD_CAP_MICROS / 1_000_000} MXN;
+the pilot total (core + rich) is two explicit invocations, and a third invocation or a new
+pilot id is a new authorization.`;
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -73,6 +75,12 @@ void main().catch(error => {
   const code = error instanceof SamplingError ? error.code : "sampling_unavailable";
   console.error(`sampling failed: ${code}`);
   if (code === "sampling_authorization_missing") console.error(usage);
+  if (code === "sampling_sample_incomplete") {
+    console.error("This pilot directory is archival evidence. Start a new --pilot id to retry; do not delete individual ledger lines.");
+  }
+  if (code === "sampling_budget_exhausted") {
+    console.error("The per-invocation cap was reached. Start a new explicitly authorized invocation.");
+  }
   console.error(`profiles: ${PAID_PROFILES.join("|")}`);
   process.exitCode = 1;
 });

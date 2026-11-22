@@ -169,14 +169,19 @@ function processAlive(pid: number) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // EPERM: the pid exists but belongs to another user. Only ESRCH proves it is gone.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 
 function acquireLock(outputDir: string): () => void {
   const lock = join(outputDir, "lock");
   try {
+    // A crash between mkdir and the pid write leaves a stale, removable lock. A
+    // concurrent reader can see the directory before the pid file exists and
+    // remove it; the window is small and pilots are operator-serialized, so it
+    // is acknowledged rather than widened into a portable lock protocol here.
     mkdirSync(lock);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -334,6 +339,33 @@ export class SamplingLedger implements GenerationExecution {
     return null;
   }
 
+  /**
+   * Predicted outcome of a sample from the ledger alone, before any dispatch.
+   * `blocked` means no sequence of calls can complete it: a terminal receipt
+   * (unknown, not_dispatched, unreadable checkpoint, or an exhausted repair)
+   * closes the sample. A missing slot or a primary awaiting repair is resumable.
+   * This mirrors the per-section branches in runSample.
+   */
+  sampleState(caseId: string, locale: Locale, sections: readonly SectionKey[]): "complete" | "resumable" | "blocked" {
+    let complete = true;
+    for (const section of sections) {
+      if (this.validOutcome(caseId, locale, section)) continue;
+      complete = false;
+      const primary = this.receiptFor(caseId, locale, section, "primary");
+      const repair = this.receiptFor(caseId, locale, section, "repair");
+      if (!primary) {
+        // A repair without its primary is corrupt; no permit at all is resumable.
+        if (repair) return "blocked";
+        continue;
+      }
+      if (!primary.outcome) return "blocked";
+      if (primary.outcome.kind !== "invalid") return "blocked";
+      // The repair slot can still run only when no repair receipt exists.
+      if (repair) return "blocked";
+    }
+    return complete ? "complete" : "resumable";
+  }
+
   attemptsFor(caseId: string, locale: Locale): EvaluationAttempt[] {
     const rows: EvaluationAttempt[] = [];
     for (const [id, permit] of this.permits) {
@@ -453,13 +485,17 @@ async function runSample(
   corpus: SamplingCorpus,
   caseId: string,
   locale: Locale,
-): Promise<EvaluationSample> {
+): Promise<{ sample: EvaluationSample; budgetExhausted: boolean }> {
   const digest = corpus.facts[caseId];
   if (!digest) throw new SamplingError("sampling_case_unknown");
   ledger.beginSample(caseId, locale);
   try {
     const sections: EvaluationSample["sections"] = [];
     let failed = false;
+    let budgetExhausted = false;
+    const noteHalt = (halt: string | undefined) => {
+      if (halt?.startsWith("cost_ceiling")) budgetExhausted = true;
+    };
     for (const section of deps.config.sections) {
       const valid = ledger.validOutcome(caseId, locale, section);
       if (valid) {
@@ -490,6 +526,7 @@ async function runSample(
           failed = true;
         } else {
           const repaired = await dispatchAttempt(ledger, deps.provider, { ...request, prompt: repairPrompt(prompt) }, "repair", validate);
+          noteHalt(repaired.halt);
           if (repaired.halt || !repaired.completion) failed = true;
           else {
             const checked = validate(repaired.completion.output);
@@ -499,12 +536,14 @@ async function runSample(
         }
       } else if (!primary) {
         const attempted = await dispatchAttempt(ledger, deps.provider, request, "primary", validate);
+        noteHalt(attempted.halt);
         if (attempted.halt || !attempted.completion) failed = true;
         else {
           const checked = validate(attempted.completion.output);
           if (checked.ok) output = checked.value;
           else {
             const repaired = await dispatchAttempt(ledger, deps.provider, { ...request, prompt: repairPrompt(prompt) }, "repair", validate);
+            noteHalt(repaired.halt);
             if (repaired.halt || !repaired.completion) failed = true;
             else {
               const rechecked = validate(repaired.completion.output);
@@ -523,7 +562,7 @@ async function runSample(
         sections.push(failedSection(section, locale));
       }
     }
-    return { caseId, locale, factsHash: canonicalHash(digest), sections, attempts: ledger.attemptsFor(caseId, locale) };
+    return { sample: { caseId, locale, factsHash: canonicalHash(digest), sections, attempts: ledger.attemptsFor(caseId, locale) }, budgetExhausted };
   } finally {
     ledger.endSample();
   }
@@ -556,7 +595,16 @@ export async function runGenuineSampling(deps: SamplingDeps, options: SamplingOp
   const reportPath = join(options.outputDir, "report.json");
   try {
     ledger.assertResumable();
-    const report: PaidEvaluationReport = loadReport(reportPath, deps) ?? {
+    const existing = loadReport(reportPath, deps);
+    // "Cannot complete", not "has attempts": a mid-sample crash must resume, while
+    // a terminal receipt (invalid/unknown/not_dispatched) must refuse before any
+    // call. sampleState is the same predicate runSample uses per section.
+    for (const id of options.cases) {
+      if (ledger.sampleState(id, options.locale, deps.config.sections) === "blocked") {
+        throw new SamplingError("sampling_sample_incomplete");
+      }
+    }
+    const report: PaidEvaluationReport = existing ?? {
       version: PAID_EVALUATION_VERSION,
       corpusVersion: PAID_CORPUS_VERSION,
       corpusHash: deps.corpus.corpusHash,
@@ -573,9 +621,10 @@ export async function runGenuineSampling(deps: SamplingDeps, options: SamplingOp
     };
     for (const id of options.cases) {
       if (report.samples.some(sample => sample.caseId === id && sample.locale === options.locale)) continue;
-      const sample = await runSample(deps, ledger, deps.corpus, id, options.locale);
+      const { sample, budgetExhausted } = await runSample(deps, ledger, deps.corpus, id, options.locale);
       report.samples.push(sample);
       writeJsonAtomic(reportPath, paidEvaluationSchema.parse(report));
+      if (budgetExhausted) throw new SamplingError("sampling_budget_exhausted");
       if (sample.sections.some(section => section.status !== "generated")) throw new SamplingError("sampling_sample_incomplete");
     }
     return { report, reportPath, exposureMicros: ledger.exposure, ledgerPath: ledger.ledgerPath };

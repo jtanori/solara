@@ -8,7 +8,9 @@ import { SamplingError } from "@/readings/sampling";
  * reading the real environment.
  */
 
-export const PILOT_HARD_CAP_MICROS = 20_000_000;
+// Per-invocation cap. The pilot total (core + rich) is two explicit
+// invocations; a third invocation or a new pilot id is a new authorization.
+export const PILOT_HARD_CAP_MICROS = 10_000_000;
 
 export type SamplingCliOptions = {
   pilot: string;

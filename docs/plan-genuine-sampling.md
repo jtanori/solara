@@ -48,9 +48,14 @@ Decided by the operator on 2026-11-22 (recorded on #103 and #109):
 | Pilot scope | one complete sample per profile: `paid-core-v1` (9 sections) and `paid-rich-v1` (11) |
 | Sample case | one corpus case per run, chosen explicitly |
 | Locale | `es` for the pilot; `--locale en` is allowed for a later authorized parity run |
-| Hard cap | 10 MXN per sample, **20 MXN total** for both pilot samples |
+| Hard cap | 10 MXN per invocation; the pilot total is two explicit invocations (≤20 MXN) |
 | Coverage without spend | the full six-case corpus × both locales runs under fake transport in tests |
 | Editorial qualification | #109, separately authorized; amended sample is 3 es + 1 en parity per profile |
+
+The CLI hard cap is **per invocation**. The 20 MXN pilot total is the sum of the
+two explicitly authorized profile runs; a third invocation or a new pilot id is
+a new authorization. There is deliberately no hidden cross-process aggregate
+state: every spend is an explicit, capped invocation.
 
 The CLI must refuse to start unless **all** of these are present:
 
@@ -128,12 +133,19 @@ Crash rules:
   run; the operator inspects before deciding.
 - **Completed samples are never regenerated.** `report.json` is the skip list.
 - **A settled sample is reconstructed** from its valid checkpoints if the
-  process died after the last receipt but before the report write. A partially
-  settled sample resumes only the missing slots; every settled slot keeps its
-  original receipt and output.
+  process died after the last receipt but before the report write.
+- **A partially settled sample resumes only the missing slots.** Every settled
+  slot keeps its original receipt and output; the per-section state machine
+  (`complete` / `resumable` / `blocked`) decides before the first dispatch.
+- **A sample with a terminal receipt is sealed.** Any `invalid` + repair,
+  `unknown`/`not_dispatched` receipt, or repair without a primary means no
+  sequence of calls can complete the sample. The next run refuses
+  `sampling_sample_incomplete` before any call, even if `report.json` was
+  deleted. The pilot directory is archival evidence: start a new `--pilot` id
+  to retry; never delete individual ledger lines.
 - **A schema-invalid primary + invalid repair** records a failed section, stops
   the run (bounded spend) and writes the sample as evidence. It is explicitly
-  not approvable.
+  not approvable and is sealed under the previous rule.
 - A corrupt or unmatched `run.json` refuses rather than starting a second
   configuration in the same directory.
 
@@ -145,7 +157,7 @@ Crash rules:
 - Measured receipts are charged at measured cost; `unknown` receipts are charged
   at the reserved quote; unresolved permits are charged at the reserved quote.
 - Before every permit: `exposure + reserved <= cap`; otherwise
-  `sampling_budget_exhausted` and no send.
+  `sampling_budget_exhausted` and no send. The cap is per invocation.
 - After every settlement: `dispatchAttempt` compares the cumulative exposure with
   the cap; a breach stops the run.
 - `paidGenerationConfig` already rejects any configuration whose per-run worst
@@ -202,9 +214,11 @@ Stable, non-secret codes (the CLI maps them to a non-zero exit):
 | `sampling_ledger_invalid` | unparsable or schema-invalid ledger line |
 | `sampling_exposure_unresolved` | a permit has no receipt |
 | `sampling_unknown_exposure` | an `unknown` receipt is present |
-| `sampling_budget_exhausted` | the next permit would exceed the cap |
-| `sampling_sample_incomplete` | a section failed or a repair was unusable |
+| `sampling_budget_exhausted` | the next permit would exceed the per-invocation cap |
+| `sampling_sample_incomplete` | a section failed, a repair was unusable, or the sample is sealed |
+| `sampling_locked` | another live process holds the pilot lock |
 | `sampling_output_exists` | a report already exists for a different corpus/config hash |
+| `sampling_output_invalid` | `report.json` is unparsable or schema-invalid |
 
 ## 10. Tests and mutations
 
@@ -221,11 +235,21 @@ Tests:
 7. one-locale run never emits the other locale;
 8. report identity: `source: "provider"`, processor/models/config/content hash,
    `paidEvaluationSchema` parses;
-9. no PII in the report bytes; `factsHash` matches the frozen digest;
+9. no chart input in any outbound prompt, digest, ledger line or report byte
+   (sentinel corpus); `facts` deep-equals the frozen safe digest;
 10. invalid primary + invalid repair → failed section, run stops, sample is
     mechanically incomplete, no approval;
 11. synthetic report cannot be relabelled as provider (the existing
-    `validateEditorialApproval` rejects it).
+    `validateEditorialApproval` rejects it);
+12. the three recovery rows: complete ledger reconstructs without calls, a
+    mid-sample crash resumes only the missing slots, an invalid or
+    `not_dispatched` receipt refuses before any call;
+13. the full six-case corpus runs in both `es` and `en` under fake transport,
+    with no mechanical blockers;
+14. a lock owned by a live pid (including an `EPERM` pid) is honoured;
+15. the documented refusal table: unknown case, corrupt ledger, corrupt report,
+    report identity mismatch, and the `--max-spend-mxn 20` refusal;
+16. budget exhaustion and schema failure remain distinct codes.
 
 Named mutations for the PR:
 
@@ -233,10 +257,20 @@ Named mutations for the PR:
   test must fail.
 - `sampling-cap-bypass` — drop the `exposure + reserved` guard; the cap test must
   fail.
-- `sampling-unknown-replay` — allow a permit without receipt; the resume test
-  must fail.
-- `sampling-locale-leak` — iterate both locales; the one-locale test must fail.
-- `sampling-pii` — stop applying `outboundDigest`; the PII test must fail.
+- `sampling-unresolved-replay` — turn the unresolved-permit throw into
+  `continue`; the unresolved test must fail.
+- `sampling-budget-mismatch` — map `cost_ceiling*` to
+  `sampling_sample_incomplete`; the cap test must fail.
+- `sampling-terminal-replay` — remove the `sampleState === "blocked"` guard; the
+  terminal-receipt recovery test must fail.
+- `sampling-locale-leak` — hardcode a locale or iterate both; the locale and
+  six-case tests must fail.
+- `sampling-pii` — serialise the corpus cases (including their inputs) into the
+  prompt; the sentinel test must fail.
+- `sampling-lock-eperm` — restore `catch { return false; }`; the live-pid lock
+  test must fail on a non-root runner.
+- `sampling-cap-20` — raise the hard cap back to 20 MXN; the parser test must
+  fail.
 
 ## 11. Operator procedure
 
@@ -255,25 +289,39 @@ Named mutations for the PR:
    ```
 
 4. Inspect `run.json`, `report.json` and the printed exposure.
-5. Optionally produce the review packet:
+5. If the command reports `sampling_sample_incomplete`, the pilot directory is
+   sealed archival evidence: start a new `--pilot` id to retry. Never delete
+   individual ledger lines or the report to force a retry.
+   If it reports `sampling_budget_exhausted`, start a new explicitly authorized
+   invocation; do not raise the cap in place.
+6. Optionally produce the review packet:
 
    ```bash
    npm run readings:evaluate -- --report .venv/genuine-sampling/pilot-2026-11-es/report.json
    ```
 
-6. Repeat for `paid-rich-v1` only after the core sample is understood.
-7. Keep both generation flags off throughout. Send the report to #109 review;
+7. Repeat for `paid-rich-v1` only after the core sample is understood. Each
+   invocation has its own 10 MXN cap; the two-sample pilot total is ≤20 MXN.
+8. Keep both generation flags off throughout. Send the report to #109 review;
    the CLI does not approve it.
 
 ## 12. Acceptance checklist
 
 - [ ] No provider call from a test, build, CI job or deploy.
-- [ ] CLI refuses without explicit authorization and a cap.
-- [ ] The ledger halts on unresolved/unknown exposure and never replays.
+- [ ] CLI refuses without explicit authorization and a cap; `--max-spend-mxn 20`
+      is refused.
+- [ ] The ledger halts on unresolved and unknown exposure and never replays
+      either.
+- [ ] All three recovery rows are covered: complete reconstruct, partial
+      resume, terminal refuse.
+- [ ] Budget exhaustion and schema failure keep distinct codes.
 - [ ] Budget accounting uses reservations and receipts, never prose estimates.
 - [ ] Report parses against `paidEvaluationSchema` and is `source: "provider"`.
-- [ ] No PII, key, base URL or raw prompt in ledger/report/console.
-- [ ] One locale per run; both locales covered by the fake suite.
+- [ ] No chart input, key, base URL or raw prompt in prompts, ledger, report or
+      console.
+- [ ] One locale per run; both locales and all six cases covered by the fake
+      suite.
+- [ ] A live lock owned by another user is not evicted.
 - [ ] Tests pass with `RUN_INTEGRATION_TESTS` unset (no database needed).
 - [ ] `typecheck`, `lint` and the named mutation runs recorded in the PR.
 - [ ] `deploy:skip`: no route, worker, migration or runtime import.
