@@ -549,6 +549,12 @@ test("real webhook subscription update honors user fence before changing entitle
     // FK KEY SHARE would not conflict with this lock. Only the explicit user
     // update fence can make this existing-subscription webhook wait here.
     await client.query("select id from users where id=$1 for no key update", [a.user.id]);
+    // Attribute the wait to this exact holder: a global "some users row is
+    // waiting" predicate can be satisfied by an unrelated row lock and would
+    // pass even when the webhook skips the fence (#197 review).
+    const holder = await client.query<{ pid: number }>("select pg_backend_pid() as pid");
+    const holderPid = holder.rows[0]?.pid;
+    assert.ok(holderPid, "the holder backend is visible");
     let settled = false;
     processing = processStripeEvent({ id: eventId, type: "customer.subscription.updated", data: { object: { id: subscription.stripeSubscriptionId } } } as never, {
       subscriptions: { retrieve: async () => ({ id: subscription.stripeSubscriptionId, customer: subscription.stripeCustomerId,
@@ -557,7 +563,16 @@ test("real webhook subscription update honors user fence before changing entitle
     } as never).finally(() => { settled = true; });
     let fenced = false;
     for (let i = 0; i < 100 && !settled; i++) {
-      const waiting = await pool.query("select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query like '%from \"users\"%for update%') as fenced");
+      const waiting = await pool.query<{ fenced: boolean }>(
+        `select exists(
+           select 1 from pg_stat_activity
+           where datname = current_database()
+             and wait_event_type = 'Lock'
+             and query like '%from "users"%for update%'
+             and $1 = any(pg_blocking_pids(pid))
+         ) as fenced`,
+        [holderPid],
+      );
       if (waiting.rows[0].fenced) { fenced = true; break; }
       await new Promise(resolve => setTimeout(resolve, 10));
     }

@@ -2,6 +2,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
+import type { Pool, PoolClient } from "pg";
 
 /*
  * The checkout/deletion interleaving (#144).
@@ -71,6 +72,48 @@ function assertLocalDisposableDatabase() {
   if (!["localhost", "127.0.0.1"].includes(host)) {
     throw new Error(`checkout/deletion race tests must run against a local disposable database, got host "${host}"`);
   }
+}
+
+/**
+ * Remember every client a pool creates so teardown can destroy a leaked one.
+ *
+ * `pool.end()` waits for checked-out clients forever. If this test fails because
+ * a real client is still inside a transaction, the report must be the assertion
+ * failure, not a hung run killed by the outer timeout (#197 review, blocker).
+ */
+function trackPoolClients(target: Pool): Set<PoolClient> {
+  const clients = new Set<PoolClient>();
+  target.on("acquire", client => clients.add(client));
+  target.on("release", (_error, client) => clients.delete(client));
+  return clients;
+}
+
+/** Race a promise against a timer that is always cleared, so the run can exit. */
+function within<T>(promise: Promise<T>, ms: number): Promise<T | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<"timeout">(resolve => {
+      timer = setTimeout(() => resolve("timeout"), ms);
+      timer.unref?.();
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/** End a pool with a bounded wait; destroy tracked clients if they are stuck. */
+async function endPoolWithin(target: Pool, clients: Set<PoolClient>, ms = 2_000) {
+  const ending = target.end().catch(() => undefined);
+  if (await within(ending.then(() => "ended" as const), ms) !== "timeout") return;
+  for (const client of clients) {
+    try {
+      client.release(true);
+    } catch {
+      // Already returned or destroyed: the pool's own end() handles it.
+    }
+  }
+  await within(ending.then(() => "ended" as const), ms);
 }
 
 async function stageDeletedUser() {
@@ -696,6 +739,8 @@ test("pool: a stalled checkout holds coordination, not an app-pool connection (#
   });
   const { drizzle } = await import("drizzle-orm/node-postgres");
   const testDb = drizzle(testAppPool);
+  const lockClients = trackPoolClients(lockPool);
+  const appClients = trackPoolClients(testAppPool);
 
   let lockCalls = 0;
   const lifecycleLock: typeof withAccountLifecycleLock = (userId, fn, deps) => {
@@ -736,25 +781,32 @@ test("pool: a stalled checkout holds coordination, not an app-pool connection (#
     },
   };
 
-  try {
-    const checkout = startCheckout(new Request("http://localhost/api/billing/checkout", {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "http://localhost" },
-      body: JSON.stringify({ currency: "mxn" }),
-    }), {
-      stripe: stripe as never,
-      currentUser: (async () => ({
-        id: user.id, email: `coord-${token}@example.test`, role: "user" as const,
-        emailVerifiedAt: new Date(), stripeCustomerId: null,
-      })) as never,
-      locale: "en",
-      lifecycleLock,
-    });
+  const checkout = startCheckout(new Request("http://localhost/api/billing/checkout", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "http://localhost" },
+    body: JSON.stringify({ currency: "mxn" }),
+  }), {
+    stripe: stripe as never,
+    currentUser: (async () => ({
+      id: user.id, email: `coord-${token}@example.test`, role: "user" as const,
+      emailVerifiedAt: new Date(), stripeCustomerId: null,
+    })) as never,
+    locale: "en",
+    lifecycleLock,
+  });
 
+  try {
     await started;
     assert.equal(lockCalls, 1, "the shipped route used the injected lifecycle lock");
+    // Prove the route really used the injected database. Without this, ignoring
+    // `deps.db` would silently leave testAppPool empty and the unique name
+    // vacuous: the count below would be 0 for the wrong reason (#197 review).
+    assert.ok(testAppPool.totalCount >= 1, "the route used the injected app pool, not the module pool");
 
-    const { rows } = await testAppPool.query<{ count: number }>(
+    // Observe from the coordination pool, not from the pool being counted:
+    // `testAppPool.query()` borrows the very idle client that is leaked, so its
+    // own row reads `active` and the filter misses it (#197 review).
+    const { rows } = await lockPool.query<{ count: number }>(
       "select count(*)::int as count from pg_stat_activity where application_name = $1 and state = 'idle in transaction'",
       [appName],
     );
@@ -781,10 +833,13 @@ test("pool: a stalled checkout holds coordination, not an app-pool connection (#
     assert.deepEqual(after, [], "the lease is released");
   } finally {
     releaseProvider();
+    // Never let teardown outlive the assertion: a client that is checked out
+    // inside a transaction makes `pool.end()` wait forever (#197 review).
+    await within(checkout.catch(() => undefined), 2_000);
     await db.delete(accountLifecycleLeases).where(eq(accountLifecycleLeases.userId, user.id));
     await db.delete(users).where(eq(users.id, user.id));
-    await lockPool.end();
-    await testAppPool.end();
+    await endPoolWithin(lockPool, lockClients);
+    await endPoolWithin(testAppPool, appClients);
   }
 });
 

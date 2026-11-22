@@ -452,17 +452,28 @@ test("lease: default compatibility uses the coordination pool", gated, async () 
     }, { advisoryCompat: true, waitMs: 1_000 });
 
     await startedPromise;
-    // This scan intentionally uses the default coordination name: the behavior
-    // under test is that the *default* compatibility path uses that pool. A
-    // foreign session can only make this pass, not fail — unlike the app-pool
-    // assertion in checkout-deletion-race.test.ts (#197).
+    // Attribute the compatibility transaction to this user's advisory key, not
+    // to whichever session happens to share the global coordination name. With
+    // the old name-only filter, a foreign `solara-coordination` transaction
+    // kept this green even when the compat pool was misconfigured (#197 review).
+    // The key format must match keyFor in src/lib/account-lifecycle-lock.ts; the
+    // single-argument pg_advisory_xact_lock(hashtext(key)) is the bigint form,
+    // so pg_locks stores it as classid = high 32 bits, objid = low 32 bits.
     const { rows } = await probePool.query<{ count: number }>(
       `select count(*)::int as count
-       from pg_stat_activity
-       where application_name = 'solara-coordination'
-         and state = 'idle in transaction'`,
+       from pg_locks l
+       join pg_stat_activity a on a.pid = l.pid
+       where l.locktype = 'advisory'
+         and l.granted
+         and l.objsubid = 1
+         and l.database = (select oid from pg_database where datname = current_database())
+         and l.classid::bigint = ((hashtext($1)::bigint >> 32) & 4294967295)
+         and l.objid::bigint = (hashtext($1)::bigint & 4294967295)
+         and a.application_name = 'solara-coordination'
+         and a.state = 'idle in transaction'`,
+      [`account-deletion:${userId}`],
     );
-    assert.ok((rows[0]?.count ?? 0) >= 1, "compatibility transaction is on the coordination pool");
+    assert.equal(rows[0]?.count, 1, "compatibility transaction holds this user's advisory key on the coordination pool");
 
     release();
     await held;
