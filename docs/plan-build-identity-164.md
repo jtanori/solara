@@ -214,8 +214,8 @@ Why the split falls there rather than in a shared module:
   `src/` would be unavailable to the script at deploy time, and a re-export shim would be a second
   name over the same bytes — precisely the defect being closed.
 - Duplication instead would be worse than either: two implementations of one order is the exact
-  shape that has already shipped three times in this repository, and it is invisible to a test that
-  only imports one side.
+  shape that has already shipped three times in this repository, and a test that exercises one side
+  cannot see the other disagree.
 
 Consequently `release` (`<env>-<commit[0:7]>-<builtAt epoch>`, D6) is also computed at stamp time
 and merely *overridable*: an explicit `APP_RELEASE_ID` is applied **twice** — the script prefers it
@@ -224,9 +224,30 @@ can never disagree about which one won. The explicit value is idempotent under b
 
 The cost of this choice is stated rather than hidden: `readBuildIdentity()` is not independently
 unit-testable for *resolution*, because it has no resolution logic. Coverage comes from two places
-instead (§8): the resolver is tested directly by importing the script, and the parser is tested
-against synthetic stamps. The stamp artefact is tested end-to-end, which is the contract
-`next.config.ts` actually consumes.
+instead (§8): the resolver is driven through `execFile` — the test runs the script under a
+constructed environment and reads the stamp it writes — and the parser is tested against synthetic
+stamps.
+
+**Why `execFile` and not an import, which is the obvious way to test a resolver:** the constraint
+that forbids a shared module forbids the import too. `tsconfig.json` includes `**/*.ts` with
+`allowJs: false`, and `tests/` is not excluded, so a test file that `import`s `scripts/build-stamp.mjs`
+is itself a `.ts` consumer of a `.mjs` and fails the same way — `TS7016` on the test's own import,
+which would fail `typecheck` for the reason the design exists. Both of the reviewer-audited options
+were considered:
+
+- **`execFile`-only tests** — chosen. The test spawns `node scripts/build-stamp.mjs` with a
+  constructed `env` and asserts on the written stamp. It tests the real artefact through the real
+  entry point, so there is nothing to drift, and it adds no file.
+- **A types-only `build-stamp.d.mts`** — viable and verified (a `.ts` importing a `.mjs` with a
+  sibling `.d.mts` typechecks clean under this config). Rejected because it is a second description
+  of the resolver's surface, which must be edited whenever the resolver changes — the same
+  two-places shape this section exists to close, just moved from the implementation to the types.
+  Verified as available if a future need makes direct-call tests more attractive than the subprocess
+  cost.
+
+The subprocess cost is real and bounded: each case pays one `node` start plus a `git` shell-out,
+which the byte-stability and case-matrix tests amortise by running the script a handful of times, not
+per assertion.
 
 ## 6. Algorithm
 
@@ -240,10 +261,11 @@ of every value in the stamp:
    byte-identical stamps modulo `builtAt`.
 3. Print one line naming what it resolved, so the build log answers the question even if the
    endpoint is unreachable later.
-4. Export its pure pieces — the field resolvers, `resolveEnv` and `resolveRelease` — so
-   `tests/build-stamp.test.ts` can import and drive them without running `git` or writing a file.
-   The `import.meta.url === process.argv[1]`-style main guard keeps the import side-effect-free,
-   which is what makes the resolver testable at all.
+4. Take an injectable environment — `resolve(env, { cwd })` rather than reading `process.env`
+   directly — so a single spawn can be driven to any case. This is what makes the resolver testable
+   *through the process boundary*: the test sets the child's environment, not the parent's, so cases
+   cannot leak into each other and no import is required (see §5 for why an import is not an
+   option).
 
 `package.json`: `"prebuild": "npm run pdf:build && node scripts/build-stamp.mjs"`. Declining to add
 a second `prebuild` script key because npm runs only one; the existing PDF build must not be
@@ -267,10 +289,11 @@ const nextConfig: NextConfig = {
 };
 ```
 
-The staging branch name is **not** a magic string: it is `STAGING_BRANCH = "staging"`, exported from
-`scripts/build-stamp.mjs` and imported by `tests/build-stamp.test.ts`, so the mapping has one
-definition and the test can name it. If a future staging branch is renamed, that constant and this
-plan are the two places to change.
+The staging branch name is **not** a magic string: it is a single `STAGING_BRANCH` constant in
+`scripts/build-stamp.mjs`, so the mapping has one definition. The test named in §8 spells `"staging"`
+literally on purpose: it should fail if the constant is changed without a decision, which is the
+point of a constant in one place. If a future staging branch is renamed, that constant and this plan
+are the two places to change.
 
 `src/lib/build-identity.ts` (new): `readBuildIdentity()` — the stamp **parser** described in §5, used
 by `next.config.ts`, and `readAppIdentity()` — one typed accessor over the inlined `process.env.APP_*`
@@ -293,7 +316,9 @@ factory (`createVersionHandler(env)`) so the test drives it without a server —
 
 Two files, because there is one resolver and one parser (§5) and each is tested where it lives.
 
-`tests/build-stamp.test.ts` (new) — imports the resolver functions from `scripts/build-stamp.mjs`:
+`tests/build-stamp.test.ts` (new) — drives the script **as a subprocess** (`execFile`, one spawn per
+case, env set on the child) and asserts on the `.build-stamp.json` it writes. No import of the `.mjs`;
+see §5 for why that is not merely a preference:
 
 | Test | Asserts |
 | --- | --- |
@@ -302,11 +327,12 @@ Two files, because there is one resolver and one parser (§5) and each is tested
 | a feature preview is not staging | `VERCEL_ENV=preview` + `VERCEL_GIT_COMMIT_REF=feature/x` → `env:"preview"`; also `arena/0cabd00f-solara` → `"preview"` |
 | explicit variable wins over the branch | `APP_DEPLOY_ENV=production` + `VERCEL_GIT_COMMIT_REF=staging` → `"production"`, so the future custom environment needs no code change |
 | production unaffected | `VERCEL_ENV=production` → `"production"` regardless of branch ref |
-| release id shape | `<env>-<7>-<epoch>`, and an explicit `APP_RELEASE_ID` wins |
-| no git, no throw | every resolver called with an empty env and no repository yields `"unknown"`, not an exception |
-| **stamp artefact, staging** | run `node scripts/build-stamp.mjs` with `VERCEL_ENV=preview VERCEL_GIT_COMMIT_REF=staging`, then read the file: it parses as JSON and `env === "staging"` — the artefact `next.config.ts` consumes, not the function that produced it |
+| release id shape | `<env>-<7>-<epoch>` from the written stamp; and an explicit `APP_RELEASE_ID` in the child's env is copied through verbatim |
+| no git, no throw | spawned with an empty env in a temp dir that is not a repository: exit code 0 and `commit:"unknown"`, not an exception. The child's exit code is the assertion, since an uncaught throw would surface as a non-zero status |
+| **stamp artefact, staging** | spawn with `VERCEL_ENV=preview VERCEL_GIT_COMMIT_REF=staging`, then read the file it wrote: it parses as JSON and `env === "staging"` — the artefact `next.config.ts` consumes, not the function that produced it |
 | **stamp artefact, feature branch** | same, with `VERCEL_GIT_COMMIT_REF=feature/x`, → `env === "preview"`; the two cases together are what a drift between writer and reader would break |
-| stamp is byte-stable | two runs with identical inputs and a frozen `builtAt` produce identical bytes; key order is fixed, not incidental |
+| stamp is byte-stable | two spawns with identical inputs and a frozen `builtAt` produce identical bytes; key order is fixed, not incidental |
+| child env is isolated | a case sets `APP_DEPLOY_ENV` in the child only; a following case spawned without it resolves from `VERCEL_ENV`, proving no state crossed (this is what the subprocess boundary buys, and it is worth asserting rather than assuming) |
 
 `tests/build-identity.test.ts` (new) — drives the parser with synthetic stamps:
 
@@ -352,6 +378,8 @@ after the fact tends to describe the tests that exist.
 | let a malformed stamp throw | the malformed-stamp test |
 | compute `builtAt` at request time | the stamp-time test |
 | widen the public ready whitelist to the full object | the ready shape test |
+| **move `env` resolution out of the stamp script into the reader** — the exact split §5 forbids | the stamp-artefact tests: a spawned run under `VERCEL_ENV=preview VERCEL_GIT_COMMIT_REF=staging` writes `env:"staging"`. A reader-side resolver would leave the stamp saying something else, and no test that only imports the reader would notice |
+| drop the branch step from the resolver, leaving `VERCEL_ENV` | the staging stamp-artefact test — `env` would be `"preview"` |
 
 ## 10. Verification gates
 
@@ -359,7 +387,8 @@ Scoped first — the full suite is expensive and CI runs it on every push.
 
 ```bash
 npm ci
-npx tsx --test tests/build-identity.test.ts tests/version-route.test.ts tests/ready-route.test.ts
+npx tsx --test tests/build-stamp.test.ts tests/build-identity.test.ts \
+  tests/version-route.test.ts tests/ready-route.test.ts
 npm run typecheck
 npm run lint
 npm run build          # the identity block is a build-time construct; this is the real check
@@ -453,6 +482,12 @@ build's, not the request's, and `env` must be `local`.
    needs it.
 8. **Two `prebuild` keys is one key.** npm silently ignores the duplicate; the PDF build would stop
    running. Append to the existing script.
+9. **`tests/` is inside the `tsc` program, and `allowJs` is `false`.** So a test that `import`s
+   `scripts/build-stamp.mjs` fails `typecheck` with `TS7016` — the same error that forbids a shared
+   module in §5, applied to the test instead of the source. It was verified by compiling a `.ts`
+   importing a `.mjs`, both with and without a sibling `.d.mts`. Drive the script through
+   `execFile`; do not import it. This is the landmine most likely to be re-introduced by a
+   well-meaning author who wants a unit test rather than a subprocess test.
 
 ## 14. Definition of done
 
