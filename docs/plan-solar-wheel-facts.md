@@ -682,15 +682,152 @@ The child's environment allowlist, fs restriction, network denial, heap/RSS ceil
 single render slot and 15 s deadline are unchanged; no native addon or new dependency is
 introduced, and the wheel needs no image asset.
 
+### Worker-build mutations
+
+The build script became part of this slice for a reason that is not the feature: four suites
+run it concurrently, and it published a package readers can resolve at any moment. Five
+mutations were run against it, each killed by exactly one named test:
+
+| mutation | killed by |
+| --- | --- |
+| build to a temporary basename, then rename it over the final name | the license-footer test |
+| write `package.json` in place before publishing (the truncation window) | the paused-publication reader test |
+| reclaim the lock by mtime age instead of owner liveness | the live-holder test |
+| never reclaim a proven-dead owner's lock | the dead-owner test, and the concurrent-build test |
+| `link` -> `rename` when taking the lock | the live-holder test |
+
+The third and fourth are the two halves of the same finding; the fifth was found by the local
+harness while fixing them, and it is the most instructive. `rename` **overwrites**, so the
+previous "serialisation" did not serialise at all: a second builder took the lock from the
+first, which is exactly the live-eviction the review reported, in a form no amount of lock-age
+reasoning would explain. `link` is atomic *and* fails with `EEXIST`, which is what a lock needs.
+
+### What the raster caught that assertions did not
+
+Three defects in this slice were invisible to every text-level check and were found only by
+rendering the PDF to an image and looking at it. They are recorded because each is a way a
+future slice can be green and wrong:
+
+1. **Clipped text.** The accessible name and the table pointer were `<Text>` children of the
+   `Svg`, at `y = -14` and `y = viewBox + 12` — outside the drawing's viewport. `Svg` clips to
+   its own viewport, so both were painted nowhere. The strings were still in the content
+   stream, so glyph coverage passed and `inspectPdf` extracted them. Text extraction cannot
+   see missing pixels.
+2. **A generous halo that erased its neighbours.** The page punches a halo with
+   `paintOrder="stroke"`, where the halo *is* the glyph outline. React-PDF has no
+   `paintOrder`, so the equivalent is an opaque rectangle — and a rectangle sized from the
+   projection's deliberately conservative collision constants covers whatever lies beside the
+   label. Every placed label sits on the sign band, so every rectangle covered a zodiac name
+   (Gemini, Taurus in the fixture) with page colour while leaving all glyphs in the stream.
+   The wheel now paints no background at all; the price is a label occasionally crossing a
+   chord, which is a better trade than a sign name disappearing.
+3. **A leaked scale factor.** With the drawing 340pt wide over a 440-unit viewBox, sibling
+   text inherited the viewBox transform: the 9pt title was painted at 6.95pt and the 8pt
+   caption at 6.18pt. Sizing the box to the viewBox (`PDF_WHEEL_POINTS = WHEEL_VIEW_BOX`)
+   removes the factor entirely rather than compensating for it.
+
+Two of these were only reachable by eye, but all three are now asserted — the painted size and
+in-page position of the title and caption, and the absence of any filled rectangle in the
+drawing — so the next instance fails a test.
+
+**Harness trap worth remembering:** `ReadingPdfRenderer` renders through the prebuilt
+`.pdf/worker.mjs`, not through `src/`. Rendering from an ad-hoc probe without first running
+`node scripts/build-pdf.mjs` inspects a stale bundle and reports conclusions about code that
+is not running. `tests/readings-wheel-pdf.test.ts` rebuilds in `before()`; hand-written
+probes must do the same.
+
+### Absent wheel explains itself
+
+A chart without facts draws no wheel, and **says why**: one headed block carrying the absence
+sentence, the *reason*, and — only when calculation blocks exist — a pointer to the tables.
+
+Both reversals are recorded here rather than quietly rewritten, because each looked like a
+sensible boundary at the time.
+
+*First reversal: silence.* The original decision was to emit nothing, on the theory that a
+sentence would insert a line into every frozen paid edition. That confused two documents.
+Every existing snapshot is a chart with no facts at all, which takes the same path before and
+after — its text is identical apart from the intended sentence — so freezing was never at
+risk. What silence produced was a PDF with no drawing and no reason for it.
+
+*Second reversal: one generic sentence.* "There is no wheel for this chart" is true of
+everything without a wheel, so it explains nothing. There are two distinct states and the
+reader's next action differs:
+
+| state | how it is detected | notice |
+| --- | --- | --- |
+| saved positions absent or unverifiable | `wheelFacts === null` | `facts_unavailable` — offers the remedy: save the chart again |
+| positions real, no usable Ascendant | facts present, `projectWheel` returns null (\|lat\| ≥ 66) | `ascendant_unavailable` — says the horizon was withheld and the positions shown are still calculated |
+
+The choice is `wheelAbsentReason(hasFacts)`, called by `wheelCopy` from the input facts — the
+same rule `reading-page-view.tsx` applies for the same chart, reading the same
+`WHEEL_NOTICE_COPY` table, so the page and the PDF cannot give different reasons. The document
+passes `hasFacts` rather than inferring it from `geometry === null`, because both states
+produce a null geometry and inferring would collapse them back into one line.
+
+The table pointer is index-selected exactly as on the page: a document that carries
+calculation blocks is told the table in the PDF is authoritative; one that does not gets the
+short sentence, so the PDF never points at a table it did not render. `tests/pdf.test.ts` was
+regenerated intentionally, with the eight changed text lines and eight hashes reviewed as
+rasters in both locales.
+
+### What the raster caught that assertions did not
+
+Three defects in this slice were invisible to every text-level check and were found only by
+rendering the PDF to an image and looking at it. They are recorded because each is a way a
+future slice can be green and wrong:
+
+1. **Clipped text.** The accessible name and the table pointer were `<Text>` children of the
+   `Svg`, at `y = -14` and `y = viewBox + 12` — outside the drawing's viewport. `Svg` clips to
+   its own viewport, so both were painted nowhere. The strings were still in the content
+   stream, so glyph coverage passed and `inspectPdf` extracted them. Text extraction cannot
+   see missing pixels.
+2. **A generous halo that erased its neighbours.** The page punches a halo with
+   `paintOrder="stroke"`, where the halo *is* the glyph outline. React-PDF has no
+   `paintOrder`, so the equivalent is an opaque rectangle — and a rectangle sized from the
+   projection's deliberately conservative collision constants covers whatever lies beside the
+   label. Every placed label sits on the sign band, so every rectangle covered a zodiac name
+   (Gemini, Taurus in the fixture) with page colour while leaving all glyphs in the stream.
+   The wheel now paints no background at all; the price is a label occasionally crossing a
+   chord, which is a better trade than a sign name disappearing.
+3. **A leaked scale factor.** With the drawing 340pt wide over a 440-unit viewBox, sibling
+   text inherited the viewBox transform: the 9pt title was painted at 6.95pt and the 8pt
+   caption at 6.18pt. Sizing the box to the viewBox (`PDF_WHEEL_POINTS = WHEEL_VIEW_BOX`)
+   removes the factor entirely rather than compensating for it.
+
+Two of these were only reachable by eye, but all three are now asserted — the painted size and
+in-page position of the title and caption, and the absence of any filled rectangle in the
+drawing — so the next instance fails a test.
+
+**Harness trap worth remembering:** `ReadingPdfRenderer` renders through the prebuilt
+`.pdf/worker.mjs`, not through `src/`. Rendering from an ad-hoc probe without first running
+`node scripts/build-pdf.mjs` inspects a stale bundle and reports conclusions about code that
+is not running. `tests/readings-wheel-pdf.test.ts` rebuilds in `before()`; hand-written
+probes must do the same.
+
 ### Acceptance
 
 - [ ] A base-chart PDF and a paid-edition PDF each contain the wheel, with vector
       primitives (not a raster image) and selectable Latin label text.
 - [ ] Wheel label text extracted from the PDF equals the labels the page rendered for
-      the same chart and locale.
-- [ ] Page and PDF geometry are produced by the same `projectWheel` call signature and
-      the same constants; a test renders both from one fixture and compares the emitted
-      coordinate sets.
+      the same chart and locale — compared against the **rendered page**, not against the
+      geometry both emitters read. An earlier version got its "page" labels from
+      `wheelLabelTexts(geometry)`, which is the PDF's own function, so it compared geometry
+      to itself: changing only the page's painted Pluto label left both parity tests green.
+      The page is now rendered through `renderToStaticMarkup`, its `<text>` nodes read out of
+      the markup, and the multisets compared; the same HTML-only mutation fails. The PDF side
+      is extracted the same way: the drawing's square is located on the page by measuring the
+      offset from labels whose position the geometry dictates exactly (with the scatter of
+      those residuals asserted, so a scale or rotation cannot hide in an offset), every text
+      item inside it is collected, and *those* are compared to the page's `<text>` nodes. An
+      extra label painted only by the PDF fails.
+- [ ] Page and PDF primitives are compared tuple for tuple — every `<line>` and `<circle>`
+      the page emits, matched against the PDF tree as an unordered multiset of rounded
+      coordinates, ticks included. Counting ticks without comparing their coordinates was
+      the earlier gap: a tick could move and the count still matched. The paid fixture uses
+      the same discipline against the pinned snapshot: anchors are matched by the projection's
+      own emitted coordinate, cusps, chords and leaders by segment, and the leftover must be
+      exactly the ticks — a shifted Set/Placidus anchor leaves a point unmatched and fails.
 - [ ] A wheel label outside the font subset yields `409 pdf_glyphs` — no boxes, no
       silent drop, no transliteration.
 - [ ] The wheel never splits across pages; the fixed-layout and page-count caps still
@@ -709,10 +846,86 @@ introduced, and the wheel needs no image asset.
 
 `pdf-glyph-check-skipped` (wheel labels omitted from `strings`) ·
 `pdf-input-limit-desync` (change the bound in only one of the two modules) ·
-`pdf-wheel-splits-page` (drop `wrap={false}`) · `pdf-raster-wheel` (replace
-primitives with an image) · `pdf-geometry-diverges` (recompute angles locally in the
-PDF instead of using the shared module) · `pdf-snapshot-blind-update` (a test that
-fails if snapshots are regenerated without the recorded manual review note).
+`pdf-raster-wheel` (drop the per-point anchor primitives) ·
+`pdf-facts-dropped` (serialize the chart without `wheelFacts`) ·
+`pdf-geometry-diverges` (recompute angles locally in the PDF instead of using the
+shared module) · `pdf-halo-returns` (paint an opaque box behind the labels) ·
+`pdf-snapshot-blind-update` (a test that fails if snapshots are regenerated without
+the recorded manual review note).
+
+All sixteen feature mutations were run and each is killed by a named test:
+
+| mutation | killed by |
+| --- | --- |
+| wheel labels omitted from the glyph set | glyph-set test |
+| surrounding wheel copy omitted from the glyph set | glyph-set test |
+| one-sided change to the input bound | parent/child spelling test |
+| payload no longer normalized (facts serialized twice) | parent/child spelling test |
+| locally recomputed chord angle | coordinate-parity test |
+| **only a chord's second endpoint moved** | coordinate-parity test |
+| anchor primitives removed | coordinate-parity test |
+| `wheelFacts` dropped from the serialized input | wheel-present and paid-edition tests |
+| **`fontFamily` removed from the SVG text nodes** (sign, house or point; any weight) | embedded BaseFont set = exactly the gated Noto faces |
+| **`wrap={false}` removed from the enclosing `View`** | title/caption co-location test |
+| **only the page's Pluto label changed** (HTML-only drift) | rendered-page parity test |
+| **`wheelAbsentReason` collapsed to one code** | two-reasons test (EN and ES) |
+| **an extra label painted in the PDF's SVG only** | PDF-region vs rendered-page multiset |
+| **every Placidus anchor shifted +18 on x in the PDF** | paid edition vs the snapshot's projection |
+| **the whole PDF drawing scaled 1.02x** | x-translation and baseline-slope assertions |
+| **only labels at one type size displaced** | baseline slope, not a constant offset |
+
+Six of these escaped when first tried, which is why they are called out. Five were escapes in
+the *tests*, and they share one shape: the assertion's *expectation* was taken from the emitter
+or the projection rather than from the other rendered surface. The sixth was not test-side —
+an early revision drew the wheel's text in a face that lacked the glyphs, so the labels were
+absent from real output while the tests passed. That is a confirmed rendering defect, not a
+test artifact, and it is why the glyph assertions inspect the emitted font resources.
+
+- The parity test never rendered the page; it read `wheelLabelTexts(geometry)` — the PDF's
+  own function — so an HTML-only label change passed.
+- Then it still compared a PDF `includes()` over the whole document against that same
+  geometry, so an extra label painted only by the PDF passed.
+- The paid test searched `projectWheel(snapshot.facts)` for anchors instead of reading the
+  emitted tree, so shifting every Placidus anchor passed.
+- The absence block had only one sentence to assert, so any line satisfied it.
+
+Two more were found by self-review before the reviewer saw them, and both were assertions that
+were true by accident:
+
+- The label-region helper asserted a **single constant y offset** for every label, with a
+  1.5pt tolerance. The real mapping is affine in the font size (`dy = 130.24 + 0.357 * size`,
+  worst residual 0.0004pt), because SVG centres the glyph box and React-PDF places the
+  baseline. The constant-offset claim passed only because the fixture's labels span 7–10pt, a
+  range whose 1.07pt spread sits under the tolerance; a 12pt label would have failed while the
+  drawing was correct. The slope is now derived and its residual bounded, which also makes a
+  scaled or rotated drawing fail.
+- The page carrying the drawing was located by "more than half the labels are present". On a
+  paid edition that matched **three** pages — the drawing plus two aspect tables, which list
+  body names as rows — and the first match was right only because the drawing comes first.
+  A house number is the real discriminator (it exists only inside the drawing; the paid tables
+  print "House 12 · Placidus" as part of a longer cell), and the helper now requires exactly
+  one qualifying page.
+
+The rule these produce: **assert against what the other surface painted, never against the
+shared input both surfaces read.** For text that means extracting the PDF's items by measured
+coordinates; for primitives it means walking the emitted element tree.
+
+Two earlier escapes belong to the same family, recorded here because they are the reason the
+parity checks compare whole structures rather than samples. Moving only a chord's *second*
+endpoint passed, because the check compared `x1`/`y1` and counted anchors without asking where
+they were; segments are now an unordered multiset of both endpoints, and anchors are matched by
+position. Removing `fontFamily` passed everything, because no test examined which face drew the
+glyphs; the drawing now proves it with a character Noto covers and WinAnsi does not.
+
+`pdf-wheel-splits-page` is a **wrapper-level** mutation, not an `Svg` one. An earlier
+draft dropped this target on the reasoning that `Svg` is in `@react-pdf/layout`'s
+`NON_WRAP_TYPES` and so cannot paginate — true, and beside the point. The primitive keeps
+the *drawing* in one piece; it says nothing about the block that holds the heading, the
+drawing and the caption. Removing `wrap={false}` from that enclosing `View` splits the words
+from the drawing, and only the title/caption co-location test notices: the page-delta and
+`Svg`-only checks both still pass. It is in the table above for that reason.
+
+The `Svg` needs no `wrap` prop and must not be given one.
 
 ---
 

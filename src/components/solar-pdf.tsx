@@ -1,14 +1,18 @@
 import React from "react";
 import type { DocumentProps, PageProps } from "@react-pdf/renderer";
 import { localeName } from "@/lib/i18n";
-import { READING_LIMITS, blockText, sectionText, type DisplaySection } from "@/readings/presentation";
+import { READING_LIMITS, blockText, sectionText, type DisplaySection, type ReadingChart, type ReadingContent } from "@/readings/presentation";
 import type { ReadingBlock } from "@/readings/types";
 import { AVAILABILITY_COPY, NOTICE_COPY, PREVIEW_COPY, aspectHeadings, editionTitle } from "@/readings/presentation-copy";
 import { chartDetails, chartDisclaimer, chartPlacements, returnDate, savedDate } from "@/readings/presentation-format";
 import { PDF_FONT, pdfGlyphsSupported, pdfLines } from "@/readings/pdf-fonts";
+import { projectWheel, type WheelGeometry } from "@/lib/wheel";
+import { wheelAbsentNotices, wheelAbsentText, wheelAccessibleName, wheelDrawingText, wheelOmissionText } from "@/readings/wheel-labels";
+import { PdfChartWheel } from "@/components/pdf-chart-wheel";
+import { houseSystemLabel } from "@/readings/base-presentation";
 import { PDF_FIXED_LAYOUT_LIMITS, ReadingPdfError, type ReadingPdfInput } from "@/readings/pdf-contract";
 
-type PdfRenderer = Pick<typeof import("@react-pdf/renderer"), "Document" | "Page" | "Text" | "View" | "StyleSheet" | "Font">;
+type PdfRenderer = Pick<typeof import("@react-pdf/renderer"), "Document" | "Page" | "Text" | "View" | "StyleSheet" | "Font" | "Svg" | "G" | "Circle" | "Line" | "Rect">;
 // Do not inherit lineHeight into dynamic footer Text: layout 5.2 resolves it
 // twice and clips the page number. Body text sets its own explicit leading.
 function styles(renderer: PdfRenderer) { return renderer.StyleSheet.create({
@@ -32,20 +36,130 @@ function styles(renderer: PdfRenderer) { return renderer.StyleSheet.create({
   tableOrb: { width: "16%", fontSize: 9, lineHeight: 1.5 },
 }); }
 
-/** Separate PDF primitives; the selection/projection is shared with HTML. */
-export function SolarReturnDocument({ chart, content, renderer, onPageCount }: ReadingPdfInput & { renderer: PdfRenderer; onPageCount?: (pages: number) => void }): React.ReactElement<DocumentProps> {
-  const { Document, Page, Text, View } = renderer;
-  const s = styles(renderer);
-  const locale = content.locale; const es = locale === "es"; const saved = content.kind === "saved-reading";
-  const title = editionTitle(content);
-  const strings = [chart.name, chart.returnPlace, returnDate(chart, locale), title, chartDisclaimer(chart, locale),
+/**
+ * Every string the document submits to `pdfGlyphsSupported`.
+ *
+ * Exported so the glyph-set test can assert the wheel is *in* it without rendering, and so a
+ * mutation that drops the wheel from the set fails an assertion rather than producing a PDF
+ * of boxes. `geometry` is optional: a document built without facts has no wheel and no
+ * wheel strings, which is the honest case, not a gap.
+ */
+export function pdfStrings({ chart, content, geometry, hasFacts }: {
+  chart: ReadingChart; content: ReadingContent; geometry: WheelGeometry | null; renderer: unknown;
+  /** `hasFacts` selects the *reason* a missing wheel is missing; see `wheelCopy`. */
+  hasFacts: boolean;
+}): string[] {
+  const locale = content.locale; const saved = content.kind === "saved-reading";
+  return [
+    chart.name, chart.returnPlace, returnDate(chart, locale), editionTitle(content), chartDisclaimer(chart, locale),
     ...chartDetails(chart, locale).flatMap(entry => [entry.key, entry.value]),
     ...chartPlacements(chart, locale).flatMap(entry => [entry.label, entry.value, entry.detail]),
     ...(chart.calculation ?? []).flatMap(blockText),
     ...content.sections.flatMap(sectionText), ...content.notices.map(code => NOTICE_COPY[code][locale]),
     ...content.sections.flatMap(section => section.notices.map(code => NOTICE_COPY[code][locale])),
+    // The wheel's visible text: sign names, house numbers, placed labels. Omitted labels are
+    // not drawn, so they are not submitted — checking a character the PDF never prints would
+    // reject a perfectly renderable chart.
+    ...(geometry ? wheelDrawingText(geometry) : []),
+    // …and every word around the drawing, from the same object the layout renders.
+    ...wheelStrings(wheelCopy({ chart, content, geometry, hasFacts })),
     ...(saved ? [content.contentVersion, content.chartVersion, ...content.previews.flatMap(preview => [preview.title, preview.teaser, PREVIEW_COPY[preview.availability][locale]])] : []),
   ];
+}
+
+/**
+ * Every word the wheel contributes to this document, in one place.
+ *
+ * The glyph gate and the layout must not each decide what the wheel says. Before this
+ * existed, `pdfStrings` submitted only `wheelDrawingText` — the sign names, house numbers
+ * and placed labels — while the heading, the accessible name, the description, the table
+ * pointer and the omission notices were built separately, after the gate had run. A copy
+ * change could therefore introduce an unsupported glyph, pass the gate on `chart.name`, and
+ * return a successful PDF of boxes. Building the copy once and deriving *both* the strings
+ * and the nodes from it makes that unreachable: if a character cannot be drawn, nothing is
+ * drawn.
+ *
+ * `heading` is included because it is wheel copy — it only appears when a wheel does.
+ */
+export type WheelCopy = {
+  heading: string;
+  title: string;
+  caption: string;
+  notices: string[];
+  /** Present only for a chart with no wheel: why there isn't one. */
+  absent: string | null;
+};
+
+export function wheelCopy({ chart, content, geometry, hasFacts }: {
+  chart: ReadingChart; content: ReadingContent; geometry: WheelGeometry | null;
+  /**
+   * Whether verified facts reached this document at all — `wheelFacts !== null` at the call
+   * site, exactly as the page computes it. It is what distinguishes "the saved positions are
+   * missing" from "the positions exist but were withheld at high latitude", and it is passed
+   * in rather than inferred from `geometry === null` because both states produce a null
+   * geometry. Inferring would collapse two different sentences into one generic line.
+   */
+  hasFacts: boolean;
+}): WheelCopy {
+  const locale = content.locale;
+  const heading = locale === "es" ? "Rueda factual" : "Factual wheel";
+  if (!geometry) {
+    // Same condition the page uses: only promise a table the document actually carries.
+    const hasTable = (chart.calculation?.length ?? 0) > 0;
+    // The reason travels with the sentence: "there is no wheel" without a why reads as a
+    // defect. Both sentences come from `WHEEL_NOTICE_COPY`, the table the page prints from.
+    return { heading, title: "", caption: "", notices: wheelAbsentNotices(hasFacts, locale), absent: wheelAbsentText(hasTable, locale) };
+  }
+  const { title, description, tableNote } = wheelAccessibleName(
+    chart.name, houseSystemLabel(geometry.houseSystem, locale), locale,
+  );
+  return {
+    heading,
+    title,
+    caption: `${description} ${tableNote}`,
+    notices: wheelOmissionText(geometry.omissions, locale),
+    absent: null,
+  };
+}
+
+/**
+ * Every string the wheel contributes, for the glyph gate.
+ *
+ * A missing wheel contributes its sentence *and* its reason: both are drawn, so both must
+ * survive the glyph check. Gating only the sentence would let an unsupported character enter
+ * through the notice and be silently dropped — the failure mode this whole gate exists for.
+ */
+function wheelStrings(copy: WheelCopy): string[] {
+  return copy.absent !== null
+    ? [copy.heading, copy.absent, ...copy.notices]
+    : [copy.heading, copy.title, copy.caption, ...copy.notices];
+}
+
+/** Separate PDF primitives; the selection/projection is shared with HTML. */
+export function SolarReturnDocument({ chart, content, wheelFacts, renderer, onPageCount }: ReadingPdfInput & { renderer: PdfRenderer; onPageCount?: (pages: number) => void }): React.ReactElement<DocumentProps> {
+  const { Document, Page, Text, View } = renderer;
+  // One projection, two emitters: the page passed `projectWheel(sameFacts, content.locale)`
+  // as well, so the drawing here cannot disagree with the drawing there. `null` means the
+  // chart legitimately has no wheel (legacy facts, or no Ascendant at high latitude) and
+  // the PDF states that in words rather than drawing a substitute.
+  const geometry = projectWheel(wheelFacts ?? null, content.locale);
+  /**
+   * Why there is no wheel, if there isn't one — the same distinction the page draws.
+   *
+   * `wheelFacts` present means the saved positions are verified and real; `projectWheel`
+   * returning null over them means the *Ascendant* could not be honoured (|latitude| >= 66
+   * refuses to approximate a horizon). No `wheelFacts` at all means the saved positions are
+   * missing or unverifiable. Identical geometry, different facts, different sentence.
+   */
+  const hasFacts = wheelFacts !== null && wheelFacts !== undefined;
+  const s = styles(renderer);
+  const locale = content.locale; const es = locale === "es"; const saved = content.kind === "saved-reading";
+  const title = editionTitle(content);
+  // The complete set of strings this document may draw, extracted so a test can prove the
+  // wheel's own text is in it (issue #155: an uncovered glyph must be `pdf_glyphs`, never a
+  // PDF of boxes). `geometry` is passed because omitted labels are not drawn and must not
+  // be submitted to the glyph check on a caller's behalf.
+  const strings = pdfStrings({ chart, content, geometry, hasFacts, renderer });
   if (!pdfGlyphsSupported(strings, renderer)) throw new ReadingPdfError("pdf_glyphs");
   const wrap = (value: string, width = 499, size = 10, bold = false) => pdfLines(value, width, size, renderer, bold).join("\n");
   const header = <View fixed style={s.header}><Text style={s.brand}>solara.</Text><Text style={{ fontSize: 8 }}>{es ? "TU REVOLUCIÓN SOLAR" : "YOUR SOLAR RETURN"}</Text></View>;
@@ -105,6 +219,35 @@ export function SolarReturnDocument({ chart, content, renderer, onPageCount }: R
         </Page> };
 
   };
+  /**
+   * The wheel block: one unbreakable unit of fixed height, so it can never straddle a page
+   * boundary. When there is no geometry the block becomes a sentence — the same reason the
+   * page gives — rather than a decorative wheel standing in for a chart. Both live in the
+   * same place in the document, so "where is the wheel" has one answer.
+   */
+  const wheel = wheelCopy({ chart, content, geometry, hasFacts });
+  const wheelBlock = geometry
+    ? <View key="wheel" wrap={false} style={{ marginTop: 14, marginBottom: 16 }}>
+        <Text style={s.heading} minPresenceAhead={30}>{wheel.heading}</Text>
+        {/* The words come from `wheel`, the same object the glyph gate checks. */}
+        <PdfChartWheel text={wheel} geometry={geometry} renderer={renderer} />
+        {wheel.notices.map((text, index) => (
+          <Text key={`omission-${index}`} style={s.small}>{wrap(text, 499, 9)}</Text>
+        ))}
+      </View>
+    // No geometry means no drawing — but not silence, and not a bare "there is no wheel"
+    // either. A reader told only that something is missing assumes a defect; the *reason* is
+    // what makes the omission legible, and there are two of them. `wheel.notices` carries the
+    // one that applies (missing saved positions vs. no usable Ascendant at high latitude),
+    // built by the same function the page uses so the two surfaces cannot disagree.
+    : <View key="wheel-absent" wrap={false} style={{ marginTop: 14, marginBottom: 16 }}>
+        <Text style={s.heading} minPresenceAhead={30}>{wheel.heading}</Text>
+        <Text style={s.small}>{wrap(wheel.absent ?? "", 499, 9)}</Text>
+        {wheel.notices.map((text, index) => (
+          <Text key={`absent-reason-${index}`} style={s.small}>{wrap(text, 499, 9)}</Text>
+        ))}
+      </View>;
+
   flowPage("cover", [
     <Text key="title" style={s.title}>{wrap(title, 499, 28, true)}</Text>,
     <Text key="name" style={s.section}>{wrap(chart.name, 499, 21, true)}</Text>,
@@ -114,6 +257,7 @@ export function SolarReturnDocument({ chart, content, renderer, onPageCount }: R
     <Text key="chart-heading" style={s.heading} minPresenceAhead={30}>{es ? "Datos guardados de la carta" : "Saved chart summary"}</Text>,
     ...chartPlacements(chart, locale).map(entry => <View key={entry.label} style={s.keyRow}><Text style={s.key}>{entry.label}</Text><Text style={s.value}>{entry.value} · {entry.detail}</Text></View>),
     ...chartDetails(chart, locale).map(entry => <View key={entry.key} style={s.keyRow}><Text style={s.key}>{entry.key}</Text><Text style={s.value}>{wrap(entry.value, 275)}</Text></View>),
+    wheelBlock,
     <Text key="disclaimer" style={{ ...s.small, marginTop: 18 }}>{wrap(chartDisclaimer(chart, locale), 499, 9)}</Text>,
   ]);
   let calculation: React.ReactNode[] = [];

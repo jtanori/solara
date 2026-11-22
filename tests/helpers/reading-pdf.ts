@@ -27,7 +27,10 @@ export async function inspectPdf(buffer: Buffer, raster = false) {
       const page = await pdf.getPage(number); const content = await page.getTextContent();
       const items = content.items.filter(item => "str" in item).map(item => {
         assert.ok("str" in item);
-        return { text: item.str, x: item.transform[4], y: page.view[3] - item.transform[5], width: item.width, height: item.height };
+        // `transform[3]` is the vertical scale = the effective font size in points. Exposed
+        // because a leaked SVG viewBox transform scales text silently: the string is present
+        // and extractable while being drawn smaller than the document declares.
+        return { text: item.str, x: item.transform[4], y: page.view[3] - item.transform[5], width: item.width, height: item.height, size: Math.abs(item.transform[3]) };
       });
       const body = items.filter(item => item.y > 65 && item.y < 782);
       let image: Buffer | null = null;
