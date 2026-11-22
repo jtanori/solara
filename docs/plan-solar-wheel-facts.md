@@ -865,7 +865,7 @@ All sixteen feature mutations were run and each is killed by a named test:
 | **only a chord's second endpoint moved** | coordinate-parity test |
 | anchor primitives removed | coordinate-parity test |
 | `wheelFacts` dropped from the serialized input | wheel-present and paid-edition tests |
-| **`fontFamily` removed from the SVG text nodes** | font-substitution and Type1-resource tests |
+| **`fontFamily` removed from the SVG text nodes** (sign, house or point; any weight) | embedded BaseFont set = exactly the gated Noto faces |
 | **`wrap={false}` removed from the enclosing `View`** | title/caption co-location test |
 | **only the page's Pluto label changed** (HTML-only drift) | rendered-page parity test |
 | **`wheelAbsentReason` collapsed to one code** | two-reasons test (EN and ES) |

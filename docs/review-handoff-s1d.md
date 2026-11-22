@@ -1,10 +1,10 @@
 # Review handoff — S1-d, factual wheel in the PDF (PR #161)
 
-Written 2026-11-20 for the next reviewer. Everything below was measured on `4cc8585`; nothing
-is quoted from an earlier round or from the PR description.
+Written 2026-11-20 for the next reviewer. Everything below was measured on **`d154b63`**;
+nothing is quoted from an earlier round or from the PR description.
 
 - **PR:** [#161](https://github.com/jtanori/solara/pull/161) → `staging`
-- **Head:** `4cc8585` · **Base:** `9de566d` (`origin/staging`)
+- **Head:** `d154b63` · **Base:** `9de566d` (`origin/staging`)
 - **Size:** 9 commits (with this round), 16 files, +2181 / −68
 - **Labels:** `type:feature`, `deploy:required`
 - **State:** `MERGEABLE` / `BLOCKED` — blocked by **unresolved conversations**, not by a
@@ -54,14 +54,14 @@ Two consequences worth checking directly:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test tests/*.test.ts` (`RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1`) | **837 / 837**, 0 fail, 0 skipped — two consecutive full runs, PostgreSQL 17 on loopback |
+| `npx tsx --test tests/*.test.ts` (`RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1`) | **841 / 841**, 0 fail, 0 skipped — PostgreSQL 16.2 on loopback, migrations applied |
 | `tests/readings-wheel-pdf.test.ts` | **25 / 25** |
 | `npx tsc --noEmit` | clean |
 | `npx eslint src tests scripts --max-warnings=0` | clean |
 | `npm run build` | succeeds |
 | `node scripts/check-pdf-package.mjs` | **220 files, 5.9 MiB** — identical to `staging` |
 | GitHub `verify` / `pr-lint` | pass / pass (4m22s / 5s) |
-| Mutations run | 16 feature + 5 worker-build, each killed by a named test (§4, §5a) |
+| Mutations run | 16 feature + 5 worker-build (plus the font-gate mutation, §5a) |
 
 Snapshots: `tests/fixtures/readings/pdf-snapshots.json` changes by **8 text lines and 8
 hashes** (4 EN + 4 ES), all of them the absent-wheel sentence. Regenerated intentionally and
@@ -111,7 +111,7 @@ The rule that came out of it, and the one to review against:
 | only a chord's second endpoint moved | coordinate-parity test |
 | anchor primitives removed | coordinate-parity test |
 | `wheelFacts` dropped from the serialized input | wheel-present + paid tests |
-| `fontFamily` removed from the SVG text nodes | font-substitution + Type1 tests |
+| `fontFamily` removed from the SVG text nodes (sign, house or point; any weight) | embedded BaseFont set = exactly the gated Noto faces |
 | `wrap={false}` removed from the enclosing `View` | title/caption co-location test |
 | only the page's Pluto label changed | rendered-page parity test |
 | `wheelAbsentReason` collapsed to one code | two-reasons test (EN + ES) |
@@ -139,10 +139,12 @@ Two related defects surfaced while fixing it, one of them introduced by the firs
 - The first fix (atomic renames) left esbuild's `.LEGAL.txt` sidecar accumulating — 47 files
   inside the shipped package, and the deployment trace went **220 → 266 files**.
 
-The fix is a lock file (`wx`, stale-broken by age, timeout-bounded) serialising a ~0.5s build.
-That is deliberately blunter than per-step atomicity, because per-step atomicity did not
-actually stop peers destroying each other's work. `tests/readings-wheel-pdf.test.ts` spawns six
-concurrent builders and fails if the lock is removed.
+The fix is a lock file serialising a ~1s build, acquired with `link` (atomic **and** `EEXIST`
+when held) and reclaimed only when its owner is **proven dead** by `kill(pid, 0)`, with
+reclaim and release done by rename-to-quarantine. §5a has the mechanism and the five mutations
+that pin it; do not rely on this paragraph for the details, it is a summary of a script that has
+been rewritten three times. The current behaviour: eight concurrent builders hold across
+repeated rounds, and the lock is never evicted from a live holder regardless of its mtime.
 
 **Review it as infrastructure, not as feature code.** If you would rather the four suites shared
 one build (a global setup) instead of serialising, that is a bigger change and belongs in its
@@ -173,6 +175,24 @@ killed by exactly one named test:
 | reclaim the lock by mtime age | the live-holder test |
 | never reclaim a dead owner's lock | the dead-owner test (and the concurrent-build test) |
 | `link` → `rename` when taking the lock | the live-holder test |
+| `fontFamily` removed from a **regular-weight** sign or house node | embedded-BaseFont-set test (the two earlier font tests both passed this) |
+| `publish()` writes `package.json` in place | the forked-worker publication test |
+| check-then-unlink reclaim (the quarantine `rename` replaced by an `rm`) | **not covered by a test** — the window is sub-millisecond; the primitive was verified separately, see below |
+
+### What the quarantine reclaim is and is not
+
+The reclaim and release were `rm`-by-name after a pid+inode check, which two contenders can both
+pass: the first unlinks and `link`s a successor, and the second's already-decided `rm` deletes the
+**successor's live lock**. They now `rename` the lock to a name only that process can create, so
+exactly one contender can move it, and the winner inspects what it moved before discarding it.
+
+That is an argument about a primitive, and it is honestly not pinned by a deterministic test: a
+mutation that restores check-then-unlink still passes the whole suite, because the window is
+microseconds. What was verified separately: 60 rounds × 8 concurrent claimants of one lock
+produced **exactly one winner every round**, and a foreign lock that was moved is `link`ed back
+rather than dropped. If a future change needs stronger evidence, the honest options are a
+`flock`-style kernel lock or injecting a delay hook into the reclaim path — not a timing-based
+test that would fail only occasionally.
 
 ## 6. Traps that cost time here
 
@@ -215,12 +235,15 @@ State these honestly rather than inheriting them as passed:
 ## 8. State of the review threads
 
 Two of eight threads remain open at `4cc8585`, both in `tests/readings-wheel-pdf.test.ts`,
-both with a reply naming the fix and the mutation that now fails:
+**Four threads are open at `d154b63`**, all with a reply naming the fix and the mutation that
+now fails:
 
-- page/PDF label parity (extra PDF-only label)
-- paid Placidus output (anchor shift)
+- three worker-build P1s (license footer, reader-visible partial package, live-lock eviction)
+  — fixed in `d154b63`
+- this handoff's own merge-requirement correction
 
-Everything else is resolved. Per the earlier correction: `staging` requires **conversation
+The earlier page/PDF label-parity and paid-Placidus threads are resolved. Per the earlier
+correction: `staging` requires **conversation
 resolution** and **zero** approving reviews — a formal approving review is not part of the
 branch policy here. The prior threads were actionable findings, not a missing approval, and
 "awaiting approval" is the wrong explanation for a `BLOCKED` state in this repository.

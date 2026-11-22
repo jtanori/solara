@@ -789,13 +789,40 @@ test("PDF wheel: the drawing renders in the font the glyph gate validates", asyn
   assert.equal(text.includes("Plut1"), false, "no WinAnsi substitution");
 });
 
-test("PDF wheel: the drawing embeds no standard Type1 bold face", async () => {
-  const { buffer } = await pdfRenderer.render(withWheel("en"));
+/** The faces a PDF actually embeds, with PDF's six-letter subset prefixes stripped. */
+function embeddedFaces(buffer: Buffer): string[] {
   const raw = buffer.toString("latin1");
-  // Bold point labels used to be drawn in Helvetica-Bold. The embedded Noto bold face must be
-  // used instead: a Type1 face would mean the drawing is not the font the gate checked.
-  assert.ok(/NotoSans-Bold/.test(raw), "the bold face is the embedded Noto");
-  assert.equal(/Helvetica-Bold/.test(raw), false, "the drawing does not fall back to Helvetica-Bold");
+  const faces = [...raw.matchAll(/\/BaseFont\s*\/([A-Za-z0-9+\-]+)/g)]
+    .map(match => match[1].replace(/^[A-Z]{6}\+/, ""));
+  return [...new Set(faces)].sort();
+}
+
+test("PDF wheel: the drawing embeds only the gated Noto faces, at every weight", async () => {
+  const geometry = projectWheel(fixtureFacts(), "en")!;
+  const { createElement } = await import("react");
+  // The wheel *alone*, with no title or caption, so the document has no other text at all and
+  // the embedded set is attributable to the drawing rather than to whatever the page prints.
+  const bare = createElement(renderer.Document, null,
+    createElement(renderer.Page, { size: "A4" },
+      createElement(PdfChartWheel, { text: { title: "", caption: "" }, geometry, renderer })));
+  const faces = embeddedFaces(await renderer.renderToBuffer(bare as never));
+
+  /**
+   * Two earlier versions of this check were one-sided, and a review found the hole in both.
+   *
+   * The first forbade `Helvetica-Bold` only, because bold point labels had been the ones that
+   * fell back. The second proved the gate with a dotless `ı` in a *bold* label. Neither could
+   * see a regular-weight fallback: removing `fontFamily` from just the sign and house nodes —
+   * 24 of the drawing's ~38 text nodes — embeds plain `Helvetica` and passed both tests. That
+   * is the original defect ("Plut1" printed from a face the gate never checked) still open on
+   * the majority of the drawing.
+   *
+   * The assertion is therefore the exact embedded set, not the absence of one name. The gate
+   * validates the Noto faces, so those are the only faces the drawing may use; anything else
+   * means some node was drawn in a face the gate did not check, whichever node it was.
+   */
+  assert.deepEqual(faces, ["NotoSans-Bold", "NotoSans-Regular"],
+    `the drawing embeds exactly the gated faces, got ${JSON.stringify(faces)}`);
 });
 
 /**
@@ -1104,53 +1131,68 @@ test("PDF worker: the shipped bundle's own license footer resolves", async () =>
   assert.ok(!/\.\d+\.tmp/.test(footer![1]), `the footer names a published file, not a build temporary: ${footer![1]}`);
 });
 
-test("PDF worker: a reader that starts while publication is paused still loads the package", async () => {
+test("PDF worker: a forked worker keeps loading the package throughout publication", async () => {
   const { spawn } = await import("node:child_process");
   const { rm, readFile } = await import("node:fs/promises");
   const signal = resolve(".venv/pdf-reader-pause");
   await rm(signal, { force: true });
 
   /**
-   * The builder pauses with the assets already published and the bundle still old, which is
-   * the worst moment for a reader: `package.json`, fonts and metrics are new, `worker.mjs` is
-   * the previous one. Both states are individually consistent, so a reader must succeed
-   * regardless of which it resolves — it must simply never see a *partial* file.
+   * The population the invariant is actually about is a forked worker — `bootstrap.mjs` importing
+   * `worker.mjs` — not a `require()` of `package.json`. An earlier version of this test did the
+   * latter, at a single pause instant placed *before* the bundle rename, so a regression that
+   * wrote `worker.mjs` in place after that point would have passed it.
+   *
+   * This forks the real bootstrap repeatedly for the whole duration of a build and requires each
+   * attempt to reach the worker's own error reply. `pdf_unavailable` is the *success* signal here:
+   * the payload is nonsense, so the worker parses it, fails, and answers over IPC. A loader error
+   * — a truncated module, a missing sidecar, an unreadable `package.json` — never gets that far.
    */
+  const readOnce = () => new Promise<{ ok: boolean; detail: string }>((settle, fail) => {
+    const child = spawn(process.execPath, [resolve(".pdf/bootstrap.mjs")], {
+      cwd: resolve(".pdf"), env: { NODE_ENV: "production", TZ: "UTC", LANG: "C.UTF-8" },
+      stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "advanced",
+    });
+    let stderr = "";
+    const timer = setTimeout(() => { child.kill("SIGKILL"); settle({ ok: false, detail: "no reply within 15s" }); }, 15_000);
+    child.stderr?.on("data", (chunk: Buffer) => stderr += chunk.toString());
+    child.once("message", (message: { kind?: string; code?: string }) => {
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+      settle({ ok: message.kind === "error", detail: `${message.kind}/${message.code ?? ""}` });
+    });
+    child.once("error", fail);
+    child.send({ kind: "render", input: "not-json" });
+  });
+
   const builder = new Promise<number | null>((settle, fail) => {
     const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], {
-      stdio: "ignore", env: { ...process.env, PDF_BUILD_TEST_PAUSE_FILE: signal, PDF_BUILD_TEST_PAUSE_MS: "1500" },
+      stdio: "ignore", env: { ...process.env, PDF_BUILD_TEST_PAUSE_FILE: signal, PDF_BUILD_TEST_PAUSE_MS: "2500" },
     });
     child.once("close", settle); child.once("error", fail);
   });
+
+  const failures: string[] = [];
+  let attempts = 0;
   try {
     const started = Date.now();
-    for (;;) {
-      if (await readFile(signal, "utf8").catch(() => null)) break;
-      if (Date.now() - started > 30_000) throw new Error("the builder never reached the publication pause");
-      await new Promise(settle => setTimeout(settle, 20));
+    let reachedPause = false;
+    // Loop for the whole build: before, during and after the publish, not at one sampled instant.
+    while (Date.now() - started < 60_000) {
+      const outcome = await readOnce();
+      attempts += 1;
+      if (!outcome.ok) failures.push(outcome.detail);
+      if (await readFile(signal, "utf8").catch(() => null)) reachedPause = true;
+      if (reachedPause && (await Promise.race([builder.then(() => true), Promise.resolve(false)]))) break;
     }
-    // A real reader: resolve the package's declared imports and load a standard font, exactly
-    // as `bootstrap.mjs` does when PDFKit registers builtin metrics.
-    const reader = await new Promise<{ code: number | null; out: string; err: string }>((settle, fail) => {
-      const child = spawn(process.execPath, ["-e", `
-        import { createRequire } from "node:module";
-        const require = createRequire(${JSON.stringify(resolve(".pdf") + "/")});
-        require(${JSON.stringify(resolve(".pdf/package.json"))});
-        const font = require(${JSON.stringify(resolve(".pdf/standard-fonts/Helvetica.cjs"))});
-        process.stdout.write("loaded " + typeof font);
-      `], { stdio: ["ignore", "pipe", "pipe"] });
-      let out = ""; let err = "";
-      child.stdout.on("data", chunk => out += chunk);
-      child.stderr.on("data", chunk => err += chunk);
-      child.once("close", code => settle({ code, out, err }));
-      child.once("error", fail);
-    });
-    assert.equal(reader.code, 0, `a reader launched mid-publication loads the package: ${reader.err.split("\n")[0]}`);
-    assert.match(reader.out, /^loaded (object|function)$/);
+    assert.ok(reachedPause, "the builder reached its publication pause");
+    await builder;
   } finally {
     await rm(signal, { force: true });
-    await builder;
   }
+
+  assert.ok(attempts >= 4, `the reader sampled the package repeatedly (${attempts} attempts)`);
+  assert.deepEqual(failures, [], `every forked worker loaded the package (${attempts} attempts)`);
 });
 
 test("PDF worker: a lock whose owner is alive is not reclaimed, however old it looks", async () => {
@@ -1181,8 +1223,16 @@ test("PDF worker: a lock whose owner is dead is reclaimed, and the build succeed
   const { spawn } = await import("node:child_process");
   const lock = resolve(".pdf/.build.lock");
   const previous = await readFile(lock, "utf8").catch(() => null);
-  // A pid that cannot be running: the kernel's pid ceiling is well below this.
-  await writeFile(lock, "999999");
+  /**
+   * Manufacture the dead pid rather than assuming one. `/proc/sys/kernel/pid_max` is 4194304 on
+   * a default 64-bit Linux host, so "999999" is allocatable and a busy CI machine can hand it to
+   * a live process; the test would then fail for environmental reasons, which is the opposite of
+   * the precondition it needs.
+   */
+  const { execFileSync } = await import("node:child_process");
+  const deadPid = Number(execFileSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }));
+  assert.throws(() => process.kill(deadPid, 0), /ESRCH/, `pid ${deadPid} is proven dead`);
+  await writeFile(lock, String(deadPid));
   try {
     const code = await new Promise<number | null>((settle, fail) => {
       const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], { stdio: "ignore" });

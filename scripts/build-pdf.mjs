@@ -60,9 +60,14 @@ const LOCK_WAIT_MS = Number(process.env.PDF_BUILD_LOCK_WAIT_MS ?? 300_000);
  * a live holder mid-critical-section; a review reproduced exactly that by aging the mtime of a
  * paused builder.
  *
- * Every reclaim re-verifies pid *and* inode immediately before unlinking. Without that, two
- * contenders can both observe the stale lock, both unlink, and the second unlink destroys the
- * lock the first just acquired.
+ * Reclaim and release are **not** "check the owner, then unlink by name": that is a race with no
+ * primitive that closes it. Two contenders can both verify the same dead lock, the first unlinks
+ * and `link`s a successor, and the second's already-decided unlink deletes the *successor's live
+ * lock*. Instead the reclaim is a `rename` of `LOCK` to a name only this process can create:
+ * exactly one contender can move the file, the loser gets `ENOENT`, and the winner then inspects
+ * what it moved. If it is not the dead lock we meant to remove, it is a successor's live lock and
+ * it is put back with `link` (ignoring `EEXIST`, which means someone already re-acquired).
+ * Release uses the same rename-to-quarantine, so it can only ever remove a lock it moved itself.
  */
 async function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
@@ -71,8 +76,10 @@ async function alive(pid) {
 async function readLock() {
   let handle;
   try {
-    const { ino } = await stat(LOCK);
     handle = await open(LOCK, "r");
+    // `handle.stat()` rather than `stat(LOCK)`: pairing an inode read before the open with a pid
+    // read after it can describe two different files if the lock is replaced in between.
+    const { ino } = await handle.stat();
     const pid = Number.parseInt(String(await handle.readFile()), 10);
     return { pid: Number.isFinite(pid) ? pid : null, ino };
   } catch (error) {
@@ -83,10 +90,46 @@ async function readLock() {
   }
 }
 
+/**
+ * Move the current lock aside under a name only this process can create, then look at what was
+ * moved. Exactly one contender wins the rename; a loser sees `ENOENT` and retries the loop.
+ *
+ * Returns the quarantine's contents, or null if the lock vanished first.
+ */
+async function quarantineLock(tag) {
+  const quarantine = `${LOCK}.${tag}.${process.pid}`;
+  await rm(quarantine, { force: true });
+  try {
+    await rename(LOCK, quarantine);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  const handle = await open(quarantine, "r");
+  try {
+    const { ino } = await handle.stat();
+    const pid = Number.parseInt(String(await handle.readFile()), 10);
+    return { quarantine, pid: Number.isFinite(pid) ? pid : null, ino };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Put a quarantined lock back. `EEXIST` means a successor already re-acquired; that one stays. */
+async function restoreLock(moved) {
+  await link(moved.quarantine, LOCK).catch(error => { if (error.code !== "EEXIST") throw error; });
+  await rm(moved.quarantine, { force: true });
+}
+
 async function acquire() {
   const deadline = Date.now() + LOCK_WAIT_MS;
   let reason = "no attempt recorded";
   for (;;) {
+    // The deadline is checked at the top of *every* iteration, so no retry path can bypass it,
+    // and every path below sleeps the same interval rather than spinning on a hot loop.
+    if (Date.now() > deadline) {
+      throw new Error(`timed out after ${LOCK_WAIT_MS}ms waiting for ${LOCK} (${reason})`);
+    }
     const candidate = `${LOCK}.${process.pid}`;
     try {
       const handle = await open(candidate, "wx");
@@ -101,30 +144,43 @@ async function acquire() {
     }
 
     const held = await readLock();
-    if (held === null) continue;
-    if (held.pid === process.pid) return;
-    if (held.pid !== null && !(await alive(held.pid))) {
-      const recheck = await readLock();
-      if (recheck !== null && recheck.ino === held.ino && recheck.pid === held.pid) {
-        await rm(LOCK, { force: true });
-        continue;
+    if (held === null) {
+      reason = `lock ${LOCK} disappeared between attempts`;
+    } else if (held.pid === process.pid) {
+      return; // our own lock, from an earlier phase
+    } else if (held.pid !== null && !(await alive(held.pid))) {
+      // The owner is proven dead. Claim the file atomically rather than unlinking it by name.
+      const moved = await quarantineLock("reclaim");
+      if (moved === null) {
+        reason = `lock ${LOCK} disappeared while reclaiming it`;
+      } else if (moved.pid === held.pid && moved.ino === held.ino) {
+        await rm(moved.quarantine, { force: true });
+        continue; // the stale lock is gone; retry the acquisition immediately
+      } else {
+        // Something re-acquired between our read and our rename. It is live; put it back.
+        await restoreLock(moved);
+        reason = `lock ${LOCK} was re-acquired while reclaiming it`;
       }
-      reason = `lock ${LOCK} changed while reclaiming it`;
     } else {
       reason = held.pid === null ? `lock ${LOCK} has no readable owner` : `held by live pid ${held.pid}`;
     }
 
-    if (Date.now() > deadline) {
-      throw new Error(`timed out after ${LOCK_WAIT_MS}ms waiting for ${LOCK} (${reason})`);
-    }
     await new Promise(settle => setTimeout(settle, 25));
   }
 }
 
-/** Release only a lock we still own; a blind `finally` unlink can delete a successor's lock. */
+/**
+ * Release by moving our own lock aside — never by unlinking the name.
+ *
+ * A blind `finally` unlink can delete a successor's lock; so can a check-then-unlink, because the
+ * successor can acquire between the check and the unlink. The rename only succeeds if the lock
+ * this process moved is the one that was there, and the contents decide whether it was ours.
+ */
 async function release() {
-  const held = await readLock();
-  if (held?.pid === process.pid) await rm(LOCK, { force: true });
+  const moved = await quarantineLock("release");
+  if (moved === null) return;
+  if (moved.pid === process.pid) await rm(moved.quarantine, { force: true });
+  else await restoreLock(moved); // not ours after all; give it back
 }
 
 await acquire();

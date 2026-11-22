@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 const trace = resolve(".next/server/app/api/readings/[id]/pdf/route.js.nft.json");
@@ -18,6 +18,21 @@ assert.ok(footer, "the worker states where its license text lives");
 const linked = resolve(dirname(worker), footer[1]);
 assert.ok(existsSync(linked), `the worker links to a license file that exists: ${footer[1]}`);
 assert.ok(files.includes(linked), `the linked license file is traced for deployment: ${footer[1]}`);
+
+// The trace glob is `./.pdf/**/*`, so *anything* that survives in the directory ships — including
+// a font removed from source, a stale legal sidecar from a killed builder, or a leftover lock
+// candidate. Presence checks cannot see that: they pass as long as the expected files are among
+// whatever else is there. This asserts the exact set, both directions, computed from the package
+// as built, so a build that prunes correctly and a build that leaves debris are distinguishable.
+const published = readdirSync(".pdf", { recursive: true, withFileTypes: true })
+  .filter(entry => entry.isFile())
+  // `parentPath` is already the directory the entry was read from (".pdf" or a child).
+  .map(entry => resolve(entry.parentPath ?? entry.path, entry.name))
+  // Build scaffolding is not part of the package: the lock exists only while a builder runs.
+  .filter(path => !/(?:^|\/)\.build\.lock(?:\.[^/]*)?$/.test(path))
+  .sort();
+const traced = files.filter(file => file.startsWith(resolve(".pdf") + "/")).sort();
+assert.deepEqual(traced, published, "the traced .pdf files are exactly the published ones");
 
 const prohibited = files.filter(file => /\/(?:tests|\.venv|\.env(?:\.[^/]+)?)(?:\/|$)/.test(file) || /node_modules\/(?:playwright|@sparticuz|pdfjs-dist|@napi-rs)/.test(file));
 assert.equal(prohibited.length, 0, "test data/browser/extractor must not enter the deployed PDF function");
