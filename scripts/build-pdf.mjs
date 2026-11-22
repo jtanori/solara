@@ -1,7 +1,7 @@
 import { build } from "esbuild";
 import { cp, link, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { open } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 
 // A standalone, credential-free Node process, not a Next server bundle. The
 // bundle contains its dependencies, so runtime fs permissions only need .pdf/.
@@ -236,8 +236,23 @@ async function buildAndPublish() {
   await mkdir(`${staging}/data`, { recursive: true });
   await cp("node_modules/pdfkit/js/data/sRGB_IEC61966_2_1.icc", `${staging}/data/sRGB_IEC61966_2_1.icc`, { force: true });
 
-  await publish(staging);
+  const published = await publish(staging);
   await rm(staging, { recursive: true, force: true });
+
+  /**
+   * Write the manifest of what was *published*, outside the deployment trace.
+   *
+   * `next.config.ts` traces the whole directory, so comparing the trace against disk cannot
+   * detect debris: a stale file sitting in `.pdf/` when `npm run build` runs is swept into the
+   * trace, and the two sets agree *with the debris in both*. That is exactly how 47 stale legal
+   * sidecars accumulated unnoticed.
+   *
+   * So the manifest is not a listing of the directory — that has the same flaw one level up, and
+   * a first attempt at this did exactly that and recorded the planted debris. It is the list
+   * `publish()` moved this run, which is the only set that is derived from sources rather than
+   * from whatever happens to be lying around.
+   */
+  await writeFile(`${STAGING_ROOT}/published.json`, JSON.stringify(published, null, 2));
 }
 
 /**
@@ -269,4 +284,5 @@ async function publish(staging) {
     await mkdir(destination.slice(0, destination.lastIndexOf("/")), { recursive: true });
     await rename(`${staging}/${file}`, destination);
   }
+  return ordered.sort();
 }

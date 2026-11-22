@@ -19,20 +19,18 @@ const linked = resolve(dirname(worker), footer[1]);
 assert.ok(existsSync(linked), `the worker links to a license file that exists: ${footer[1]}`);
 assert.ok(files.includes(linked), `the linked license file is traced for deployment: ${footer[1]}`);
 
-// The trace glob is `./.pdf/**/*`, so *anything* that survives in the directory ships — including
-// a font removed from source, a stale legal sidecar from a killed builder, or a leftover lock
-// candidate. Presence checks cannot see that: they pass as long as the expected files are among
-// whatever else is there. This asserts the exact set, both directions, computed from the package
-// as built, so a build that prunes correctly and a build that leaves debris are distinguishable.
-const published = readdirSync(".pdf", { recursive: true, withFileTypes: true })
-  .filter(entry => entry.isFile())
-  // `parentPath` is already the directory the entry was read from (".pdf" or a child).
-  .map(entry => resolve(entry.parentPath ?? entry.path, entry.name))
-  // Build scaffolding is not part of the package: the lock exists only while a builder runs.
-  .filter(path => !/(?:^|\/)\.build\.lock(?:\.[^/]*)?$/.test(path))
-  .sort();
+// The trace glob is a glob over the whole directory, so comparing it against what is on disk
+// cannot detect debris: a stale file sitting in `.pdf/` when the build runs is swept into the
+// trace, and the two sets then agree *with the debris in both*. That is how 47 stale legal
+// sidecars once shipped. The comparison is therefore against the manifest the build wrote when it
+// published, which lives outside the traced directory. Missing manifest = the check cannot
+// prove anything, so it fails rather than falling back to disk.
+const manifestPath = resolve(".venv/pdf-build/published.json");
+assert.ok(existsSync(manifestPath), `the build wrote a published manifest: ${manifestPath}`);
+const published = JSON.parse(readFileSync(manifestPath, "utf8")).map(relative => resolve(".pdf", relative)).sort();
 const traced = files.filter(file => file.startsWith(resolve(".pdf") + "/")).sort();
-assert.deepEqual(traced, published, "the traced .pdf files are exactly the published ones");
+assert.deepEqual(traced, published,
+  "the traced .pdf files are exactly the ones the build published (not merely what is on disk)");
 
 const prohibited = files.filter(file => /\/(?:tests|\.venv|\.env(?:\.[^/]+)?)(?:\/|$)/.test(file) || /node_modules\/(?:playwright|@sparticuz|pdfjs-dist|@napi-rs)/.test(file));
 assert.equal(prohibited.length, 0, "test data/browser/extractor must not enter the deployed PDF function");

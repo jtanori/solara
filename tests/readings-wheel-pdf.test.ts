@@ -1153,9 +1153,7 @@ test("PDF worker: a forked worker keeps loading the package throughout publicati
       cwd: resolve(".pdf"), env: { NODE_ENV: "production", TZ: "UTC", LANG: "C.UTF-8" },
       stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "advanced",
     });
-    let stderr = "";
     const timer = setTimeout(() => { child.kill("SIGKILL"); settle({ ok: false, detail: "no reply within 15s" }); }, 15_000);
-    child.stderr?.on("data", (chunk: Buffer) => stderr += chunk.toString());
     child.once("message", (message: { kind?: string; code?: string }) => {
       clearTimeout(timer);
       child.kill("SIGKILL");
@@ -1165,12 +1163,21 @@ test("PDF worker: a forked worker keeps loading the package throughout publicati
     child.send({ kind: "render", input: "not-json" });
   });
 
+  /**
+   * A hoisted flag, not `Promise.race([builder.then(...), Promise.resolve(false)])`.
+   *
+   * That idiom reads as "stop once the builder finishes" but can never be true: the already-
+   * resolved `false` wins the race on subscription, every time, no matter how long ago the
+   * builder settled. The loop therefore always burned its whole 60 s cap — measured at 60,291 ms
+   * for this test — with the last ~55 s sampling a finished build rather than a live one.
+   */
+  let builderDone = false;
   const builder = new Promise<number | null>((settle, fail) => {
     const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], {
       stdio: "ignore", env: { ...process.env, PDF_BUILD_TEST_PAUSE_FILE: signal, PDF_BUILD_TEST_PAUSE_MS: "2500" },
     });
     child.once("close", settle); child.once("error", fail);
-  });
+  }).finally(() => { builderDone = true; });
 
   const failures: string[] = [];
   let attempts = 0;
@@ -1178,12 +1185,11 @@ test("PDF worker: a forked worker keeps loading the package throughout publicati
     const started = Date.now();
     let reachedPause = false;
     // Loop for the whole build: before, during and after the publish, not at one sampled instant.
-    while (Date.now() - started < 60_000) {
+    while (!builderDone && Date.now() - started < 60_000) {
       const outcome = await readOnce();
       attempts += 1;
       if (!outcome.ok) failures.push(outcome.detail);
       if (await readFile(signal, "utf8").catch(() => null)) reachedPause = true;
-      if (reachedPause && (await Promise.race([builder.then(() => true), Promise.resolve(false)]))) break;
     }
     assert.ok(reachedPause, "the builder reached its publication pause");
     await builder;
@@ -1270,4 +1276,48 @@ test("PDF worker: concurrent builds serialise and publish no partial file", asyn
   assert.deepEqual(entries.filter(name => /\.tmp$/.test(name)), [], "no temporary bundle survives");
   for (const file of PUBLISHED) assert.ok(entries.includes(file), `the package contains ${file}`);
   assert.equal((await readFile(resolve(".pdf/worker.mjs"), "utf8")).length, complete, "the published bundle is complete");
+});
+
+/**
+ * Debris already in the package when a build runs must not become part of the package.
+ *
+ * `next.config.ts` traces the directory, so a stale file is swept into the trace and a
+ * trace-vs-disk comparison agrees *with the debris in both sets*. That is the shape that let 47
+ * stale legal sidecars ship unnoticed, and it survived one attempt at fixing it — a first
+ * manifest was written from a directory listing and recorded the planted files just as happily.
+ *
+ * This test plants a file in a directory the build owns, runs a build, and requires the manifest
+ * the build publishes to exclude it. It does not need `npm run build`: the manifest is written by
+ * `scripts/build-pdf.mjs`, which is the half that was wrong.
+ */
+test("PDF worker: a rebuilt package never adopts debris already in the directory", async () => {
+  const { readFile, readdir, rm, writeFile } = await import("node:fs/promises");
+  const { spawn } = await import("node:child_process");
+  const plant = resolve(".pdf/fonts/stale-planted-font.woff");
+  const manifest = resolve(".venv/pdf-build/published.json");
+  await writeFile(plant, "not a font");
+
+  try {
+    const code = await new Promise<number | null>((settle, fail) => {
+      const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], { stdio: "ignore" });
+      child.once("close", settle); child.once("error", fail);
+    });
+    assert.equal(code, 0, "the build succeeds with debris present");
+
+    const published = JSON.parse(await readFile(manifest, "utf8")) as string[];
+    assert.equal(published.some(entry => entry.includes("stale-planted-font")), false,
+      `the manifest is derived from what the build published, not from what was lying around: ${JSON.stringify(published.filter(e => e.includes("stale")))}`);
+    // And the manifest must describe a complete package, or it would pass by being empty.
+    for (const expected of ["worker.mjs", "worker.mjs.LEGAL.txt", "bootstrap.mjs", "package.json"]) {
+      assert.ok(published.includes(expected), `the manifest still lists ${expected}`);
+    }
+    const onDisk = await readdir(resolve(".pdf/fonts"));
+    assert.ok(onDisk.includes("stale-planted-font.woff"), "the debris is still on disk — the test is not vacuous");
+  } finally {
+    await rm(plant, { force: true });
+    await new Promise<void>(resolveBuild => {
+      const child = spawn(process.execPath, ["scripts/build-pdf.mjs"], { stdio: "ignore" });
+      child.once("close", () => resolveBuild());
+    });
+  }
 });

@@ -5,7 +5,7 @@ nothing is quoted from an earlier round or from the PR description.
 
 - **PR:** [#161](https://github.com/jtanori/solara/pull/161) → `staging`
 - **Head:** `d154b63` · **Base:** `9de566d` (`origin/staging`)
-- **Size:** 9 commits (with this round), 16 files, +2181 / −68
+- **Size:** 10 commits, 17 files, +2616 / −74
 - **Labels:** `type:feature`, `deploy:required`
 - **State:** `MERGEABLE` / `BLOCKED` — blocked by **unresolved conversations**, not by a
   missing approval. `protect-staging` requires conversation resolution and **zero** approving
@@ -234,16 +234,17 @@ State these honestly rather than inheriting them as passed:
 
 ## 8. State of the review threads
 
-Two of eight threads remain open at `4cc8585`, both in `tests/readings-wheel-pdf.test.ts`,
-**Four threads are open at `d154b63`**, all with a reply naming the fix and the mutation that
-now fails:
+**Seven threads are open at `75005dc`**, in three groups, each with a reply naming the fix and
+the mutation that now fails:
 
-- three worker-build P1s (license footer, reader-visible partial package, live-lock eviction)
-  — fixed in `d154b63`
-- this handoff's own merge-requirement correction
+- four pre-`d154b63` worker-build threads (license footer, reader-visible partial package,
+  live-lock eviction, and this handoff's merge-requirement correction) — fixes landed in
+  `d154b63` and await the reviewer's resolution, not further code
+- the font-gate blocker (regular-weight nodes) and the two remaining partials from that round:
+  the published-manifest check and this document's own stale lines
 
-The earlier page/PDF label-parity and paid-Placidus threads are resolved. Per the earlier
-correction: `staging` requires **conversation
+Six threads are resolved, including the page/PDF label-parity and paid-Placidus findings. Per
+the earlier correction: `staging` requires **conversation
 resolution** and **zero** approving reviews — a formal approving review is not part of the
 branch policy here. The prior threads were actionable findings, not a missing approval, and
 "awaiting approval" is the wrong explanation for a `BLOCKED` state in this repository.
