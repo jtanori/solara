@@ -48,7 +48,7 @@ marked **changed** are the ones that invalidate revision 1.
 | `.github/workflows/` on `main` contains only `ci.yml`, `migrate.yml` | `gh api .../contents/.github/workflows?ref=main` |
 | **Canonical origins are now the custom domains** | `scripts/deploy.sh:84-85` → `staging.thanatos.mx` / `www.thanatos.mx`; `docs/setup/12-domains-and-email.md` §6 |
 | `*.vercel.app` is retained as an **internal fallback**, not advertised | `12-domains-and-email.md:244`; still referenced for overrides |
-| `ssoProtection` is `all_except_custom_domains` — so the custom domains are **exempt**, `*.vercel.app` is **gated** | Vercel project settings; `12-domains-and-email.md` §6 sends the bypass header to staging only |
+| `ssoProtection.deploymentType` is `all_except_custom_domains` — by that setting's own meaning the custom domains are **exempt** and `*.vercel.app` is **gated** | project `prj_IKhfjZr67qbg3s0qvDPVhbqqlMwl` via the Vercel API. Inference is from the setting name, and it is the setting, not an observation: if protection is ever tightened to `all_deployments`, the custom domains become gated too — the design must not depend on either state (§6) |
 | **`#167` is CLOSED** (merged `12d08b3`) | `gh issue view 167` → `state: CLOSED` |
 | **`#164` is CLOSED** and still reachable from `staging` | `gh issue view 164` → `closedAt 2026-11-23T03:37:17Z` |
 | Production `main` (`4490ced`) predates #164 | `4490ced` is `origin/main`; #164 landed on staging only |
