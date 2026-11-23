@@ -1,5 +1,5 @@
 import { readAppIdentity } from "@/lib/build-identity";
-import type { Readiness } from "@/lib/readiness";
+import type { MigrationState, Readiness } from "@/lib/readiness";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
@@ -30,10 +30,15 @@ export type PublicReadiness = {
    * migration tags.
    */
   commit: string;
+  /**
+   * ADR 012 state string only: exact | ahead | behind | diverged. Never counts,
+   * tags or table names; `ahead` is ready, `behind` and `diverged` are fatal.
+   */
+  migrations: MigrationState;
 };
 
 export function publicReadiness(readiness: Readiness, commit: string): PublicReadiness {
-  return { ok: readiness.ok, db: readiness.db, auth: readiness.auth, commit };
+  return { ok: readiness.ok, db: readiness.db, auth: readiness.auth, commit, migrations: readiness.migrations.state };
 }
 
 /**
@@ -65,7 +70,7 @@ export function createReadyHandler(
         ok: false,
         db: "error",
         schema: { missing: [], missingColumns: [], missingIndexes: [] },
-        migrations: { pending: 0, unexpected: 0 },
+        migrations: { state: "diverged" },
         auth: "degraded",
       };
       return Response.json(

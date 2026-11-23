@@ -9,7 +9,7 @@ const healthy = buildReadiness({
   missingTables: [],
   missingColumns: [],
   missingIndexes: [],
-  appliedHashes: EXPECTED_MIGRATIONS.map(entry => entry.hash),
+  appliedMigrations: EXPECTED_MIGRATIONS.map(entry => ({ hash: entry.hash, createdAt: entry.when })),
   authOk: true,
 });
 
@@ -18,7 +18,9 @@ test("ready route returns 200 and no-store for a healthy result", async () => {
   const response = await GET();
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.equal((await response.json()).ok, true);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.migrations, "exact");
 });
 
 test("ready route turns a thrown probe into 503", async () => {
@@ -50,7 +52,7 @@ const unhealthy = buildReadiness({
   missingTables: ["public.secret_internal_table"],
   missingColumns: ["users.email_verified_at"],
   missingIndexes: ["rate_limits_expires_idx"],
-  appliedHashes: [],
+  appliedMigrations: [],
   authOk: false,
 });
 
@@ -62,12 +64,13 @@ test("ready route hides schema detail outside development and keeps the status c
   const body = await response.json();
   assert.deepEqual(
     Object.keys(body).sort(),
-    ["auth", "commit", "db", "ok"],
+    ["auth", "commit", "db", "migrations", "ok"],
     "only the coarse fields, plus which build refused",
   );
   assert.equal(body.ok, false);
   assert.equal(body.db, "ok");
   assert.equal(body.auth, "degraded");
+  assert.equal(body.migrations, "behind");
   assert.equal(body.commit, "unknown", "an unstamped build reports unknown, never a guess");
 
   const serialized = JSON.stringify(body);
@@ -82,7 +85,7 @@ test("ready route keeps full detail in development", async () => {
   assert.deepEqual(body.schema.missing, ["public.secret_internal_table"]);
   assert.deepEqual(body.schema.missingColumns, ["users.email_verified_at"]);
   assert.deepEqual(body.schema.missingIndexes, ["rate_limits_expires_idx"]);
-  assert.ok(body.migrations);
+  assert.deepEqual(body.migrations, { state: "behind" });
 });
 
 test("ready route strips detail from the thrown-probe path too", async () => {
@@ -94,6 +97,7 @@ test("ready route strips detail from the thrown-probe path too", async () => {
     db: "error",
     auth: "degraded",
     commit: "unknown",
+    migrations: "diverged",
   });
 });
 
@@ -118,5 +122,6 @@ test("ready route: the healthy path carries the same commit", async () => {
 test("ready route: an unset NODE_ENV is treated as non-development", async () => {
   const GET = createReadyHandler(async () => healthy, () => ({}));
   const body = await (await GET()).json();
-  assert.deepEqual(Object.keys(body).sort(), ["auth", "commit", "db", "ok"]);
+  assert.deepEqual(Object.keys(body).sort(), ["auth", "commit", "db", "migrations", "ok"]);
+  assert.equal(body.schema, undefined, "an unset NODE_ENV must not expose detail");
 });
