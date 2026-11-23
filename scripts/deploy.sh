@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Manual deploy — merges a PR to its target (staging → Preview solara-stg, main → Production solara-production)
+# Manual deploy — merges a PR to its target (staging → Preview staging.thanatos.mx, main → Production www.thanatos.mx)
 # and, if drizzle migrations changed, runs them via GitHub Actions *before* merge (no local DATABASE_URL needed).
 #
 # Usage:
@@ -78,8 +78,11 @@ if [[ "$BASE" == "main" && "$ENV" != "production" ]]; then
 fi
 # (Production promotion no longer blocked — ADR 004: staging→main uses --merge to preserve ancestry)
 
-if [[ "$ENV" == "staging" ]]; then WORKFLOW_ENV="staging"; BASE_BRANCH="staging"; APP_URL="https://solara-stg.vercel.app"
-else WORKFLOW_ENV="production"; BASE_BRANCH="main"; APP_URL="https://solara-production.vercel.app"; fi
+# Canonical origin checked after the merge. Override with DEPLOY_APP_URL when a
+# custom domain is not yet resolving (e.g. during DNS cutover) — the check must
+# never silently fall back, so the override is explicit.
+if [[ "$ENV" == "staging" ]]; then WORKFLOW_ENV="staging"; BASE_BRANCH="staging"; APP_URL="${DEPLOY_APP_URL:-https://staging.thanatos.mx}"
+else WORKFLOW_ENV="production"; BASE_BRANCH="main"; APP_URL="${DEPLOY_APP_URL:-https://www.thanatos.mx}"; fi
 
 echo "== Gate: base freshness =="
 # The PR head must contain the current base tip. A moved base means the merge is either

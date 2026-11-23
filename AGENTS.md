@@ -134,7 +134,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 **Model:** `feature → staging → main`
 - **Long-lived:** `main` (Vercel Production) and `staging` (Vercel Preview, stable `staging.*` domain) — both protected (see `gh api repos/jtanori/solara/rulesets` → `protect-main`, `protect-staging`).
 - **Feature:** branch from `staging` as `<type>/<issue>-<slug>` (e.g. `feat/8-local-seed-scaffold`, `chore/6-dependabot`).
-- **Flow:** `feature` (squash PR) → `staging` (QA on `solara-stg.vercel.app`) → promotion `staging → main` (merge commit, **not** squash — ADR 004) → Vercel production. Deploy via `scripts/deploy.sh` (handles `drizzle/` migrations **before** merge via `migrate.yml`).
+- **Flow:** `feature` (squash PR) → `staging` (QA on `staging.thanatos.mx`) → promotion `staging → main` (merge commit, **not** squash — ADR 004) → Vercel production. Deploy via `scripts/deploy.sh` (handles `drizzle/` migrations **before** merge via `migrate.yml`).
 - **Naming examples:** `docs/3-agents-guide`, `chore/6-dependabot`, `feat/10-stripe-lifecycle`.
 
 **Protection (applied 2026-11-07):**

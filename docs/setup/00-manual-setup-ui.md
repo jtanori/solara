@@ -98,17 +98,27 @@ After this, a test PR `feature → staging → main` is already proven by #23/`#
 
 If already imported:
 1. **Settings → Git → Production Branch:** set to `main`.
-2. **Settings → Domains:** (live: Production `solara-production.vercel.app` @ `039d9b6`, Staging `solara-stg.vercel.app` @ `a0454ed` — custom domains pending)
-   - Add `solara-production.vercel.app` (or your custom prod domain) → assign to **Production (`main`)**.
-   - Add `solara-stg.vercel.app` → Add → Git branch → `staging` → Preview. Docs: <https://vercel.com/docs/deployments/environments>
+2. **Settings → Domains:** (live: Production `www.thanatos.mx` → Production `main`; Staging `staging.thanatos.mx` → Git branch `staging` → Preview. The `*.vercel.app` domains remain as fallbacks.)
+   - Add `www.thanatos.mx` → assign to **Production (`main`)** and make it the primary domain.
+   - Add `thanatos.mx` → **Redirect** (308) to `www.thanatos.mx`. Sessions are host-only cookies, so serving both hosts would split sign-ins.
+   - Add `staging.thanatos.mx` → Add → Git branch → `staging` → Preview. Docs: <https://vercel.com/docs/deployments/environments>
+   - DNS records, TLS, Resend verification and the cutover order: [12-domains-and-email](12-domains-and-email.md).
 3. **Settings → Environment Variables** → **Add** (pay attention to **Environment** + **Git Branch** scopes):
 
    | Variable | Value | Environment | Git Branch |
    |---|---|---|---|
    | `DATABASE_URL` | `<staging pooled>` | Preview | `staging` |
-   | `APP_URL` | `https://solara-stg.vercel.app` | Preview | `staging` |
+   | `APP_URL` | `https://staging.thanatos.mx` | Preview | `staging` |
+   | `MAIL_TRANSPORT` | `resend` | Preview | `staging` |
+   | `MAIL_FROM` | `Solara <no-reply@thanatos.mx>` | Preview | `staging` |
+   | `MAIL_REPLY_TO` | `info@thanatos.mx` | Preview | `staging` |
+   | `RESEND_API_KEY` (Sensitive) | `re_...` | Preview | `staging` |
    | `DATABASE_URL` | `<prod pooled>` | Production | `main` |
-   | `APP_URL` | `https://solara-production.vercel.app` | Production | `main` |
+   | `APP_URL` | `https://www.thanatos.mx` | Production | `main` |
+   | `MAIL_TRANSPORT` | `resend` | Production | `main` |
+   | `MAIL_FROM` | `Solara <no-reply@thanatos.mx>` | Production | `main` |
+   | `MAIL_REPLY_TO` | `info@thanatos.mx` | Production | `main` |
+   | `RESEND_API_KEY` (Sensitive) | `re_...` | Production | `main` |
    | `STRIPE_SECRET_KEY` (test) | `sk_test_...` | Preview | `staging` |
    | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (test) | `pk_test_...` | Preview | `staging` |
    | `STRIPE_WEBHOOK_SECRET` (test) | `whsec_...` | Preview | `staging` |
@@ -216,4 +226,4 @@ vercel env ls   # or check dashboard env scoping
 node scripts/check-setup.mjs local
 ```
 
-Verify: `https://solara-stg.vercel.app/api/health` and `https://solara-production.vercel.app/api/health` should both return `{"ok":true}`; `/api/ready` must also return `{"ok":true}`, using `VERCEL_AUTOMATION_BYPASS_SECRET` if protection is enabled.
+Verify: `https://staging.thanatos.mx/api/health` and `https://www.thanatos.mx/api/health` should both return `{"ok":true}`; `/api/ready` must also return `{"ok":true}` (with `"migrations":"exact"`), using `VERCEL_AUTOMATION_BYPASS_SECRET` if protection is enabled.
