@@ -120,10 +120,11 @@ If already imported:
    | `MAIL_REPLY_TO` | `info@thanatos.mx` | Production | `main` |
    | `RESEND_API_KEY` (Sensitive) | `re_...` | Production | `main` |
    | `STRIPE_SECRET_KEY` (test) | `sk_test_...` | Preview | `staging` |
-   | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (test) | `pk_test_...` | Preview | `staging` |
    | `STRIPE_WEBHOOK_SECRET` (test) | `whsec_...` | Preview | `staging` |
+   | `STRIPE_PRICE_ID_MXN` (test) | `price_...` | Preview | `staging` |
    | `STRIPE_SECRET_KEY` (live) | `sk_live_...` | Production | `main` |
    | `STRIPE_WEBHOOK_SECRET` (live) | `whsec_...` | Production | `main` |
+   | `STRIPE_PRICE_ID_MXN` (live) | `price_...` | Production | `main` |
 
    Add map keys similarly per `docs/setup/03-geocoding-and-maps.md`. Docs: <https://vercel.com/docs/projects/environment-variables>
 
