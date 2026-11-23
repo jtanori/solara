@@ -12,6 +12,8 @@ scripts/evaluate-paid-readings.ts
 scripts/approve-paid-reading-evaluation.ts
 scripts/sample-genuine-readings.ts
 scripts/check-migration-safety.ts
+# CI-only: the drift monitor (#165) reads public endpoints; it must not ship.
+scripts/drift-monitor.ts
 scripts/lib/paid-evaluation-corpus.ts
 scripts/gen-annual-facts-fixtures.py
 tests

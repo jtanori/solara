@@ -49,6 +49,7 @@ preview database once #176 or its fallback lands.
 | `production` | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `main` |
 | `production-migrations` | `DATABASE_URL` (direct, production), `DATABASE_URL_STAGING_READONLY` | branch `main`, required reviewer = operator, **Prevent self-review OFF** |
 | `production-diagnostics` | `DATABASE_URL_PRODUCTION_READONLY` | branch `main`, read-only role, no reviewer |
+| `monitoring` | `VERCEL_AUTOMATION_BYPASS_SECRET` **only** | branch `main`, no reviewer, no database credential |
 
 Notes:
 
@@ -58,6 +59,12 @@ Notes:
   never used for a write.
 - `VERCEL_AUTOMATION_BYPASS_SECRET` is required when Deployment Protection is on; a 401/403 during
   verification is a hard failure, never a skip.
+- **The drift monitor binds to `monitoring`, not to `staging` or `production`.** A job carrying an
+  `environment:` key creates a GitHub Deployment (`task: deploy`). Two legs every 15 minutes would
+  fabricate ~192 `success` records a day against `main`'s SHA — including while a real production
+  deploy is waiting — which is exactly the record 8b and ADR 012 read. It would also collide with
+  `staging`'s branch policy, because scheduled workflows run on `main`. The monitor therefore reads
+  only its own bypass token, writes one issue per environment, and consumes no Vercel deployment.
 - The build job must not receive any database credential. Migration detection is a `curl` against
   `/api/version` plus `git diff`.
 - **Build-time database boundary.** The build needs `DATABASE_URL` to *exist* (`src/db/index.ts`
@@ -325,6 +332,26 @@ attempt's stale observation not suppressing a new one.
 
 - The stale-commit / stuck-`ahead` horizon is short (for example 20 minutes): nothing legitimate holds
   it that long.
+
+**Implemented thresholds** (`drift-monitor.yml`, `.github/workflows/` — the numbers below are the
+values in `src/lib/drift-monitor.ts`; change them there and here together):
+
+| Constant | Value | Applies to |
+| --- | --- | --- |
+| Poll cadence | **15 minutes** (`*/15 * * * *`) | every check below |
+| Stale horizon | **20 minutes** | commit drift, and `migrations: ahead` |
+| Approval horizon | **60 minutes** | a run sitting in `waiting` |
+| Bounded error | **cadence + horizon** (35 min / 75 min) | when the alert can first fire |
+
+Two exceptions to "after the horizon", both deliberate:
+
+- **`migrations: behind` and `diverged` alert immediately.** They already make `/api/ready` return
+  **503**, so the application is telling us it is not ready; waiting would delay a real alarm.
+  `ahead` is the state ADR 012 bounds by time, because a deploy legitimately passes through it.
+  Readiness treats `exact` and `ahead` as ready.
+- **A `db: "error"` probe is never schema drift.** The readiness catch path reports
+  `db: "error"` together with `migrations: "diverged"`; the monitor checks `db` first, so a database
+  outage is reported as `unknown` rather than as a diverged schema.
 - The **approval horizon is separate and longer**, because a release may legitimately wait for the
   operator. The naive "stay quiet while any run is waiting" rule would let a release wait forever
   without paging — the plan's DoD forbids that. Alert once when the approval wait is overdue, naming
