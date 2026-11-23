@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { resolve } from "node:path";
 import { evaluationHash } from "../src/readings/evaluation";
 import { PAID_PROFILES } from "../src/readings/paid-contract";
