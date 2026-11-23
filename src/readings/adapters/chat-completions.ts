@@ -8,6 +8,10 @@ export type ChatAdapterOptions = {
   timeoutMs?: number;
   /** Verified processor contract: hard input-token caps, including all framing/schema. */
   inputTokenLimits?: Record<string, number>;
+  /** OpenCode Go routes on a stable session id; sent as `x-opencode-session`. */
+  sessionId?: string;
+  /** Provider thinking mode; DeepSeek can exhaust the output cap before content. */
+  thinking?: "enabled" | "disabled";
 };
 
 /** Safe diagnostic codes/status only. Never retain an upstream body or raw error. */
@@ -23,7 +27,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 export type ChatMessage = { role: "system" | "user"; content: string };
 export type ChatCompletionBody = Record<string, unknown>;
 
-export function buildChatBody(request: CompletionRequest, model = request.model): ChatCompletionBody {
+export function buildChatBody(request: CompletionRequest, model = request.model, thinking?: "enabled" | "disabled"): ChatCompletionBody {
   return {
     model,
     messages: [
@@ -33,6 +37,7 @@ export function buildChatBody(request: CompletionRequest, model = request.model)
     // No hidden headroom: the reservation and the wire request share this cap.
     max_tokens: request.maxOutputTokens,
     temperature: 0.7,
+    ...(thinking ? { thinking: { type: thinking } } : {}),
     response_format: { type: "json_schema", json_schema: { name: `reading_${request.section}`, strict: true, schema: request.jsonSchema } },
   };
 }
@@ -125,6 +130,9 @@ async function boundedBody(response: Response, signal: AbortSignal): Promise<str
 export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_TIMEOUT_MS) throw new ChatAdapterError("invalid provider timeout");
+  const sessionId = options.sessionId?.trim();
+  if (sessionId !== undefined && sessionId !== "" && !/^[A-Za-z0-9._:-]{1,128}$/.test(sessionId)) throw new ChatAdapterError("invalid provider session id");
+  if (options.thinking !== undefined && options.thinking !== "enabled" && options.thinking !== "disabled") throw new ChatAdapterError("invalid provider thinking mode");
   const base = new URL(options.baseUrl);
   if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new ChatAdapterError("invalid provider endpoint");
   const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/chat/completions`;
@@ -132,7 +140,7 @@ export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider 
 
   function payload(request: CompletionRequest): string {
     if (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens < 1 || request.maxOutputTokens > 2000) throw new ChatAdapterError("invalid output cap");
-    const body = JSON.stringify(buildChatBody(request));
+    const body = JSON.stringify(buildChatBody(request, request.model, options.thinking));
     if (Buffer.byteLength(body) > MAX_REQUEST_BYTES) throw new ChatAdapterError("provider request too large");
     return body;
   }
@@ -150,7 +158,7 @@ export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider 
       controller.signal.throwIfAborted();
       const response = await abortable(doFetch(endpoint, {
         method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}`, ...(sessionId ? { "x-opencode-session": sessionId } : {}) },
         body, signal: controller.signal,
       }), controller.signal);
       const text = await boundedBody(response, controller.signal);
@@ -192,8 +200,10 @@ export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider 
 export function chatAdapterFromEnv(env: Record<string, string | undefined> = process.env): ReadingProvider | null {
   const baseUrl = env.READINGS_API_BASE_URL?.trim();
   const apiKey = env.READINGS_API_KEY?.trim();
+  const thinking = env.READINGS_THINKING;
   if (!baseUrl || !apiKey) return null;
+  if (thinking !== undefined && thinking !== "enabled" && thinking !== "disabled") return null;
   // Production orchestration supplies the validated processor/model contract.
   // The legacy resolver has no such contract and therefore cannot admit a call.
-  return createChatAdapter({ baseUrl, apiKey, timeoutMs: env.READINGS_REQUEST_TIMEOUT_MS ? Number(env.READINGS_REQUEST_TIMEOUT_MS) : undefined });
+  return createChatAdapter({ baseUrl, apiKey, timeoutMs: env.READINGS_REQUEST_TIMEOUT_MS ? Number(env.READINGS_REQUEST_TIMEOUT_MS) : undefined, sessionId: env.READINGS_OPENCODE_SESSION, thinking });
 }

@@ -127,6 +127,42 @@ test("adapter: successful response becomes a valid Completion and passes section
   assert.equal(validation.ok, true, validation.ok ? "" : validation.error);
 });
 
+test("adapter: thinking is opt-in and sent only when configured", () => {
+  assert.equal("thinking" in buildChatBody(request), false);
+  assert.deepEqual(buildChatBody(request, "test-model", "disabled").thinking, { type: "disabled" });
+});
+
+test("adapter: an invalid thinking mode is rejected before any request", () => {
+  assert.throws(
+    () => createChatAdapter({ baseUrl: "https://example.invalid/v1", apiKey: "k", thinking: "maybe" as "enabled" }),
+    (error: unknown) => error instanceof ChatAdapterError,
+  );
+});
+
+test("adapter: OpenCode Go sends its stable session header", async () => {
+  const calls: Array<{ init: RequestInit }> = [];
+  const provider = createChatAdapter({
+    baseUrl: "https://opencode.ai/inference/go/v1",
+    apiKey: "test-key",
+    sessionId: "11111111-1111-4111-8111-111111111111",
+    fetchImpl: async (_url, init) => {
+      calls.push({ init: init ?? {} });
+      return jsonResponse(completionBody());
+    },
+  });
+  await provider.complete(request);
+  const headers = calls[0].init.headers as Record<string, string>;
+  assert.equal(headers.Authorization, "Bearer test-key");
+  assert.equal(headers["x-opencode-session"], "11111111-1111-4111-8111-111111111111");
+});
+
+test("adapter: an invalid session id is rejected before any request", () => {
+  assert.throws(
+    () => createChatAdapter({ baseUrl: "https://opencode.ai/inference/go/v1", apiKey: "k", sessionId: "bad\nheader" }),
+    (error: unknown) => error instanceof ChatAdapterError,
+  );
+});
+
 test("adapter: array-shaped content parts are joined", () => {
   const body = completionBody({
     choices: [{ message: { content: [{ text: '{"blocks":[' }, { text: '{"kind":"prose","text":"x"}]}' }] } }],
