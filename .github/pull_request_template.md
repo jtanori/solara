@@ -54,7 +54,7 @@ Accepted-for-promotion comment copy — paste the one matching the target branch
 — Feature → staging (PR targets `staging`) —
 ✅ **Accepted for promotion — ready to deploy to staging**
 
-CI is green (`verify` 1m30s + Vercel Preview → `solara-stg.vercel.app`). Check `[x]` below then deploy — if drizzle/ changed, `deploy.sh` will trigger `.github/workflows/migrate.yml` for Environment `staging` (secret `DATABASE_URL` = Neon direct, no -pooler) *before* merging.
+CI is green (`verify` 1m30s + Vercel Preview → `staging.thanatos.mx`). Check `[x]` below then deploy — if drizzle/ changed, `deploy.sh` will trigger `.github/workflows/migrate.yml` for Environment `staging` (secret `DATABASE_URL` = Neon direct, no -pooler) *before* merging.
 
 - [ ] touches `drizzle/` — will dispatch `migrate.yml` (Env: staging)
 - [ ] does not touch `drizzle/` — direct merge
@@ -63,12 +63,12 @@ Run locally (no local DB URL needed):
 ```bash
 ./scripts/deploy.sh --pr <number> --env staging
 ```
-See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://solara-stg.vercel.app/api/health` → `{"ok":true}` and `/api/ready` → `{"ok":true}` (use `VERCEL_AUTOMATION_BYPASS_SECRET` for protected domains).
+See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://staging.thanatos.mx/api/health` → `{"ok":true}` and `/api/ready` → `{"ok":true}` (use `VERCEL_AUTOMATION_BYPASS_SECRET` for protected domains).
 
 — Promotion staging → main (PR targets `main`) —
 ✅ **Accepted for promotion — ready to deploy to production**
 
-Staging QA done on `https://solara-stg.vercel.app` + `verify` on `staging` is green. This promotion uses `merge commit` (not squash) to keep `staging` ancestor of `main` per ADR 004. If `drizzle/` changed, `deploy.sh` will trigger `migrate.yml` for Environment `production` (secret `DATABASE_URL` = Neon direct) *before* merging to avoid Vercel/migration race.
+Staging QA done on `https://staging.thanatos.mx` + `verify` on `staging` is green. This promotion uses `merge commit` (not squash) to keep `staging` ancestor of `main` per ADR 004. If `drizzle/` changed, `deploy.sh` will trigger `migrate.yml` for Environment `production` (secret `DATABASE_URL` = Neon direct) *before* merging to avoid Vercel/migration race.
 
 - [ ] touches `drizzle/` — will dispatch `migrate.yml` (Env: production)
 - [ ] does not touch `drizzle/` — direct merge
