@@ -460,9 +460,25 @@ build's, not the request's, and `env` must be `local`.
 
 ## 13. Landmines
 
-1. **`env` in `next.config.ts` is inlined at build time.** A value read from `process.env` inside a
-   route handler reports the server's environment, not the build's. Every identity field must come
-   from the inlined constant; the test for this is the `builtAt` assertion.
+1. **`env` in `next.config.ts` is inlined at build time — but only as a literal member
+   expression.** A value read from `process.env` inside a route handler reports the server's
+   environment, not the build's. Every identity field must come from the inlined constant; the test
+   for this is the `builtAt` assertion.
+
+   **Verified against the built output, and this cost a real bug.** Next 16.4.5 + Turbopack
+   substitutes `process.env.APP_COMMIT_SHA` with the literal string, and it does **not** substitute
+   an alias (`const e = process.env; e.APP_COMMIT_SHA`, or an `env = process.env` parameter). A
+   parameterised reader therefore compiles, typechecks, and passes every unit test, then reports
+   `"unknown"` on a real server because the alias is resolved at runtime instead. That is exactly
+   what happened here: `readAppIdentity(env = process.env)` returned `"unknown"` for every field on
+   `npm run start` while all 16 tests passed. The accessor now has **no** parameters, reads literal
+   member expressions, and a test asserts its arity so a refactor cannot silently reintroduce the
+   alias.
+
+   Also worth recording: `next start` seeds `process.env` from the config's `env`, so a value read
+   at runtime *looks* like it works in local verification. It is the hosted deploy that has no such
+   seeding from the stamp, which is why the local test must assert `builtAt` is the build's rather
+   than trusting that a value came back at all.
 2. **`next start` re-evaluates `next.config.ts`.** Anything expensive or throwing at config
    evaluation is a production-startup risk. `readBuildIdentity()` is synchronous, total, and
    returns `"unknown"` rather than throwing — and because it only parses a file, `next start` on a

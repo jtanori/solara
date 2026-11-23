@@ -60,10 +60,15 @@ test("ready route hides schema detail outside development and keeps the status c
   assert.equal(response.status, 503, "a monitor still sees the failure");
 
   const body = await response.json();
-  assert.deepEqual(Object.keys(body).sort(), ["auth", "db", "ok"], "only the coarse fields");
+  assert.deepEqual(
+    Object.keys(body).sort(),
+    ["auth", "commit", "db", "ok"],
+    "only the coarse fields, plus which build refused",
+  );
   assert.equal(body.ok, false);
   assert.equal(body.db, "ok");
   assert.equal(body.auth, "degraded");
+  assert.equal(body.commit, "unknown", "an unstamped build reports unknown, never a guess");
 
   const serialized = JSON.stringify(body);
   for (const leak of ["secret_internal_table", "email_verified_at", "rate_limits_expires_idx", "pending", "unexpected"]) {
@@ -84,11 +89,34 @@ test("ready route strips detail from the thrown-probe path too", async () => {
   const GET = createReadyHandler(async () => { throw new Error("probe failed"); }, () => ({ NODE_ENV: "production" }));
   const response = await GET();
   assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), { ok: false, db: "error", auth: "degraded" });
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    db: "error",
+    auth: "degraded",
+    commit: "unknown",
+  });
+});
+
+test("ready route: a 503 names the build that refused", async () => {
+  const GET = createReadyHandler(
+    async () => { throw new Error("probe failed"); },
+    () => ({ NODE_ENV: "production" }),
+    () => "7a77a81",
+  );
+  const response = await GET();
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).commit, "7a77a81", "the failure path must keep identity");
+});
+
+test("ready route: the healthy path carries the same commit", async () => {
+  const GET = createReadyHandler(async () => healthy, () => ({ NODE_ENV: "production" }), () => "abc1234");
+  const body = await (await GET()).json();
+  assert.equal(body.commit, "abc1234");
+  assert.equal(body.ok, true);
 });
 
 test("ready route: an unset NODE_ENV is treated as non-development", async () => {
   const GET = createReadyHandler(async () => healthy, () => ({}));
   const body = await (await GET()).json();
-  assert.deepEqual(Object.keys(body).sort(), ["auth", "db", "ok"]);
+  assert.deepEqual(Object.keys(body).sort(), ["auth", "commit", "db", "ok"]);
 });
