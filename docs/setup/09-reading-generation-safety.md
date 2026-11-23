@@ -58,6 +58,35 @@ Validate schema compatibility, full input framing/billing, prices/FX, model alia
 and provider terms in the separately authorized real-provider evaluation. Synthetic
 receipts do not establish invoice accuracy, model quality or real latency.
 
+## Hosted staging posture
+
+The provider stack is required only by the `local-pilot` stage in
+`secretweaver.yaml` (the bounded one-core/one-rich es sampling pilot). Staging and
+production do not require it, and **staging must leave it unset**:
+
+- `READINGS_GENERATION_ENABLED` and `READINGS_PAID_GENERATION_ENABLED` stay unset;
+  only the exact string `true` enables dispatch.
+- `READINGS_PROVIDER`, `READINGS_CHEAP_MODEL`, `READINGS_STRONG_MODEL`,
+  `READINGS_MODEL_PRICES`, `READINGS_API_BASE_URL`, `READINGS_PROCESSOR_PROFILE`
+  and `READINGS_API_KEY` stay unset in Vercel. The key is added last, only in a
+  separately authorized environment — never to a shared Preview scope.
+- `READINGS_PAID_EXECUTOR` stays unset until a supervised worker is bound and
+  heartbeating; `READINGS_PAID_PROFILE=paid-core-v1` is inert while paid
+  generation is off.
+- `READINGS_REQUEST_TIMEOUT_MS` is optional (1–15000 ms).
+
+A provider key in a shared preview environment is unnecessary exposure, and
+consent is tied to the processor policy, endpoint and versions — a stale staging
+profile is worse than an absent one. With the flags off, the generate route
+reports `generation_disabled` and makes no provider call; the lifetime-free offer
+is **not** consumed, because consumption requires a committed durable permit.
+
+A hosted pilot is a separate authorization and a fixed order: real-provider
+evaluation on representative data, an exact-version editorial record, a bound
+worker with a fresh heartbeat and the shared `paid_reading_control` row, and only
+then the flags — in the environment that was qualified. Enabling generation in
+staging to "check it works" is not that authorization.
+
 ## Generation-off cutover (future authorized operation)
 
 1. Pin the reviewed SHA and target environment. Keep generation off on **every**
