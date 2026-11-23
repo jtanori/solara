@@ -74,7 +74,7 @@
     "picomatch": "file:vendor/solara-picomatch-v4-4.0.7-solara.3.tgz",
     "playwright-core": "1.65.1",
     "postcss": "^8.5.32",
-    "tailwindcss": "4.1.17",
+    "tailwindcss": "4.3.5",
     "tsx": "^4.23.15",
     "typescript": "5.9.3"
   },
