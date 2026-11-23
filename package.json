@@ -4,7 +4,7 @@
   "scripts": {
     "predev": "npm run pdf:build",
     "dev": "next dev",
-    "prebuild": "npm run pdf:build",
+    "prebuild": "npm run pdf:build && node scripts/build-stamp.mjs",
     "build": "next build",
     "pdf:build": "node scripts/build-pdf.mjs",
     "start": "next start",

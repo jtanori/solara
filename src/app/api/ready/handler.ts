@@ -1,3 +1,4 @@
+import { readAppIdentity } from "@/lib/build-identity";
 import type { Readiness } from "@/lib/readiness";
 
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -21,10 +22,18 @@ export type PublicReadiness = {
   ok: boolean;
   db: Readiness["db"];
   auth: Readiness["auth"];
+  /**
+   * Which build refused. Without it a 503 says "something is wrong" but not
+   * *which deployment* is wrong, which is the first question during an incident.
+   * A commit SHA of a public repository discloses nothing that is not already
+   * public — see the denylist test, which still forbids hosts, secrets and
+   * migration tags.
+   */
+  commit: string;
 };
 
-export function publicReadiness(readiness: Readiness): PublicReadiness {
-  return { ok: readiness.ok, db: readiness.db, auth: readiness.auth };
+export function publicReadiness(readiness: Readiness, commit: string): PublicReadiness {
+  return { ok: readiness.ok, db: readiness.db, auth: readiness.auth, commit };
 }
 
 /**
@@ -38,12 +47,16 @@ export function detailIsPublic(env: Record<string, string | undefined> = process
 export function createReadyHandler(
   readiness: () => Promise<Readiness>,
   env: () => Record<string, string | undefined> = () => process.env,
+  identity: () => string = () => readAppIdentity().commit,
 ) {
   return async function GET() {
     const showDetail = detailIsPublic(env());
+    // Resolved before the probe: a thrown probe must still name its build, and
+    // the catch path has no other way to learn it.
+    const commit = identity();
     try {
       const result = await readiness();
-      return Response.json(showDetail ? result : publicReadiness(result), {
+      return Response.json(showDetail ? { ...result, commit } : publicReadiness(result, commit), {
         status: result.ok ? 200 : 503,
         headers: NO_STORE,
       });
@@ -55,10 +68,10 @@ export function createReadyHandler(
         migrations: { pending: 0, unexpected: 0 },
         auth: "degraded",
       };
-      return Response.json(showDetail ? failure : publicReadiness(failure), {
-        status: 503,
-        headers: NO_STORE,
-      });
+      return Response.json(
+        showDetail ? { ...failure, commit } : publicReadiness(failure, commit),
+        { status: 503, headers: NO_STORE },
+      );
     }
   };
 }

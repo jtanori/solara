@@ -1,11 +1,18 @@
 import type { NextConfig } from "next";
+import { identityEnv, readBuildIdentity } from "./src/lib/build-identity";
 import {
   authenticatedCacheHeaders,
   privateReferrerHeaders,
   staticSecurityHeaders,
 } from "./src/lib/security-headers";
 
+// Resolved once at build time and inlined, so a route reports the *build's*
+// identity rather than whatever environment the server happens to have. Also
+// evaluated by `next start`, which is why the parser is total and never throws.
+const identity = readBuildIdentity();
+
 const nextConfig: NextConfig = {
+  env: identityEnv(identity),
   serverExternalPackages: ["@react-pdf/renderer"],
   // The reading pipeline reads prompt files from disk at runtime
   // (src/readings/content-version.ts, generate.ts). Turbopack builds don't
