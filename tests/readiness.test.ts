@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildReadiness,
+  classifyMigrations,
   evaluateReadiness,
   READINESS_DEADLINE_MS,
   READINESS_WARM_TARGET_MS,
+  type AppliedMigration,
   type ReadinessSnapshot,
 } from "../src/lib/readiness";
 import { EXPECTED_MIGRATIONS } from "../src/lib/migration-manifest";
 
-const appliedHashes = EXPECTED_MIGRATIONS.map(entry => entry.hash);
+const appliedMigrations: AppliedMigration[] = EXPECTED_MIGRATIONS.map(entry => ({ hash: entry.hash, createdAt: entry.when }));
+const newestWhen = Math.max(...EXPECTED_MIGRATIONS.map(entry => entry.when));
 
 function snapshot(overrides: Partial<ReadinessSnapshot> = {}): ReadinessSnapshot {
   return {
@@ -17,7 +20,7 @@ function snapshot(overrides: Partial<ReadinessSnapshot> = {}): ReadinessSnapshot
     missingTables: [],
     missingColumns: [],
     missingIndexes: [],
-    appliedHashes,
+    appliedMigrations,
     authOk: true,
     ...overrides,
   };
@@ -28,7 +31,7 @@ test("ready when database, schema, migrations and auth are healthy", () => {
     ok: true,
     db: "ok",
     schema: { missing: [], missingColumns: [], missingIndexes: [] },
-    migrations: { pending: 0, unexpected: 0 },
+    migrations: { state: "exact" },
     auth: "ok",
   });
 });
@@ -49,16 +52,59 @@ test("not ready when a required column or index is missing", () => {
   assert.deepEqual(result.schema.missingIndexes, ["rate_limits_expires_idx"]);
 });
 
-test("not ready when a migration is pending", () => {
-  const result = buildReadiness(snapshot({ appliedHashes: appliedHashes.slice(1) }));
+test("behind: a missing expected migration is fatal", () => {
+  const result = buildReadiness(snapshot({ appliedMigrations: appliedMigrations.slice(1) }));
   assert.equal(result.ok, false);
-  assert.equal(result.migrations.pending, 1);
+  assert.equal(result.migrations.state, "behind");
 });
 
-test("not ready when the database has an unexpected applied hash", () => {
-  const result = buildReadiness(snapshot({ appliedHashes: [...appliedHashes, "unexpected"] }));
+test("ahead: every extra hash is newer than the newest expected migration", () => {
+  const result = buildReadiness(snapshot({
+    appliedMigrations: [...appliedMigrations, { hash: "future", createdAt: newestWhen + 1 }],
+  }));
+  assert.equal(result.ok, true, "a forward-compatible rollout is ready");
+  assert.equal(result.migrations.state, "ahead");
+});
+
+test("diverged: an extra hash at the newest expected timestamp is not ahead", () => {
+  const result = buildReadiness(snapshot({
+    appliedMigrations: [...appliedMigrations, { hash: "equal", createdAt: newestWhen }],
+  }));
   assert.equal(result.ok, false);
-  assert.equal(result.migrations.unexpected, 1);
+  assert.equal(result.migrations.state, "diverged");
+});
+
+test("diverged: an older extra hash is not ahead", () => {
+  const result = buildReadiness(snapshot({
+    appliedMigrations: [...appliedMigrations, { hash: "older", createdAt: newestWhen - 1 }],
+  }));
+  assert.equal(result.ok, false);
+  assert.equal(result.migrations.state, "diverged");
+});
+
+test("diverged: an extra hash with no parseable timestamp fails closed", () => {
+  for (const createdAt of [null, Number.NaN]) {
+    const result = buildReadiness(snapshot({
+      appliedMigrations: [...appliedMigrations, { hash: "unknown", createdAt }],
+    }));
+    assert.equal(result.ok, false);
+    assert.equal(result.migrations.state, "diverged", String(createdAt));
+  }
+});
+
+test("diverged: missing expected and extra applied at the same time", () => {
+  const result = buildReadiness(snapshot({
+    appliedMigrations: [...appliedMigrations.slice(1), { hash: "future", createdAt: newestWhen + 1 }],
+  }));
+  assert.equal(result.ok, false);
+  assert.equal(result.migrations.state, "diverged");
+});
+
+test("diverged: an empty expected manifest is never exact", () => {
+  const result = buildReadiness(snapshot({ appliedMigrations: [] }), []);
+  assert.equal(result.ok, false);
+  assert.equal(result.migrations.state, "diverged");
+  assert.equal(classifyMigrations([], []), "diverged");
 });
 
 test("not ready when the auth probe fails", () => {
@@ -86,5 +132,5 @@ test("not ready when the database is unreachable", () => {
   assert.equal(result.ok, false);
   assert.equal(result.db, "error");
   assert.equal(result.auth, "degraded");
-  assert.equal(result.migrations.pending, EXPECTED_MIGRATIONS.length);
+  assert.equal(result.migrations.state, "diverged", "unreachable means the state is unknown");
 });

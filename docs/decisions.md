@@ -370,7 +370,7 @@ before deciding which account conveniences belong in the initial release.
 
 **Date:** 2026-11-19
 
-**Status:** Accepted; implementation pending (milestone M5, `docs/plan-deployment-alignment.md`)
+**Status:** Accepted; implemented in #167 (2026-11-23)
 
 **Context:** Operator review of the deploy pipeline after a production readiness incident
 

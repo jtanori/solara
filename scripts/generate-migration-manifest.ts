@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-type JournalEntry = { tag: string };
+type JournalEntry = { tag: string; when: number };
 
 const journalPath = path.resolve("drizzle/meta/_journal.json");
 const outputPath = path.resolve("src/lib/migration-manifest.ts");
@@ -15,13 +15,15 @@ function buildManifest(): string {
   if (!entries.length) throw new Error("migration journal has no entries");
 
   const migrations = entries.map(entry => {
+    if (!Number.isSafeInteger(entry.when) || entry.when < 0) throw new Error(`migration ${entry.tag} has an invalid journal when`);
     const sql = readFileSync(path.resolve(`drizzle/${entry.tag}.sql`), "utf8");
-    return { tag: entry.tag, hash: createHash("sha256").update(sql).digest("hex") };
+    return { tag: entry.tag, hash: createHash("sha256").update(sql).digest("hex"), when: entry.when };
   });
 
   return `export type MigrationManifestEntry = {
   tag: string;
   hash: string;
+  when: number;
 };
 
 export const EXPECTED_MIGRATIONS: MigrationManifestEntry[] = ${JSON.stringify(migrations, null, 2)};
