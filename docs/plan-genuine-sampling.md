@@ -87,6 +87,11 @@ requires a stable `x-opencode-session` header. Set `READINGS_OPENCODE_SESSION` t
 a UUID; the adapter sends it. The Console pay-as-you-go endpoint is a different
 base URL and is not covered by a Go subscription.
 
+DeepSeek defaults to thinking mode. With the 2000-output-token cap it can return
+`finish_reason: length` with empty content, so set `READINGS_THINKING=disabled`
+for this adapter. A `200` response with no content is not a successful section;
+the local schema validation and repair path still applies.
+
 ## 4. Architecture
 
 ```
@@ -292,10 +297,12 @@ Named mutations for the PR:
 
 1. Use an isolated shell, never Vercel, never production.
 2. Set the provider/processor/model/price variables for the intended profile.
-   The CLI loads `.env` through `dotenv/config`; manual sourcing is not required.
+   The CLI loads `.env` through `dotenv` with **override**, so the file
+   wins over a stale exported `READINGS_*`; manual sourcing is not required.
    Prices are **MXN per million tokens**. If the provider quotes USD, convert at
    a stated FX rate (this pilot uses 20 MXN/USD) and keep that rate with the
-   evidence so the accounting is reproducible.
+   evidence so the accounting is reproducible. Set `READINGS_THINKING=disabled`
+   when the provider defaults to thinking (DeepSeek).
 3. Confirm the chosen models belong to the adapter's API family. The live
    adapter is Chat Completions only; a Responses/Anthropic/Gemini-only model
    needs a matching adapter before it can be sampled.

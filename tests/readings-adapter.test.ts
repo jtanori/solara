@@ -127,6 +127,18 @@ test("adapter: successful response becomes a valid Completion and passes section
   assert.equal(validation.ok, true, validation.ok ? "" : validation.error);
 });
 
+test("adapter: thinking is opt-in and sent only when configured", () => {
+  assert.equal("thinking" in buildChatBody(request), false);
+  assert.deepEqual(buildChatBody(request, "test-model", "disabled").thinking, { type: "disabled" });
+});
+
+test("adapter: an invalid thinking mode is rejected before any request", () => {
+  assert.throws(
+    () => createChatAdapter({ baseUrl: "https://example.invalid/v1", apiKey: "k", thinking: "maybe" as "enabled" }),
+    (error: unknown) => error instanceof ChatAdapterError,
+  );
+});
+
 test("adapter: OpenCode Go sends its stable session header", async () => {
   const calls: Array<{ init: RequestInit }> = [];
   const provider = createChatAdapter({

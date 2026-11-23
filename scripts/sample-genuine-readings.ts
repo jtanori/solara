@@ -1,4 +1,8 @@
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
+// The local pilot treats .env as authoritative: a stale exported READINGS_*
+// (for example, an old key or base URL from a previous `set -a`) must not
+// silently run a different provider. The worker keeps plain dotenv semantics.
+loadEnv({ override: true });
 import { resolve } from "node:path";
 import { evaluationHash } from "../src/readings/evaluation";
 import { PAID_PROFILES } from "../src/readings/paid-contract";
