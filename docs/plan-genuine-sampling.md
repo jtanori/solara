@@ -143,6 +143,11 @@ Crash rules:
   `sampling_sample_incomplete` before any call, even if `report.json` was
   deleted. The pilot directory is archival evidence: start a new `--pilot` id
   to retry; never delete individual ledger lines.
+- **A budget halt is an authorization boundary, not a resume.** `run.json` binds
+  the cap, so a run that stops on `sampling_budget_exhausted` cannot be retried
+  with a larger cap in the same directory (`sampling_run_mismatch`), and a
+  same-cap retry is refused as an incomplete sample. Start a new `--pilot` id;
+  this is a new authorization and cannot double-spend.
 - **A schema-invalid primary + invalid repair** records a failed section, stops
   the run (bounded spend) and writes the sample as evidence. It is explicitly
   not approvable and is sealed under the previous rule.
@@ -209,8 +214,8 @@ Stable, non-secret codes (the CLI maps them to a non-zero exit):
 | `sampling_configuration_unavailable` | `paidGenerationConfig()` rejected the configuration |
 | `sampling_profile_mismatch` | `--profile` and `READINGS_PAID_PROFILE` disagree |
 | `sampling_case_unknown` | `--cases` names a case not in the frozen corpus |
-| `sampling_cap_invalid` | non-positive, fractional or above the 20 MXN hard cap |
-| `sampling_run_mismatch` | existing `run.json` does not match the requested run |
+| `sampling_cap_invalid` | non-positive, fractional or above the 10 MXN per-invocation hard cap |
+| `sampling_run_mismatch` | existing `run.json` does not match the requested run (including the cap) |
 | `sampling_ledger_invalid` | unparsable or schema-invalid ledger line |
 | `sampling_exposure_unresolved` | a permit has no receipt |
 | `sampling_unknown_exposure` | an `unknown` receipt is present |
@@ -292,8 +297,10 @@ Named mutations for the PR:
 5. If the command reports `sampling_sample_incomplete`, the pilot directory is
    sealed archival evidence: start a new `--pilot` id to retry. Never delete
    individual ledger lines or the report to force a retry.
-   If it reports `sampling_budget_exhausted`, start a new explicitly authorized
-   invocation; do not raise the cap in place.
+   If it reports `sampling_budget_exhausted`, do not raise the cap in place:
+   `run.json` binds the cap, so the directory refuses a different cap with
+   `sampling_run_mismatch`, and a same-cap retry is an incomplete sample. Start
+   a new `--pilot` id with a fresh authorization.
 6. Optionally produce the review packet:
 
    ```bash
@@ -315,6 +322,8 @@ Named mutations for the PR:
 - [ ] All three recovery rows are covered: complete reconstruct, partial
       resume, terminal refuse.
 - [ ] Budget exhaustion and schema failure keep distinct codes.
+- [ ] A budget-exhausted run is sealed; a larger cap in the same directory is
+      refused and a new pilot id is required.
 - [ ] Budget accounting uses reservations and receipts, never prose estimates.
 - [ ] Report parses against `paidEvaluationSchema` and is `source: "provider"`.
 - [ ] No chart input, key, base URL or raw prompt in prompts, ledger, report or
