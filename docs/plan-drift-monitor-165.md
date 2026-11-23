@@ -1,224 +1,427 @@
 # Plan: drift monitor for live commit, migration state and in-flight runs (#165)
 
-**Status:** proposed. **Issue:** #165 (`8a` in `plan-deployment-alignment.md`). **Depends on:** #164
-(merged `31feb44`).
+**Status:** proposed — revision 2. **Issue:** #165 (`8a` in `plan-deployment-alignment.md`).
+**Depends on:** #164 (merged `31feb44`), #166 (merged `57745c6`), **#167 (merged `12d08b3`)**.
 **Supersedes nothing.** Extends `docs/setup/11-actions-deploys.md` §8, which already carries the
 alert contract and the fixtures.
 
+> **Revision 2 exists because #167 merged while revision 1 was under review.** Revision 1 deferred
+> the migration half of #165 to #167 on a circularity argument (§3 of the old text). That argument
+> was correct *at the time* and is now void: `12d08b3` put `migrations` on `/api/ready` without
+> needing a single database credential. All three deliverables of #165 now ship here. §3 records
+> the reversal in full rather than quietly dropping it, because the old reasoning is quoted in the
+> issue and a future reader will otherwise re-derive the wrong conclusion.
+
 ## 1. Why this exists
 
-`/api/version` now answers *what is serving*. Nothing asks it on a schedule, so a merge that never
-became live is discovered by a human noticing. That is the gap.
+`/api/version` answers *what is serving*. `/api/ready` answers *what state the schema is in*.
+Nothing asks either one on a schedule, so a merge that never became live — or a schema that drifted
+— is discovered by a human noticing. That is the gap.
 
-It is also load-bearing for a decision already made: ADR 012 removes the numeric cap on `ahead` and
-states that **the bound is time**. This monitor is the only thing enforcing that bound. Without it,
-ADR 012's tolerance has no compensating control — which is why #165 is a hard prerequisite for
-#173's approval gate, not a follow-up.
+It is also load-bearing for a decision already made: **ADR 012 removes the numeric cap on `ahead`
+and states that the bound is time.** This monitor is the only thing enforcing that bound. `#167`
+(PR #209) says so in its own risk section and names #165 as the owner. Without this, ADR 012's
+tolerance has no compensating control, which is why #165 is a hard prerequisite for #173's approval
+gate rather than a follow-up.
 
 ## 2. Verified baseline
 
-Read from the repository and the live deployment, not assumed.
+Every row was read from the repository or the live project during this revision. The two rows
+marked **changed** are the ones that invalidate revision 1.
 
 | Fact | Evidence |
 | --- | --- |
-| `/api/version` returns `{ok, commit, tree, release, env, builtAt}` | `31feb444` live: `commit` = staging tip, `tree` = `git rev-parse 31feb44^{tree}` |
-| `/api/version` omits `migrations` by design | plan §4 of #164; `src/app/api/version/handler.ts` |
-| `/api/ready` public payload is `{ok, db, auth, commit}` | `src/app/api/ready/handler.ts:21` |
+| `/api/version` returns `{ok, commit, tree, release, env, builtAt}` and **omits `migrations` by design** | `src/app/api/version/handler.ts`; it never touches PostgreSQL |
+| **changed:** `/api/ready` public payload is `{ok, db, auth, commit, migrations}` | `src/app/api/ready/handler.ts` @ `12d08b3`; `migrations: MigrationState` |
+| `MigrationState` = `exact \| ahead \| behind \| diverged` | `src/lib/readiness.ts:8` |
+| **`ahead` is *ready*** — `ok` requires `migrationState === "exact" \|\| "ahead"` | `src/lib/readiness.ts:178` |
+| A **thrown probe** returns `db: "error"` **and** `migrations: "diverged"` | `src/app/api/ready/handler.ts` catch path |
+| `/api/ready` returns **200 or 503**, both with a JSON body | same handler; `status: result.ok ? 200 : 503` |
 | Staging is SSO-protected | project `ssoProtection.deploymentType = "all_except_custom_domains"` |
 | No workflow uses `schedule:` or creates an issue | `.github/workflows/` — `ci.yml`, `migrate.yml` only |
-| `ci.yml` runs on `pull_request` and `push: [main, staging]` | `.github/workflows/ci.yml:3-6` |
-| The `staging` GitHub Environment has **no** protection rules | `gh api .../environments/staging` → `protection_rules: []` |
-| A scheduled workflow runs from the **default branch** (`main`) | repository setting |
-| Production still deploys via `scripts/deploy.sh`, not Actions | `docs/setup/11-actions-deploys.md:37` |
+| `migrate.yml` permissions are `contents/actions/pull-requests: read` | `.github/workflows/migrate.yml:48` |
+| `migrate.yml` downloads another run's artifact with `actions: read` | `migrate.yml:153` (`gh run download`) |
+| A job with `environment:` creates a **GitHub Deployment** (`task=deploy`) | `repos/.../deployments` — e.g. `7899060165 env=staging task=deploy` |
+| Environment **branch policies are not yet enforced** (`deployment_branch_policy: null`) but are *documented* | `gh api .../environments`; `11-actions-deploys.md` §2 |
+| Documented policies: `staging`→branch **`staging`**, `production`→branch **`main`** | `11-actions-deploys.md:47-49`; `plan-deployment-alignment.md:215` |
+| A scheduled workflow runs on the **default branch** (`main`) | GitHub behaviour; landmine 1 |
+| `.github/workflows/` on `main` contains only `ci.yml`, `migrate.yml` | `gh api .../contents/.github/workflows?ref=main` |
+| Canonical domains already used throughout the docs | `solara-stg.vercel.app` (21 refs), `solara-production.vercel.app` (16 refs) |
+| **`#167` is CLOSED** (merged `12d08b3`) | `gh issue view 167` → `state: CLOSED` |
+| **`#164` is CLOSED** and still reachable from `staging` | `gh issue view 164` → `closedAt 2026-11-23T03:37:17Z` |
+| Production `main` (`4490ced`) predates #164 | `4490ced` is `origin/main`; #164 landed on staging only |
 
-## 3. The scope conflict, and its resolution
+## 3. What changed since revision 1, and the reversal
 
-#165's scope item 3 says *"alerts when `migrations` is not `exact`"*. **That cannot be built yet**, and
-the reasons stack:
+Revision 1 argued that #165 scope item 3 (*"alerts when `migrations` is not `exact`"*) could not be
+built because:
 
-1. `migrations` is not in `/api/version` — the four-state classifier is #167.
-2. `migrations` is not in `/api/ready`'s public payload — counts are development-only detail.
-3. **#167 `Depends on: #166, #165`** — the classifier depends on this monitor.
+1. `migrations` was absent from `/api/version`;
+2. `migrations` was absent from `/api/ready`'s public payload;
+3. **#167 `Depends on: #166, #165`**, making the item circular.
 
-So item 3 as written is circular: it waits on #167, which waits on this issue.
+At `12d08b3` premises 1 and 2 are **false**: #167 chose `/api/ready`, not `/api/version`, and that
+choice is what breaks the circle — `/api/ready` already talks to PostgreSQL, so exposing the ADR 012
+state string there costs the monitor **zero credentials**, whereas the rejected `migrate.yml
+mode=verify` route needed `DATABASE_URL_STAGING_READONLY`. Premise 3 is moot because #167 is closed.
 
-**Resolution: ship the commit-drift and run-awareness halves now; defer the migration half to #167
-with a named trigger.** This is the same shape as #164's `migrations` decision, and for the same
-reason: a field whose value would be a guess is worse than an absent field.
+**Reversal:** the migration half ships in #165, reading `/api/ready`. Nothing is deferred to #167 —
+deferring to a closed issue would leave ADR 012's time bound owned by nobody, which is precisely the
+failure #167's risk section anticipates.
 
-**The deferred piece is not dropped — it gets a different source.** When #167 lands, `migrations`
-appears in both endpoints and this monitor reads it from `/api/version` as originally intended. An
-alternative existed (query `migrate.yml` `mode=verify` for the applied set) and is **rejected for now**
-because it needs `DATABASE_URL_STAGING_READONLY` in the scheduled job's environment, which widens the
-credential surface of a job that otherwise needs nothing but a URL. If #167 slips and the time bound
-is needed sooner, that is the fallback — recorded rather than silently available.
+**The rejection of the `mode=verify` route stands and is now vindicated.** It was rejected for
+widening the credential surface; #167 produced a better source that needs none. Recorded so the
+route is not resurrected.
+
+### One deliberate deviation from the review's literal text
+
+The review asks for *"`migrations !== "exact"` past the 20-minute horizon"*. Implemented literally
+that is wrong in two directions, both verified in `src/lib/readiness.ts`:
+
+- **`ahead` is a normal, ready state.** `ok` is true for `exact || ahead` (line 178), so the schema
+  is *usable*; ADR 012's time bound exists precisely because `ahead` is legitimately transient
+  during a deploy window. So `ahead` gets the **20-minute horizon** — quiet, then alert. That is
+  the time bound ADR 012 asks for.
+- **`behind` and `diverged` are fatal, not transient.** They already make readiness return **503**.
+  Making them wait 20 minutes would delay an alert for a state the application itself reports as
+  broken. They alert **on first observation**, no horizon.
+
+So: `ahead` → time-bounded; `behind`/`diverged` → immediate. This alerts strictly sooner than the
+literal rule and never later, and it is the reading `readiness.ts:178` supports.
 
 ## 4. Decisions
 
 | # | Decision | Why |
 | --- | --- | --- |
-| **D1** | Two halves: **commit drift** and **run awareness** ship now; **migration state** defers to #167 | §3. The circular half cannot be tested, and a speculative field is worse than none |
-| **D2** | The alert is **one GitHub issue per environment**, matched by an exact title | The issue body is the only durable store available across ticks (see D3). One issue, updated in place, is also what #165's acceptance requires |
-| **D3** | Monitor state lives **in the alert issue body**, parsed from an HTML comment | No new dependency, no database, no artifact-retention window. Artifacts expire and are per-run; a committed state file would make the monitor a committer to `main`, which §9 and the cutover checklist both forbid |
-| **D4** | **No alert while a run is `queued` or `in_progress`** for that environment | Those are designed states. Alerting on them trains the operator to ignore the alert |
-| **D5** | A `waiting` run is **quiet until the approval horizon**, then alerts **once**, deduplicated per `(run_id, run_attempt, environment)` | `11-actions-deploys.md` §8. Suppressing every `waiting` would let a release wait forever, which the plan's DoD forbids |
-| **D6** | The approval-wait start is a **verified API timestamp if one exists, else the monitor's persisted first observation** keyed by `(run_id, run_attempt, environment)`. Never job `started_at`, never deployment creation time | A job blocked on approval may never start, so `started_at` may not exist; a deployment's creation is not the transition into `waiting` |
-| **D7** | Two horizons, not one: **stale-commit ~20 min**, **approval-wait ~60 min** | Different legitimate durations. One shared threshold either pages on a normal approval or never fires |
-| **D8** | The bounded error on the approval clock is **`cadence + horizon`**, stated in the doc | The monitor can only see `waiting` on a tick; first observation lags the true transition by up to one cadence. Naming it stops a future reader treating the horizon as exact |
-| **D9** | Every network/API failure **fails open for the run, closed for the claim** — the tick exits 0 with a `degraded` note and **never** records a "first observation" it could not verify | A monitor that pages on its own outage is worse than one that is briefly blind, but a fabricated baseline would corrupt the horizon permanently |
-| **D10** | The monitor **never writes to the repository, never deploys, never migrates** | It is read-only plus issue writes. Anything else makes it a second deployer |
+| **D1** | **All three halves ship in #165**: commit drift, migration state, run awareness | #167 closed the circularity (§3). Deferring now would orphan ADR 012's time bound |
+| **D2** | One **issue per environment**, matched by exact title, **`!pull_request`**, and a **trusted author** (`github-actions[bot]` or repo owner) | The repository is public; title-only matching lets any user spoof the body's state block and silence the alert (§F7) |
+| **D3** | **Two state stores, reconciled**: a short-lived per-environment artifact for the *pre-alert* clock, the issue HTML comment for the *post-alert* one | Revised from "issue body only". A clock that must run *before* anything is opened has nowhere to live in an issue (§F2). Artifacts alone expire, so the issue body covers multi-week alerts — each store covers the other's gap |
+| **D4** | **No alert while a `queued` or `in_progress` run** exists for that environment | Designed states. Alerting trains the operator to ignore alerts |
+| **D5** | A `waiting` run is **quiet until the 60-minute approval horizon**, then alerts **once**, keyed by `(runId, runAttempt, environment)` | Suppressing every `waiting` lets a release wait forever |
+| **D6** | The approval clock starts from the **`created_at` of the `waiting` status on that run's `production-migrations` GitHub Deployment**, else the persisted first observation. **Never** job `started_at`, run `created_at`, or deployment `created_at` | A job blocked on approval never starts, so `started_at` may not exist; creation is not the transition into `waiting` |
+| **D7** | Three constants, named once: **cadence 15 min**, **stale/migration horizon 20 min**, **approval horizon 60 min** | Different legitimate durations; one shared threshold either pages on a normal deploy or never fires |
+| **D8** | The bounded error is **`cadence + horizon`** (35 min / 75 min) | First observation lags the true transition by up to one cadence. Naming it stops the horizon being read as exact |
+| **D9** | Network/API failure **fails open for the run, closed for the clock**: exit 0, log `degraded`, **re-upload the prior state unchanged**, never write an observation it could not verify | Paging on the monitor's own outage is worse than brief blindness; a fabricated baseline corrupts the horizon permanently |
+| **D10** | The monitor **never writes to the repository, never deploys, never migrates, never creates GitHub Deployments** | Read-only plus issue writes. Deployments are the record ADR 012 and #174 rely on (§F3) |
+| **D11** | `ahead` is **time-bounded**; `behind`/`diverged` alert **immediately**; a **`db: "error"` probe failure is `unknown`, not `diverged`** | §3 deviation, plus the catch path's `diverged` is a *probe* verdict — a DB outage must not page as "schema diverged" |
+| **D12** | Classification is a **total order, first match wins**, and **no `exact` short-circuit before the checks that guard it** | `head === live` alone would close an issue while the schema is broken or the endpoint answers from the wrong environment (§F5b) |
 
-## 5. Contract
+## 5. Workflow shape
 
-### Workflow shape (two jobs, not one loop)
+**One job, one matrix leg per environment, on a dedicated `monitoring` environment.**
 
 ```yaml
+permissions:
+  contents: read      # checkout
+  actions: read       # previous run's state artifact, run lookup
+  deployments: read   # the production-migrations deployment status (§D6)
+  issues: write       # the alert
+
+concurrency:
+  group: drift-monitor-${{ matrix.target }}
+  cancel-in-progress: false
+
 jobs:
-  monitor-staging:
-    environment: staging      # required to read the environment-scoped bypass secret
-  monitor-production:
-    environment: production
+  monitor:
+    environment: monitoring          # NOT staging, NOT production — see below
+    strategy:
+      fail-fast: false               # a staging failure must not skip production
+      matrix:
+        target: [staging, production]
 ```
 
-Each job is one environment. See §11 and §13.9 for why one job cannot serve both.
+### Why `monitoring` and not the deployment environments
+
+Revision 1 planned `environment: staging` and `environment: production`, one job each, on the
+reasoning that an environment key is what makes an environment secret readable. That reasoning was
+right about secrets and wrong about environments, for two independently fatal reasons:
+
+1. **Branch-policy collision.** Scheduled runs execute on `main` (landmine 1). `11-actions-deploys.md`
+   §2 documents `staging` as **branch `staging`** and `production` as **branch `main`**. So
+   `monitor-production` happens to be legal, but `monitor-staging` on `main` is exactly what a
+   staging branch policy exists to reject — the job would die before its first step the moment the
+   policy is enforced. It is `null` today (§2), which makes this a latent trap rather than a
+   present failure: the monitor would work in testing and break when the policy is turned on.
+2. **GitHub Deployment pollution.** Verified: a job with `environment:` creates a Deployment with
+   `task=deploy` (§2, `deployments` rows). At 96 ticks/day × 2 jobs that is **~192 fabricated
+   `success` Deployments per day** — marking `main`'s SHA as active in staging and as successfully
+   deployed in production every 15 minutes, *including while a real production deploy is waiting on
+   `production-migrations`*. That corrupts the record ADR 012 and #174 (8b) read, and violates D10.
+
+**Fix:** a dedicated `monitoring` environment — branch policy `main`, **no required reviewer**, and
+**one secret only**: `VERCEL_AUTOMATION_BYPASS_SECRET`. Never `DATABASE_URL*`, never `VERCEL_TOKEN`.
+The row is added to `11-actions-deploys.md` §2 in the implementation PR.
+
+**Correction to the review on this point.** F3 says `staging` is restricted to branch `staging` *and*
+proposes a single `monitoring` environment for both targets. The first half is right and confirmed;
+the second is right for secrets but the review's stated rationale ("one project-level bypass token")
+is only half the reason — the decisive one is that **`production`'s documented policy is already
+branch `main`**, so the two-target problem is specific to staging. A single `monitoring` environment
+also collapses the matrix to **one secret read**, which is simpler than revision 1's two jobs.
+
+If staging and production ever split into separate Vercel projects, the matrix gains
+`VERCEL_AUTOMATION_BYPASS_SECRET_STAGING` / `_PRODUCTION` rather than repository-scoping anything.
+
+## 6. Contract
 
 ### What the monitor reads
 
 ```text
-GET https://<stable-domain>/api/version
-  -> { ok, commit, tree, release, env, builtAt }
+GET https://solara-stg.vercel.app/api/version         GET https://solara-production.vercel.app/api/version
+  -> 200 {ok, commit, tree, release, env, builtAt}      identity: which build is serving
+
+GET https://solara-stg.vercel.app/api/ready           GET https://solara-production.vercel.app/api/ready
+  -> 200 | 503 {ok, db, auth, commit, migrations}       schema: exact | ahead | behind | diverged
 ```
 
-- `x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET` when the secret is set. Staging is
-  SSO-protected; without the header the response is a login page, and **an HTML body must be treated
-  as a failure, not as a mismatch** (see D9).
-- The endpoint is authoritative for *what is live*. It is never assumed to reflect the branch.
+Both hosts, both endpoints, the same header:
 
-### What the monitor compares
+```text
+x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET
+```
 
-| Environment | Branch head (API) | Live commit (endpoint) | Alert when |
-| --- | --- | --- | --- |
-| `staging` | `repos/{repo}/commits/staging` | `/api/version.commit` | head ≠ live, past the stale horizon, and no in-flight/young-waiting run |
-| `production` | `repos/{repo}/commits/main` | `/api/version.commit` of the production domain | same rule |
+- **A 503 with a JSON body is a successful read, not a failure.** It is how readiness reports
+  `behind`, `diverged`, or `db: "error"`; the body is the payload. Only a non-JSON body is a failure.
+- **Domains are defaults, overridable** by `--staging-url` / `--production-url` so `--dry-run` can be
+  pointed at a preview without editing the workflow. The values above are already the documented
+  canonical hosts (§2).
+- **No database credential is used anywhere in this workflow.** That is the whole point of taking
+  `migrations` from `/api/ready`.
+- **Pre-promotion production is expected to be absent.** `4490ced` predates #164, so
+  `/api/version` 404s and `/api/ready` has no `commit`/`migrations`. An absent field is `unknown` for
+  that check — never drift. The commit check degrades the same way. This window closes when
+  promotion lands; the monitor must be correct *during* it, not only after.
 
-**Production is included from day one, deliberately.** It deploys via `scripts/deploy.sh`, not
-Actions, so there are no Actions runs to consult — the run-awareness checks are simply absent for it,
-not skipped silently. Including it means the monitor is useful before cutover instead of after, and
-it means a staging-only monitor cannot hide a production drift.
+### What is compared
 
-### Alert payload (the issue body)
+| Environment | Expected `env` | Branch head | Live identity | Schema |
+| --- | --- | --- | --- | --- |
+| `staging` | `staging` | `repos/{repo}/commits/staging` | `/api/version.commit` | `/api/ready.migrations` |
+| `production` | `production` | `repos/{repo}/commits/main` | `/api/version.commit` | same |
+
+### Runs consulted (F5a)
+
+`/repos/{repo}/actions/runs` has **no `environment=` filter**, so the query is by `workflow_id` and
+the results are filtered in code. Only workflows that *deploy or migrate* count:
+
+| Environment | Workflows |
+| --- | --- |
+| `staging` | `deploy-staging.yml`, `migrate.yml` (env `staging`) |
+| `production` | `deploy-production.yml`, `migrate.yml` (env `production`) |
+
+**`ci.yml` and `drift-monitor.yml` are excluded by name.** Without this the monitor sees *itself*
+`in_progress` on `head_branch: main` on every tick and suppresses every alert forever — a
+permanently blind monitor that reports healthy. A `404` for a workflow that does not exist yet
+(`#171`/`#173` have not created `deploy-*.yml`) is **`[]`, never `unknown`**; "the mechanism does not
+exist" is a different fact from "the query failed".
+
+### The approval clock source (D6, spelled out)
+
+`resolveApprovalWaitStart` tries, in order:
+
+1. **`created_at` of the `waiting` deployment status.** Query
+   `/deployments?sha={head_sha}&environment=production-migrations` → the run's deployment ID →
+   `/deployments/{id}/statuses` → the status whose `state === "waiting"`. That timestamp is the
+   transition into `waiting`, which is exactly the interval the 60-minute horizon bounds.
+2. **The persisted first observation**, keyed `(runId, runAttempt, environment)`.
+
+Explicitly **rejected** as sources, each for a different reason, each with a unit test: `job.started_at`
+(a job blocked on approval may never start), run `created_at` (a run waits on other jobs first), and
+deployment `created_at` (creation is not the transition into `waiting`).
+
+### Alert payload
 
 ```markdown
-<!-- drift-monitor:{"environment":"staging","firstObserved":"2026-11-23T04:10:00Z",
-"runId":null,"runAttempt":null,"kind":"stale-commit"} -->
+<!-- drift-monitor:{"environment":"staging","kind":"stale-commit","liveCommit":"def5678",
+"headCommit":"abc1234","migrations":"exact","runId":null,"runAttempt":null,
+"firstObserved":"2026-11-23T04:10:00Z","alertedAt":"2026-11-23T04:44:12Z"} -->
 
 Environment: **staging**
-Branch head: `abc1234` (docs: something #42)
-Live commit: `def5678`
-Diverged for: 34 minutes (first observed 04:10Z)
+Branch head: `abc1234` `docs: something #1234`
+Live commit: `def5678` (behind head)
+Schema: `exact`
 In-flight runs: none
+Diverged for: 34 minutes (first observed 04:10Z, alerted 04:44Z)
 
 Last checked: 2026-11-23T04:44:12Z
 ```
 
-The HTML comment is the state: machine-readable, invisible in the rendered issue, and impossible to
-lose by editing the visible text. The check **reuses it if present** and preserves `firstObserved`, so
-the age is real rather than resetting every tick.
+The comment is the durable state; the visible text is for humans and may be edited freely. Commit
+headlines are wrapped in backticks and their `#`/`@` tokens neutralised, so a crafted commit message
+cannot `@mention` a user or forge a `#42` cross-reference into the issue (F7). The bypass secret is
+never logged and never enters the body (landmine 8).
 
 ### Exit behaviour
 
 | Situation | Exit | Effect |
 | --- | --- | --- |
-| Healthy | 0 | Close the issue if open (idempotent) |
+| Healthy | 0 | Close the issue if open; clear state |
 | Drift past horizon | 0 | Open or update the one issue |
-| In-flight / young wait | 0 | No change; never closes an open issue while a run is in flight |
-| API or endpoint unreachable | 0 | Log `degraded`; **do not** touch `firstObserved` |
-| Malformed endpoint body | 0 | Same as unreachable — an HTML login page is not a mismatch |
+| In-flight / young wait / young `ahead` | 0 | Persist the clock; **never** close an open issue while a run is in flight |
+| **401 / 403 / SSO HTML / SSO redirect** | **1** | **Hard failure** — a missing or rotated bypass secret must not be silently green |
+| Transient 5xx or network error | 0 | `degraded`; re-upload prior state unchanged (D9) |
+| Malformed JSON body | 0 | `unknown`; an HTML login page is not a schema verdict |
+| Bug in the monitor | non-zero | A red run means "the monitor is broken", never "production drifted" |
 
-A non-zero exit is reserved for a **bug in the monitor itself**, so a red run means "the monitor is
-broken", never "production drifted". Drift is a designed state, reported by the issue.
+Revision 1 had every row exit 0, which made a rotated secret invisible forever (F8). The split is:
+**`unknown` (cannot tell) is 0; `rejected` (told it may not look) is 1.** `11-actions-deploys.md:53`
+already says a 401/403 during verification is a hard failure, never a skip.
 
-## 6. Algorithm
+## 7. State
 
-`scripts/drift-monitor.ts` (new), executed by `.github/workflows/drift-monitor.yml`. Logic in
-`src/lib/drift-monitor.ts` as pure functions, following the `#166` precedent (`src/lib/migration-safety.ts`
-+ `scripts/check-migration-safety.ts`): the script does I/O, the module decides.
+### Why two stores (F2)
 
-1. **Snapshot.** Fetch the branch head for each environment, the endpoint payload, and the Actions
-   runs for that environment. Every fetch is individually wrapped: one failing source produces a
-   partial observation, not an aborted tick.
-2. **Classify** (`classifyDrift`, pure):
-   - `head === live` → `exact`.
-   - Unreachable or malformed endpoint → `unknown` (**never** `drift`).
-   - Different and a run is `queued`/`in_progress` → `pending`.
-   - Different and a `waiting` run is younger than the approval horizon → `awaiting-approval`.
-   - Different and a `waiting` run is older than the horizon → `overdue-approval`.
-   - Different and nothing in flight → `stale-commit`.
-3. **Decide** (`decideAlert`, pure): given the classification, the previous issue state and `now`,
-   return `{ action: "none" | "open" | "update" | "close", firstObserved, horizon }`.
-4. **Persist** the chosen `firstObserved` back into the state block so the age survives the tick.
-5. **Act** — one issue per environment, title `drift: <environment> is not serving its branch head`.
+Revision 1 stored state **only** inside an open alert issue, and claimed "nothing is cached between
+ticks except the issue body". That is a permanent amnesia bug:
 
-The approval-wait start resolution (D6) is its own pure function, `resolveApprovalWaitStart`, because
-it is the piece with three candidates and two rejections, and it is where a future reader will
-otherwise re-introduce `started_at`.
+```text
+t=0m   healthy, no issue open. Drift appears. age 0 < 20m horizon -> no alert (correct).
+       Nothing is open, so there is nowhere to record t0.
+t=15m  previousState is null again. firstObserved := now. age 0. No alert.
+       ... forever. Neither horizon can ever expire.
+```
 
-## 7. Caching and process boundaries
+Any state the monitor needs **before** it is allowed to alert cannot live in the thing the alert
+creates. Revision 1's own rejection of artifacts ("they expire and are per-run") was right about
+*durability* and wrong about *necessity* — so revision 2 uses both, and they cover each other's gaps:
 
-- A schedule tick has a **hard wall-clock budget**; the endpoint fetch gets a 10 s timeout and the API
-  calls 20 s, so a hung dependency cannot make the tick overlap the next one.
-- `concurrency: drift-monitor` with `cancel-in-progress: false` in the workflow. Two overlapping ticks
-  would race on `firstObserved` and could double-report.
-- Nothing is cached between ticks except the issue body. That is intentional: a cache that can be stale
-  is a second source of truth about drift.
+| Store | Carries | Lifetime | Why it is the right one |
+| --- | --- | --- | --- |
+| `drift-state-<env>.json` artifact | the **pre-alert clock**: `{environment, kind, liveCommit, headCommit, migrations, runId, runAttempt, firstObserved, alerted:false}` | `retention-days: 5` | ~480× the tick interval; readable with `actions: read`; commits nothing to `main`; no external dependency |
+| `<!-- drift-monitor:... -->` in the issue | the **post-alert record** and `alertedAt` | until the issue closes | survives artifact expiry, so a multi-week open alert keeps its real age |
 
-## 8. Test plan
+**Read at tick start:** `gh run list --workflow drift-monitor.yml --status completed` → newest
+successful run → its `drift-state-<env>.json` artifact. Matches `migrate.yml:153`'s existing
+`actions: read` pattern. Missing artifact (first run, expiry, or a failed predecessor) = **first
+observation**, not an error.
 
-`tests/drift-monitor.test.ts` (new) — pure functions only, no network:
+**Reconcile:** if the issue comment exists, its `firstObserved` wins for the post-alert clock (it is
+older and never expires); the artifact is re-seeded from it. If only the artifact exists, it seeds a
+new issue. On `degraded`/`rejected` ticks the prior artifact is **re-uploaded unchanged** (D9), so an
+in-progress clock is never reset by an outage.
+
+**Validate on read:** `state.environment` must equal the leg's target, and a `firstObserved` in the
+future is **clamped to now** (F7). A rejected or clamped read is logged, never trusted.
+
+## 8. Algorithm
+
+### `classifyDrift` — a total order (F5b)
+
+First match wins. The order is the design; every clause exists because an earlier draft tested it
+out of turn.
+
+```text
+(a) unreachable / malformed JSON / commit === "unknown"
+        -> unknown                (never drift; exit 0, or 1 if rejected per §6)
+(b) ready present && db === "error"
+        -> unknown                (a probe failure reports migrations:"diverged"; it is not drift)
+(c) version.env !== expectedEnv
+        -> env-mismatch           (guarded before exact; otherwise the wrong environment reads as healthy)
+(d) deploy/migrate run queued | in_progress
+        -> pending
+(e) deploy/migrate run waiting
+         < 60m -> awaiting-approval ; >= 60m -> overdue-approval
+(f) head !== live
+         < 20m -> observing-commit ; >= 20m -> stale-commit
+(g) migrations present && !== "exact"
+         behind|diverged -> stale-migrations        (immediate, §3)
+         ahead < 20m     -> observing-migrations ; ahead >= 20m -> stale-migrations
+(h) otherwise -> exact
+```
+
+`exact` is the **last** resort, not the first success. `head === live` alone is not health: the schema
+can be `behind` after manual DDL, and the endpoint can answer from the wrong environment.
+
+The **20-minute clock is per subject**, not per environment: `firstObserved` is reset when
+`liveCommit` advances (a fresh deploy is a fresh observation, not stale by inheritance) and when the
+`migrations` state changes. Without `liveCommit` in state, `sha0`'s clock would false-alert on a
+two-minute-old `sha2`.
+
+### `decideAlert` — reconciled (F5d)
+
+| `previousIssue` | Observation vs previous | Action |
+| --- | --- | --- |
+| none | any, past horizon | **open** |
+| none | any, before horizon | **none** (persist clock) |
+| open | `(kind, liveCommit, headCommit, migrations, runId, runAttempt)` unchanged | **none** (idempotent) |
+| open | any of those fields changed | **update** — otherwise a `stale-commit` → `overdue-approval` transition leaves stale text |
+| open | now `exact` and nothing in flight | **close** |
+| open | in flight | **none** — *never close while a run is in flight* |
+
+Revision 1 said both "second identical tick → `none`" and "repeated ticks update one issue", which
+cannot both hold. This table is the resolution: `none` when nothing changed, `update` when anything
+in the tuple did.
+
+## 9. Fixtures and tests
+
+### `tests/drift-monitor.test.ts` — pure functions, no network
 
 | Test | Asserts |
 | --- | --- |
-| exact | `head === live` → `exact`, no alert |
-| stale commit | differs, nothing in flight → `stale-commit` |
-| queued run suppresses | differs, run `queued` → `pending`, no alert |
-| in-progress run suppresses | differs, run `in_progress` → `pending`, no alert |
-| **young waiting is quiet** | `waiting`, observed 5 min ago, horizon 60 → `awaiting-approval`, no alert |
-| **overdue waiting alerts once** | `waiting`, observed 90 min ago → `overdue-approval`, `open` |
-| **duplicate ticks do not re-alert** | second tick with the same observation → `action: "none"` |
-| **newer attempt gets a fresh clock** | `run_attempt` 2 with a new observation is not suppressed by attempt 1's stale record |
-| **older attempt never suppresses a newer one** | stale record for attempt 1, live attempt 2 present → alert, not suppressed |
-| absent timestamp is first-observed | no API timestamp → `firstObserved` = now, persisted, not `now` on the next tick |
-| malformed body is not drift | HTML/login page → `unknown`, no alert, no `firstObserved` write |
-| unreachable endpoint is not drift | fetch throws → `unknown`, exit 0 |
-| state round-trips | a body written by the monitor parses back to the same `firstObserved` and `kind` |
-| cross-environment isolation | a `staging` issue's state never suppresses a `production` alert |
+| exact | `head === live`, `migrations: "exact"` → `exact`, no alert |
+| stale commit under 20m | differs 5m ago → `observing-commit`, quiet |
+| stale commit past 20m | differs 25m ago → `stale-commit`, alert |
+| **multi-tick progression** | healthy (`previousIssue: null`) at t0/t+15/t+20 → clock persists across ticks and eventually alerts (**kills the F2 amnesia bug**) |
+| live advance resets clock | `stale-commit` at `sha0`, then `live = sha1` → `observing-commit`, not stale |
+| queued run suppresses | differs, `queued` → `pending` |
+| in-progress run suppresses | differs, `in_progress` → `pending` |
+| **in-flight preserves an open issue** | `previousIssue` open + `in_progress` → action `!== "close"` (**mutation 9**) |
+| young waiting is quiet | `waiting` 10m → `awaiting-approval`, no alert |
+| overdue waiting alerts once | `waiting` 90m, no issue → `overdue-approval`, open |
+| **attempt superseded (young)** | `run_attempt: 2` at 5m **and** expired `run_attempt: 1` at 90m → `awaiting-approval`, quiet |
+| **attempt superseded (overdue)** | `run_attempt: 2` at 90m, `run_attempt: 1` already alerted → `overdue-approval`, alerts |
+| approval start rejects wrong sources | `job.started_at`, run `created_at`, deployment `created_at` each rejected as a clock source |
+| **`ahead` young vs old** | `ahead` 5m → quiet; `ahead` 25m → `stale-migrations` |
+| **`behind`/`diverged` are immediate** | either at 1m → `stale-migrations`, alerts (§3 deviation) |
+| **`db: "error"` is not drift** | `db: "error"`, `migrations: "diverged"` → `unknown` |
+| **`head === live` does not hide schema drift** | equal commits + `behind` → `stale-migrations` |
+| env mismatch | `version.env: "production"` on the staging leg → `env-mismatch` |
+| malformed body is not drift | HTML login page → `unknown`, no write |
+| 503 JSON is a read | `{ok:false, migrations:"behind"}` at 503 → `stale-migrations` |
+| pre-promotion production | 404 `/api/version`, no `migrations` → `unknown`, not drift |
+| duplicate overdue ticks | identical tuple twice → `none`, then a changed field → `update` |
+| cross-env isolation | staging's state never suppresses or closes production's |
+| untrusted issue | issue with the right title from another author → ignored |
+| future `firstObserved` | `2099-…` → clamped to now |
+| commit headline escaping | `fix @someone #42` → no mention, no cross-ref |
 
-`tests/drift-monitor-workflow.test.ts` — the workflow file is asserted, not trusted:
+### `tests/drift-monitor-workflow.test.ts` — the YAML is asserted, not trusted
 
 | Test | Asserts |
 | --- | --- |
-| schedule present | a `cron:` exists and is 15 minutes |
-| one job per environment | exactly two jobs, each declaring a distinct `environment:` — required for the environment-scoped bypass secret (§13.9) |
-| permissions are minimal | `issues: write` and `contents: read`, and **no** `contents: write` |
-| concurrency guard | `cancel-in-progress: false` |
-| no secrets beyond the bypass | only `VERCEL_AUTOMATION_BYPASS_SECRET`; no `DATABASE_URL` |
-| dispatchable | `workflow_dispatch:` present, so the monitor can be exercised before promotion |
+| schedule | `cron:` present, 15-minute cadence |
+| **single `monitoring` environment** | `environment: monitoring`; **no** `staging`/`production` environment (**kills the Deployment-pollution and branch-policy bug**) |
+| matrix | `target: [staging, production]`, `fail-fast: false` |
+| **permissions** | exactly `{contents: read, actions: read, deployments: read, issues: write}`; **no** `contents: write`, `deployments: write`, `pull-requests: write`, `packages: write`, `id-token: write` |
+| concurrency | `cancel-in-progress: false`, group includes the target |
+| secrets | only `VERCEL_AUTOMATION_BYPASS_SECRET`; no `DATABASE_URL` |
+| artifact | `retention-days: 5`, name contains the target |
+| dispatchable | `workflow_dispatch:` with a `dry_run` input (post-promotion only, §11) |
 
-## 9. Mutations (SEC-07)
+## 10. Mutations (SEC-07)
 
 | Mutation | Must fail |
 | --- | --- |
 | alert on `in_progress` | "in-progress run suppresses" |
+| close an open issue while a run is in flight | "in-flight preserves an open issue" |
 | suppress every `waiting` | "overdue waiting alerts once" |
-| reset `firstObserved` every tick | "duplicate ticks do not re-alert" |
+| reset `firstObserved` every tick | "multi-tick progression" |
+| store the clock only in the issue | "multi-tick progression" |
 | treat an unreachable endpoint as drift | "unreachable endpoint is not drift" |
-| treat a malformed body as a mismatch | "malformed body is not drift" |
-| key the state by environment only, not attempt | "newer attempt gets a fresh clock" |
-| add `contents: write` to the workflow | "permissions are minimal" |
-| collapse both environments into one job | "one job per environment" — a single job cannot read either bypass secret, so the monitor would report healthy while blind |
-| close the issue while a run is in flight | "in-progress run suppresses" |
+| treat an HTML body as a mismatch | "malformed body is not drift" |
+| key state by environment only, not attempt | "attempt superseded (overdue)" |
+| bind a job to `environment: staging` | "single monitoring environment" |
+| add `contents: write` | "permissions" |
+| drop `actions: read` | "permissions" |
+| exclude nothing from the run query | "in-progress run suppresses" (the monitor sees itself) |
+| return `exact` before the schema check | "`head === live` does not hide schema drift" |
+| treat `diverged` from a probe failure as drift | "`db: error` is not drift" |
+| alert on young `ahead` | "`ahead` young vs old" |
+| wait 20m on `behind` | "`behind`/`diverged` are immediate" |
+| drop the trusted-author filter | "untrusted issue" |
+| skip `firstObserved` clamping | "future `firstObserved`" |
 
-## 10. Verification gates
+## 11. Verification gates
 
 ```bash
 npm run typecheck
@@ -226,92 +429,88 @@ npm run lint
 npx tsx --test tests/drift-monitor.test.ts tests/drift-monitor-workflow.test.ts
 ```
 
-Then, before merging — **the workflow must be exercised, not just tested**:
+**Before merge — a local dry run of the real entrypoint, not a workflow dispatch (F4):**
 
 ```bash
-gh workflow run drift-monitor.yml -f dry_run=true   # from the branch, dispatchable
+npx tsx scripts/drift-monitor.ts --env staging --dry-run --fixture tests/fixtures/ready-behind.json
 ```
 
-`workflow_dispatch` exists precisely so this is possible before promotion (see §12). A `dry_run` input
-prints the classification and the would-be action and writes nothing.
+`workflow_dispatch` **cannot** be used before merge: `drift-monitor.yml` is not on `main` (verified:
+`main` has only `ci.yml`, `migrate.yml`), and GitHub returns **HTTP 404** for dispatching a workflow
+that does not exist on the default branch, even with `--ref <branch>`. Revision 1 made this a
+pre-merge gate and a DoD box, which was unsatisfiable. `--dry-run` prints the classification and the
+would-be action and writes nothing.
 
-Live acceptance, after this lands on `main`:
+**After promotion to `main` (operator):**
 
-1. Healthy tick → no issue.
-2. Point the monitor at a known-diverged pair in `dry_run` → `stale-commit`, no write.
-3. Let a real tick run → issue appears within one cadence of the horizon.
+```bash
+gh workflow run drift-monitor.yml --ref main -f dry_run=true
+```
 
-## 11. Rollout and compatibility
+Live acceptance: healthy tick → no issue; `ahead` older than 20 minutes → `stale-migrations` within
+one cadence; close the issue by hand → it reopens once, not every tick.
 
-- **No migration, no schema change, no deploy-path change.** Adds one workflow and one script.
-- **This is the repository's first scheduled workflow.** It runs from `main`, so merging this to
-  `staging` does not start it — see §12.
-- **No new secret is required, but the existing one needs care.** `GITHUB_TOKEN` covers the issue
-  write and the Actions read. `VERCEL_AUTOMATION_BYPASS_SECRET` already exists **per environment**
-  (`staging` and `production` rows in `11-actions-deploys.md` §2), and that document is explicit that
-  secrets must be environment-scoped rather than repository-scoped.
+## 12. Rollout and compatibility
 
-  This forces a structure decision: **a job-level `environment:` key is what makes an environment
-  secret readable**, and a job may only declare one. So the workflow uses **two jobs, one per
-  environment** (`monitor-staging`, `monitor-production`), each with its own `environment:` — not one
-  job looping over both. That also gives per-environment isolation for free: a `staging` alert can
-  never suppress a `production` one, because they do not share a job or a state file.
+- **No migration, no schema change, no deploy-path change.** One workflow, one script, one lib.
+- This is the repository's **first scheduled workflow**, and a schedule runs from `main` (landmine 1).
+- **One environment row is added** to `11-actions-deploys.md` §2: `monitoring`, branch `main`, no
+  reviewer, one secret.
+- **Permissions are explicit and complete** (D5/F6). An explicit `permissions:` map sets every
+  omitted scope to `none`; omitting `actions: read` or `deployments: read` yields
+  `403 Resource not accessible by integration` on exactly the endpoints this design depends on.
+- **Cost:** 96 runs/day × 2 legs; each reads four URLs and the Actions API. **It consumes no
+  deployments** — relevant on Hobby's 100/day allowance. It creates **no GitHub Deployments** (§5).
+- **`.vercelignore` and `tests/deployment-inputs.test.ts`** gain `scripts/drift-monitor.ts`, matching
+  `scripts/check-migration-safety.ts`; the script is CI-only and must not enter the deployment input.
+- Rollback: revert, close any open drift issue.
 
-  The alternative — making the bypass secret repository-scoped so one job can read both — is
-  **rejected**: it widens a credential to every workflow in the repository to save one job block.
-- **Cost on Hobby:** one scheduled run per 15 minutes is roughly 96 runs/day. It reads two URLs and
-  the Actions API; it does not build, deploy or invoke a Vercel function beyond one `/api/version`
-  request per environment per tick. **It does not consume deployments** — this matters, because the
-  Hobby allowance is 100 deployments/day and a monitor that triggered deployments would spend it.
-- Rollback is a revert plus closing any open drift issue.
+## 13. Tracker and PR
 
-## 12. Tracker and PR
+1. **#165** `status:ready` → `in-review` when the implementation PR opens.
+2. **Nothing is deferred to #167** — it is closed and its risk section counts on #165 (§3).
+3. Implementation PR title `ci: drift monitor for live commit, migration state and in-flight runs
+   (#165)`, labels `type:ci`, `area:ci`, and **`deploy:required`** — it adds `src/lib/`,
+   `scripts/`, and `.github/workflows/`, which `PR_WORKFLOW.md` §2.1 classifies as deploy:required.
+   (Revision 1 said `deploy:skip`; that was wrong for a PR touching those paths.)
+4. Note for **#174** (`8b`): same workflow, add the Deployments check. **Do not build a second monitor.**
 
-1. **#165** `status:ready` → `in-review` when the PR opens.
-2. The migration-half deferral (§3) is recorded **on the issue**, because it changes an acceptance box.
-3. PR title `ci: drift monitor for live commit and in-flight runs (#165)`, labels `type:ci`,
-   `deploy:skip` — a workflow and a script, no runtime change.
-4. Note for **#167**: it inherits the migration half. When `migrations` appears in `/api/version`, the
-   monitor's `classifyDrift` gains a branch and this plan's D1 is discharged — no new workflow.
-5. Note for **#174** (`8b`): same workflow, additional check against GitHub Deployments. **Do not build
-   a second monitor.**
+## 14. Landmines
 
-## 13. Landmines
+1. **A scheduled workflow runs from the default branch (`main`).** Merging to `staging` does not
+   start it, and it cannot be dispatched until it is on `main` (§11).
+2. **Staging is SSO-protected.** Without the header the endpoint returns **HTML**. Treat it as
+   `unknown` — but a 401/403 or an SSO redirect is `rejected`, which exits **1** (§6).
+3. **`/api/version`'s `env` is `staging`, not `preview`.** Verified live. Never re-derive it.
+4. **Deleting the HTML comment loses `alertedAt`** and silently restarts the post-alert clock. The
+   parser tolerates a missing block as a first observation.
+5. **`started_at` does not exist for a job blocked on approval.** Corrected twice in the issue.
+6. **Two overlapping ticks race on state.** Hence per-target `concurrency` with
+   `cancel-in-progress: false`.
+7. **Production has no Actions runs** while it deploys via `deploy.sh`. Absence of signal is not a
+   clean bill of health.
+8. **The endpoint is unauthenticated.** Never log the bypass secret or headers into a body.
+9. **An environment-bound job creates a GitHub Deployment** — verified, `task=deploy`. Two jobs × 96
+   ticks = ~192/day of fabricated `success` records (§5).
+10. **`ahead` is `ok`.** `readiness.ts:178` accepts `exact || ahead`; only the *time* bound makes it
+    a problem (ADR 012).
+11. **A thrown readiness probe reports `migrations: "diverged"` with `db: "error"`.** Checking
+    `migrations` before `db` turns a database outage into a schema alert.
+12. **`/api/runs` has no environment filter and sees the monitor itself.** Filter by workflow (§6).
 
-1. **A scheduled workflow runs from the default branch (`main`).** Merging to `staging` does not start
-   it. Until `main` has it, the monitor can only be run by `workflow_dispatch` — which is why that
-   trigger is not optional.
-2. **Staging is SSO-protected.** Without the bypass header the endpoint returns **HTML**, not JSON. A
-   parser that throws on HTML turns a normal deployment into a red monitor run; one that treats HTML
-   as "different from head" pages you on every tick. Treat it as `unknown`.
-3. **`env:` in the endpoint is `staging`, not `preview`.** Verified live. Do not re-derive the
-   environment from `VERCEL_ENV` anywhere in the monitor.
-4. **The issue body is the state store.** Editing the visible text is safe; **deleting the HTML comment
-   loses `firstObserved`** and silently restarts the clock. The parser must tolerate a missing block by
-   treating it as a first observation, not by crashing.
-5. **`started_at` does not exist for a job blocked on approval.** This is the correction that was
-   already made twice in the issue. Do not reintroduce it.
-6. **Two overlapping ticks race on `firstObserved`.** Hence `concurrency` with
-   `cancel-in-progress: false`; a cancelled tick that had already written state could double-report.
-7. **Production has no Actions runs to consult** while it deploys via `deploy.sh`. That is an absence
-   of signal, not a clean bill of health — do not let a missing run list read as "nothing in flight"
-   when the mechanism for runs does not exist yet.
-8. **The endpoint is unauthenticated.** Anything the monitor logs from it is public information; do not
-   paste headers or the bypass secret into a log line or an issue body.
-9. **Environment secrets require a job-level `environment:` key, and a job gets exactly one.** Two
-   environments therefore mean two jobs. A single job looping over both cannot read either bypass
-   secret, and the failure mode is subtle: the request returns the SSO login page, which §13.2
-   correctly classifies as `unknown` — so the monitor would be **permanently blind while reporting
-   healthy**. The `dry_run` in §10 exists partly to catch exactly this before it is trusted.
+## 15. Definition of done
 
-## 14. Definition of done
-
-- [ ] `scripts/drift-monitor.ts` + `src/lib/drift-monitor.ts` + `.github/workflows/drift-monitor.yml`
-      added; threshold documented in `docs/setup/11-actions-deploys.md` §8.
-- [ ] Mismatch detected within one tick; a healthy environment produces no issue.
-- [ ] A queued/in-progress run, or a young waiting run, suppresses the alert; an overdue wait does not.
+- [ ] `scripts/drift-monitor.ts` + `src/lib/drift-monitor.ts` + `.github/workflows/drift-monitor.yml`;
+      the three constants documented in `docs/setup/11-actions-deploys.md` §8, and the `monitoring`
+      environment row in §2.
+- [ ] Commit drift detected **within one tick of the horizon** (`cadence + horizon`), and a healthy
+      environment produces no issue.
+- [ ] `migrations !== "exact"` alerts: `ahead` past 20 min, `behind`/`diverged` immediately.
+- [ ] A queued/in-progress run, a young waiting run, or a young `ahead` suppresses the alert; an
+      overdue wait does not.
 - [ ] Alert is idempotent: repeated ticks update one issue. *(#165 acceptance, verbatim)*
 - [ ] Threshold documented in `docs/setup/11-actions-deploys.md`. *(#165 acceptance, verbatim)*
-- [ ] `migrations` alerting is explicitly **absent** and named as #167's, in the issue and in §3.
-- [ ] `dry_run` exercised from the branch and the output pasted into the PR.
-- [ ] No new secret required for the shipped half; no deployment consumed.
+- [ ] The pre-alert clock survives a healthy start and a `degraded` tick (F2 regression test).
+- [ ] No job binds to `staging` or `production`; permissions are exactly the four scopes; `--dry-run`
+      output pasted into the PR Evidence.
+- [ ] No new database credential; no deployment consumed; no GitHub Deployment created.
