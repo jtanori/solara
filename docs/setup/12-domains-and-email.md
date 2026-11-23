@@ -98,7 +98,7 @@ Preview deployment and stays behind Vercel Authentication; that is expected.
    | `MX` | `send.thanatos.mx` | `feedback-smtp.<region>.amazonses.com` (priority 10) | Return-Path / bounces |
    | `TXT` | `send.thanatos.mx` | `v=spf1 include:amazonses.com ~all` | SPF for the sending subdomain |
    | `TXT` | `resend._domainkey.thanatos.mx` | `p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQ…` | DKIM |
-   | `TXT` | `_dmarc.thanatos.mx` | `v=DMARC1; p=none; rua=mailto:dmarc@thanatos.mx; fo=1` | Monitoring first |
+   | `TXT` | `_dmarc.thanatos.mx` | `v=DMARC1; p=none; rua=mailto:info@thanatos.mx; fo=1` | Monitoring first |
 
    Never add a **second** `SPF` record at the root. If the mailbox provider
    already publishes one, Resend's belongs only on `send`.
@@ -203,7 +203,7 @@ curl -sSI https://www.thanatos.mx | grep -i strict-transport-security
 
 ## 7. DMARC progression
 
-1. Start with `p=none` and a reporting address for at least a week.
+1. Start with `p=none` and a reporting address (`info@thanatos.mx`) for at least a week.
 2. Confirm legitimate mail (account claim, reset, Stripe receipts if the domain
    is used there) passes alignment.
 3. Move to `p=quarantine`, observe, then `p=reject`.
