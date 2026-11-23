@@ -122,9 +122,11 @@ test("error messages never echo the URL or host", () => {
   }
 });
 
-test("a loopback placeholder is allowed only in the build phase", () => {
+test("identity is enforced at runtime, not during the build", () => {
   assert.equal(check(local, { deployEnv: "production", phase: "build" }), "no-error");
+  assert.equal(check(prod, { deployEnv: "preview", phase: "build" }), "no-error");
   assert.equal(check(local, { deployEnv: "production", phase: "runtime" }), "database_url_hosted_loopback");
+  assert.equal(check(prod, { deployEnv: "preview", phase: "runtime" }), "database_url_preview_unapproved");
 });
 
 test("an invalid URL fails closed with a stable code", () => {

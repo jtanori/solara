@@ -128,6 +128,12 @@ export function assertDatabaseEnvironment(rawUrl: string, options: DatabaseGuard
     );
   }
   const environment = deployEnv as GuardDeployEnv;
+
+  // Identity is a runtime property. The build still validates URL/TLS above, but
+  // the no-credential/no-connection build boundary belongs to #171/#173; Vercel's
+  // Preview build currently evaluates this module with a hosted URL.
+  if (phase === "build") return;
+
   const endpoint = databaseEndpoint(rawUrl);
   const loopback = isLoopbackHost(url.hostname);
   const pooled = url.hostname.toLowerCase().includes("-pooler.");
@@ -138,10 +144,6 @@ export function assertDatabaseEnvironment(rawUrl: string, options: DatabaseGuard
       "migration DATABASE_URL must use the direct endpoint, not a -pooler host",
     );
   }
-
-  // The build must be able to evaluate a non-routable placeholder. This is the
-  // only bypass, it is explicit, and runtime callers never pass "build".
-  if (phase === "build" && loopback) return;
 
   if (environment === "local") {
     if (!loopback) {

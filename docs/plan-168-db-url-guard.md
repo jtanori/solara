@@ -10,7 +10,7 @@ staging project with its own endpoint. The local `.env.production` is out of syn
 with Vercel/GitHub and will be reconciled when production is ready.
 
 This plan expands the M5 guard table into one module, three consumers, a build
-placeholder rule and a test/mutation matrix. It does not authorize a hosted
+build/runtime phase rule and a test/mutation matrix. It does not authorize a hosted
 database change, deployment, or a new credential.
 
 ## 1. Problem
@@ -53,7 +53,7 @@ and nothing in the code refuses it. The only current checks are in
 1. `src/db/url-guard.ts`: one pure guard, three rules, typed error codes.
 2. Wire it into `src/db/index.ts`, `scripts/db-run.ts` and `drizzle.config.ts`.
 3. Add the non-secret configuration to SecretWeaver and the env templates.
-4. Tests for every row of the table, the build placeholder, TLS folding and the
+4. Tests for every row of the table, the build/runtime phase, TLS folding and the
    migration pooler rule, plus named mutations.
 
 **Out of scope**
@@ -74,7 +74,7 @@ and nothing in the code refuses it. The only current checks are in
 | **D5** | `forMigration: true` rejects any `-pooler.` host. App boot uses `false`; `db-run` and `drizzle.config.ts` use `true`. | Migrations must use the direct endpoint; the app is the only pooled consumer. |
 | **D6** | `drizzle.config.ts` uses `DATABASE_URL_DIRECT ?? DATABASE_URL` and `forMigration: true`. | Makes the only migration path safe even when someone invokes `drizzle-kit` directly; `db-run` remains the supported path. |
 | **D7** | Preview isolation is **strict**: a preview database must be a per-PR Neon branch in the staging project (or a separate project) with its own endpoint, distinct from `STAGING_DB_ENDPOINT` and `PROD_DB_ENDPOINT`. A separate database on the staging compute is not enough because the endpoint is shared. `ALLOW_PREVIEW_ON_STAGING` stays unset; the documented exception remains available but is not the chosen policy. | Strict is the chosen state; #163 proves runtime injection and cleanup before #176. The guard compares endpoints, not database names or data lineage; the operator must not branch from production. |
-| **D8** | Build phase: `phase: "build" | "runtime"`. `src/db/index.ts` passes `build` only when `process.env.NEXT_PHASE === "phase-production-build"`; both script consumers pass `runtime`. A loopback placeholder is allowed only in `build`. | #164/M5 §8 requires a non-routable loopback placeholder at build; `NEXT_PHASE` is set by Next's build and is not present under `next start`. |
+| **D8** | Build phase: `phase: "build" | "runtime"`. `src/db/index.ts` passes `build` only when `process.env.NEXT_PHASE === "phase-production-build"`; both script consumers pass `runtime`. The guard validates URL and TLS in build, then skips the identity check; runtime enforces it. | Identity is a runtime property. Vercel's Preview build currently evaluates this module with a hosted URL; failing the build on runtime identity is a false positive. The no-credential/no-connection build boundary is #171/#173's job. |
 | **D9** | Errors are typed codes with stable, non-secret messages that name the variable (`PROD_DB_ENDPOINT`, `STAGING_DB_ENDPOINT`, `ALLOW_PREVIEW_ON_STAGING`) but never the URL, password or host. | Acceptance requires a clear non-secret failure. |
 | **D10** | TLS rules are not duplicated: call `normalizeDatabaseUrl(rawUrl)` first (it rejects hosted `sslmode=disable`/`ssl=false` and normalizes to `verify-full`). | The issue explicitly folds this in. |
 
@@ -99,8 +99,8 @@ assertDatabaseEnvironment(rawUrl, {
    `database_url_environment`.
 4. Derive `endpoint` (D4) and `pooled = hostname.includes("-pooler.")`.
 5. If `forMigration` and `pooled` → `database_url_pooler_migration`.
-6. If `phase === "build"`: allow a loopback host (the documented placeholder) and
-   return. Hosted values still pass through the normal rules.
+6. If `phase === "build"`: after URL/TLS validation, return. Identity is
+   runtime-only; the build boundary is #171/#173.
 7. `local`: host must be loopback (`isLoopbackHost`) → else
    `database_url_local_not_loopback`.
 8. `production` / `staging`: expected = `PROD_DB_ENDPOINT` / `STAGING_DB_ENDPOINT`
@@ -187,7 +187,8 @@ Add all four to `secretweaver.yaml` (groups `database`/`deploy`) and to
 6. unknown/empty `deployEnv` → fail; unset expected endpoint → fail.
 7. `forMigration` + `-pooler` → fail; direct → pass.
 8. hosted `sslmode=disable` → the normalized TLS error; no URL in the message.
-9. build + production + loopback → pass; runtime + production + loopback → fail.
+9. build + a hosted URL → pass (identity is runtime-only); runtime + production
+   loopback → fail; runtime + preview production → fail.
 10. endpoint derivation: `ep-x-pooler.region` → `ep-x`; no raw URL/host appears
     in any error message.
 
@@ -199,7 +200,7 @@ Mutations (each must fail its test):
   strict test fails.
 - `guard-pooler-migration` — skip the pooler rule.
 - `guard-local-hosted` — skip the local loopback rule.
-- `guard-build-at-runtime` — allow loopback in `runtime`.
+- `guard-build-at-runtime` — make the build bypass unconditional; the runtime identity test fails.
 - `guard-endpoint-unset` — treat an unset expected endpoint as a match.
 
 Integration checks: `npm run typecheck`, `npm run lint`, `db-run --env local
@@ -233,7 +234,7 @@ connection.
       non-secret code; no URL, password or host in the message.
 - [ ] The app, `db-run` and `drizzle.config.ts` all import the one guard.
 - [ ] Tests cover production-in-staging, preview=production, pooler migration,
-      hosted loopback, unknown env, unset endpoint and the build placeholder.
+      hosted loopback, unknown env, unset endpoint and the build/runtime phase.
 - [ ] All named mutations kill their tests.
 - [ ] Local and CI loopback boots pass; `db-run --env local` passes.
 - [ ] Preview: a distinct per-PR Neon branch endpoint passes; the staging or
