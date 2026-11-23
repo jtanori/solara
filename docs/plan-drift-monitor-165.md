@@ -37,7 +37,7 @@ marked **changed** are the ones that invalidate revision 1.
 | **`ahead` is *ready*** — `ok` requires `migrationState === "exact" \|\| "ahead"` | `src/lib/readiness.ts:178` |
 | A **thrown probe** returns `db: "error"` **and** `migrations: "diverged"` | `src/app/api/ready/handler.ts` catch path |
 | `/api/ready` returns **200 or 503**, both with a JSON body | same handler; `status: result.ok ? 200 : 503` |
-| Staging is SSO-protected | project `ssoProtection.deploymentType = "all_except_custom_domains"` |
+| Staging is SSO-protected **on the fallback host** | project `ssoProtection.deploymentType = "all_except_custom_domains"` |
 | No workflow uses `schedule:` or creates an issue | `.github/workflows/` — `ci.yml`, `migrate.yml` only |
 | `migrate.yml` permissions are `contents/actions/pull-requests: read` | `.github/workflows/migrate.yml:48` |
 | `migrate.yml` downloads another run's artifact with `actions: read` | `migrate.yml:153` (`gh run download`) |
@@ -46,7 +46,9 @@ marked **changed** are the ones that invalidate revision 1.
 | Documented policies: `staging`→branch **`staging`**, `production`→branch **`main`** | `11-actions-deploys.md:47-49`; `plan-deployment-alignment.md:215` |
 | A scheduled workflow runs on the **default branch** (`main`) | GitHub behaviour; landmine 1 |
 | `.github/workflows/` on `main` contains only `ci.yml`, `migrate.yml` | `gh api .../contents/.github/workflows?ref=main` |
-| Canonical domains already used throughout the docs | `solara-stg.vercel.app` (21 refs), `solara-production.vercel.app` (16 refs) |
+| **Canonical origins are now the custom domains** | `scripts/deploy.sh:84-85` → `staging.thanatos.mx` / `www.thanatos.mx`; `docs/setup/12-domains-and-email.md` §6 |
+| `*.vercel.app` is retained as an **internal fallback**, not advertised | `12-domains-and-email.md:244`; still referenced for overrides |
+| `ssoProtection` is `all_except_custom_domains` — so the custom domains are **exempt**, `*.vercel.app` is **gated** | Vercel project settings; `12-domains-and-email.md` §6 sends the bypass header to staging only |
 | **`#167` is CLOSED** (merged `12d08b3`) | `gh issue view 167` → `state: CLOSED` |
 | **`#164` is CLOSED** and still reachable from `staging` | `gh issue view 164` → `closedAt 2026-11-23T03:37:17Z` |
 | Production `main` (`4490ced`) predates #164 | `4490ced` is `origin/main`; #164 landed on staging only |
@@ -102,7 +104,7 @@ literal rule and never later, and it is the reading `readiness.ts:178` supports.
 | **D7** | Three constants, named once: **cadence 15 min**, **stale/migration horizon 20 min**, **approval horizon 60 min** | Different legitimate durations; one shared threshold either pages on a normal deploy or never fires |
 | **D8** | The bounded error is **`cadence + horizon`** (35 min / 75 min) | First observation lags the true transition by up to one cadence. Naming it stops the horizon being read as exact |
 | **D9** | Network/API failure **fails open for the run, closed for the clock**: exit 0, log `degraded`, **re-upload the prior state unchanged**, never write an observation it could not verify | Paging on the monitor's own outage is worse than brief blindness; a fabricated baseline corrupts the horizon permanently |
-| **D10** | The monitor **never writes to the repository, never deploys, never migrates, never creates GitHub Deployments** | Read-only plus issue writes. Deployments are the record ADR 012 and #174 rely on (§F3) |
+| **D10** | The monitor **never writes to the repository, never deploys, never migrates, and never creates a `staging`, `production` or `production-migrations` GitHub Deployment**. Actions records its own runs under `monitoring` only | Read-only plus issue writes. The deployment record ADR 012 and #174 read must stay clean. It *does* create a Deployment — under `monitoring` — so claiming "no GitHub Deployment" would be falsifiably false on the first tick |
 | **D11** | `ahead` is **time-bounded**; `behind`/`diverged` alert **immediately**; a **`db: "error"` probe failure is `unknown`, not `diverged`** | §3 deviation, plus the catch path's `diverged` is a *probe* verdict — a DB outage must not page as "schema diverged" |
 | **D12** | Classification is a **total order, first match wins**, and **no `exact` short-circuit before the checks that guard it** | `head === live` alone would close an issue while the schema is broken or the endpoint answers from the wrong environment (§F5b) |
 
@@ -114,21 +116,26 @@ literal rule and never later, and it is the reading `readiness.ts:178` supports.
 permissions:
   contents: read      # checkout
   actions: read       # previous run's state artifact, run lookup
-  deployments: read   # the production-migrations deployment status (§D6)
+  deployments: read   # the production-migrations deployment status (D6)
   issues: write       # the alert
-
-concurrency:
-  group: drift-monitor-${{ matrix.target }}
-  cancel-in-progress: false
 
 jobs:
   monitor:
     environment: monitoring          # NOT staging, NOT production — see below
+    # Job-level, NOT root-level: `matrix` is only available inside a job, so a
+    # root `concurrency.group` referencing it is invalid workflow syntax.
+    concurrency:
+      group: drift-monitor-${{ matrix.target }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false               # a staging failure must not skip production
       matrix:
         target: [staging, production]
 ```
+
+Note on `concurrency`: it is **job-level**. `migrate.yml` puts it at the root, but only because
+`inputs.env` *is* available at the root; `matrix` is not, and a root-level `group` referencing
+`${{ matrix.target }}` is rejected at validation time with `Unrecognized named-value: 'matrix'`.
 
 ### Why `monitoring` and not the deployment environments
 
@@ -167,11 +174,11 @@ If staging and production ever split into separate Vercel projects, the matrix g
 ### What the monitor reads
 
 ```text
-GET https://solara-stg.vercel.app/api/version         GET https://solara-production.vercel.app/api/version
-  -> 200 {ok, commit, tree, release, env, builtAt}      identity: which build is serving
+GET https://staging.thanatos.mx/api/version      GET https://www.thanatos.mx/api/version
+  -> 200 {ok, commit, tree, release, env, builtAt}   identity: which build is serving
 
-GET https://solara-stg.vercel.app/api/ready           GET https://solara-production.vercel.app/api/ready
-  -> 200 | 503 {ok, db, auth, commit, migrations}       schema: exact | ahead | behind | diverged
+GET https://staging.thanatos.mx/api/ready        GET https://www.thanatos.mx/api/ready
+  -> 200 | 503 {ok, db, auth, commit, migrations}    schema: exact | ahead | behind | diverged
 ```
 
 Both hosts, both endpoints, the same header:
@@ -183,8 +190,13 @@ x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET
 - **A 503 with a JSON body is a successful read, not a failure.** It is how readiness reports
   `behind`, `diverged`, or `db: "error"`; the body is the payload. Only a non-JSON body is a failure.
 - **Domains are defaults, overridable** by `--staging-url` / `--production-url` so `--dry-run` can be
-  pointed at a preview without editing the workflow. The values above are already the documented
-  canonical hosts (§2).
+  pointed at a preview without editing the workflow. The documented fallbacks are
+  `solara-stg.vercel.app` / `solara-production.vercel.app`, retained deliberately
+  (`12-domains-and-email.md:244`) and useful during a DNS cutover.
+- **Send the bypass header to both hosts always.** It is harmless on a host exempted by
+  `all_except_custom_domains`, and mandatory the moment protection is tightened to `all_deployments`,
+  or when `--staging-url` points at the gated `*.vercel.app` fallback. Making it conditional would
+  create a path that is silently unauthenticated.
 - **No database credential is used anywhere in this workflow.** That is the whole point of taking
   `migrations` from `/api/ready`.
 - **Pre-promotion production is expected to be absent.** `4490ced` predates #164, so
@@ -258,7 +270,7 @@ never logged and never enters the body (landmine 8).
 | Healthy | 0 | Close the issue if open; clear state |
 | Drift past horizon | 0 | Open or update the one issue |
 | In-flight / young wait / young `ahead` | 0 | Persist the clock; **never** close an open issue while a run is in flight |
-| **401 / 403 / SSO HTML / SSO redirect** | **1** | **Hard failure** — a missing or rotated bypass secret must not be silently green |
+| **401 / 403 / SSO HTML / SSO redirect** | **1** | **Hard failure** (`rejected`) — a missing or rotated bypass secret must not be silently green |
 | Transient 5xx or network error | 0 | `degraded`; re-upload prior state unchanged (D9) |
 | Malformed JSON body | 0 | `unknown`; an HTML login page is not a schema verdict |
 | Bug in the monitor | non-zero | A red run means "the monitor is broken", never "production drifted" |
@@ -290,10 +302,22 @@ creates. Revision 1's own rejection of artifacts ("they expire and are per-run")
 | `drift-state-<env>.json` artifact | the **pre-alert clock**: `{environment, kind, liveCommit, headCommit, migrations, runId, runAttempt, firstObserved, alerted:false}` | `retention-days: 5` | ~480× the tick interval; readable with `actions: read`; commits nothing to `main`; no external dependency |
 | `<!-- drift-monitor:... -->` in the issue | the **post-alert record** and `alertedAt` | until the issue closes | survives artifact expiry, so a multi-week open alert keeps its real age |
 
-**Read at tick start:** `gh run list --workflow drift-monitor.yml --status completed` → newest
-successful run → its `drift-state-<env>.json` artifact. Matches `migrate.yml:153`'s existing
-`actions: read` pattern. Missing artifact (first run, expiry, or a failed predecessor) = **first
-observation**, not an error.
+**Every leg writes state on every tick**, under `if: always()`:
+
+| Tick outcome | Artifact action |
+| --- | --- |
+| `exact` (healthy) | upload an explicit **cleared marker** (`kind: "exact"`, `firstObserved: null`) — *not* "upload nothing", or the previous drift run's 5-day artifact would still be found |
+| observing / alerting | upload the updated clock |
+| `degraded` / `rejected` | **re-upload the prior state unchanged**, so an outage never resets a clock |
+| crashed before the step | `if: always()` still runs; if it cannot, the artifact is absent and the next tick treats that as a first observation |
+
+**Read at tick start:** completed `drift-monitor.yml` runs on **`--branch main`** (so a run on another
+ref cannot seed `main`'s clock), and **any conclusion** — `--status completed`, not `success`. Both legs
+share one workflow run, so if staging exits 1 (`rejected`) the run's overall conclusion is `failure`
+even though production succeeded and uploaded a valid clock; filtering on `success` would silently drop
+it. Take the newest completed run that actually produced **this leg's** `drift-state-<env>.json` — that
+is what keeps the legs isolated. Missing artifact (first run, expiry, or a genuinely failed
+predecessor) = **first observation**, not an error.
 
 **Reconcile:** if the issue comment exists, its `firstObserved` wins for the post-alert clock (it is
 older and never expires); the artifact is re-seeded from it. If only the artifact exists, it seeds a
@@ -341,10 +365,12 @@ two-minute-old `sha2`.
 
 | `previousIssue` | Observation vs previous | Action |
 | --- | --- | --- |
+| any | `unknown` | **none** — no issue write; preserve prior state (D9) |
 | none | any, past horizon | **open** |
 | none | any, before horizon | **none** (persist clock) |
 | open | `(kind, liveCommit, headCommit, migrations, runId, runAttempt)` unchanged | **none** (idempotent) |
-| open | any of those fields changed | **update** — otherwise a `stale-commit` → `overdue-approval` transition leaves stale text |
+| open | **alertable** kind (`env-mismatch`, `overdue-approval`, `stale-commit`, `stale-migrations`) and the tuple changed | **update** — otherwise a `stale-commit` → `overdue-approval` transition leaves stale text |
+| open | `pending` / `awaiting-approval` / `observing-*` | **none** — transitional states never rewrite or close an alert |
 | open | now `exact` and nothing in flight | **close** |
 | open | in flight | **none** — *never close while a run is in flight* |
 
@@ -377,6 +403,9 @@ in the tuple did.
 | **`head === live` does not hide schema drift** | equal commits + `behind` → `stale-migrations` |
 | env mismatch | `version.env: "production"` on the staging leg → `env-mismatch` |
 | malformed body is not drift | HTML login page → `unknown`, no write |
+| **unreachable / 5xx is not drift** | 5xx or timeout → `unknown`, **exit 0**, no write, open issue preserved |
+| **401/403/SSO rejected exits 1** | 401, 403, or SSO redirect → `rejected`, **exit 1**, no issue write |
+| **unknown preserves an open issue** | open issue + `unknown` → `none`, issue left untouched |
 | 503 JSON is a read | `{ok:false, migrations:"behind"}` at 503 → `stale-migrations` |
 | pre-promotion production | 404 `/api/version`, no `migrations` → `unknown`, not drift |
 | duplicate overdue ticks | identical tuple twice → `none`, then a changed field → `update` |
@@ -393,7 +422,7 @@ in the tuple did.
 | **single `monitoring` environment** | `environment: monitoring`; **no** `staging`/`production` environment (**kills the Deployment-pollution and branch-policy bug**) |
 | matrix | `target: [staging, production]`, `fail-fast: false` |
 | **permissions** | exactly `{contents: read, actions: read, deployments: read, issues: write}`; **no** `contents: write`, `deployments: write`, `pull-requests: write`, `packages: write`, `id-token: write` |
-| concurrency | `cancel-in-progress: false`, group includes the target |
+| concurrency | **`jobs.monitor.concurrency`** (not the workflow root) sets `group: drift-monitor-${{ matrix.target }}` and `cancel-in-progress: false`; assert the root has **no** `concurrency` key, which would be invalid with `matrix` |
 | secrets | only `VERCEL_AUTOMATION_BYPASS_SECRET`; no `DATABASE_URL` |
 | artifact | `retention-days: 5`, name contains the target |
 | dispatchable | `workflow_dispatch:` with a `dry_run` input (post-promotion only, §11) |
@@ -407,7 +436,9 @@ in the tuple did.
 | suppress every `waiting` | "overdue waiting alerts once" |
 | reset `firstObserved` every tick | "multi-tick progression" |
 | store the clock only in the issue | "multi-tick progression" |
-| treat an unreachable endpoint as drift | "unreachable endpoint is not drift" |
+| treat an unreachable endpoint as drift | "unreachable / 5xx is not drift" |
+| exit 0 on 401/403 | "401/403/SSO rejected exits 1" |
+| write an issue on `unknown` | "unknown preserves an open issue" |
 | treat an HTML body as a mismatch | "malformed body is not drift" |
 | key state by environment only, not attempt | "attempt superseded (overdue)" |
 | bind a job to `environment: staging` | "single monitoring environment" |
@@ -456,11 +487,13 @@ one cadence; close the issue by hand → it reopens once, not every tick.
 - This is the repository's **first scheduled workflow**, and a schedule runs from `main` (landmine 1).
 - **One environment row is added** to `11-actions-deploys.md` §2: `monitoring`, branch `main`, no
   reviewer, one secret.
-- **Permissions are explicit and complete** (D5/F6). An explicit `permissions:` map sets every
+- **Permissions are explicit and complete** (§5, F6). An explicit `permissions:` map sets every
   omitted scope to `none`; omitting `actions: read` or `deployments: read` yields
   `403 Resource not accessible by integration` on exactly the endpoints this design depends on.
 - **Cost:** 96 runs/day × 2 legs; each reads four URLs and the Actions API. **It consumes no
-  deployments** — relevant on Hobby's 100/day allowance. It creates **no GitHub Deployments** (§5).
+  deployments** — relevant on Hobby's 100/day allowance. It creates **no `staging`, `production` or
+  `production-migrations` GitHub Deployment**; Actions does record its own ~192 `/day` runs as
+  Deployments under `monitoring`, which no gate reads (§5, D10).
 - **`.vercelignore` and `tests/deployment-inputs.test.ts`** gain `scripts/drift-monitor.ts`, matching
   `scripts/check-migration-safety.ts`; the script is CI-only and must not enter the deployment input.
 - Rollback: revert, close any open drift issue.
@@ -473,7 +506,9 @@ one cadence; close the issue by hand → it reopens once, not every tick.
    (#165)`, labels `type:ci`, `area:ci`, and **`deploy:required`** — it adds `src/lib/`,
    `scripts/`, and `.github/workflows/`, which `PR_WORKFLOW.md` §2.1 classifies as deploy:required.
    (Revision 1 said `deploy:skip`; that was wrong for a PR touching those paths.)
-4. Note for **#174** (`8b`): same workflow, add the Deployments check. **Do not build a second monitor.**
+4. Note for **#174** (`8b`): same workflow, add the Deployments check. **Do not build a second
+   monitor.** It must query `/deployments?environment=staging` and `/deployments?environment=production`
+   — **never** unfiltered `/deployments`, which now includes the monitor's own `monitoring` entries.
 
 ## 14. Landmines
 
@@ -490,13 +525,20 @@ one cadence; close the issue by hand → it reopens once, not every tick.
 7. **Production has no Actions runs** while it deploys via `deploy.sh`. Absence of signal is not a
    clean bill of health.
 8. **The endpoint is unauthenticated.** Never log the bypass secret or headers into a body.
-9. **An environment-bound job creates a GitHub Deployment** — verified, `task=deploy`. Two jobs × 96
-   ticks = ~192/day of fabricated `success` records (§5).
+9. **An environment-bound job creates a GitHub Deployment** — verified, `task=deploy`. This is why no
+   leg binds to `staging`/`production`/`production-migrations`. The `monitoring` environment still
+   produces them (~192/day, `task=deploy`); that is accepted because no gate reads `monitoring` —
+   but it means "creates no GitHub Deployments" is false, and D10 is worded accordingly.
 10. **`ahead` is `ok`.** `readiness.ts:178` accepts `exact || ahead`; only the *time* bound makes it
     a problem (ADR 012).
 11. **A thrown readiness probe reports `migrations: "diverged"` with `db: "error"`.** Checking
     `migrations` before `db` turns a database outage into a schema alert.
-12. **`/api/runs` has no environment filter and sees the monitor itself.** Filter by workflow (§6).
+12. **`/actions/runs` has no environment filter and sees the monitor itself.** Filter by workflow (§6).
+13. **`matrix` is unavailable in a root-level `concurrency:`,** though `inputs` is (which is why
+    `migrate.yml:57` works). A root `group` referencing `${{ matrix.target }}` fails validation with
+    `Unrecognized named-value: 'matrix'` and the whole workflow never runs.
+14. **Selecting the previous run by `conclusion == success` loses state.** Both legs share one run, so
+    one leg's `rejected` makes the run `failure` while the other leg's clock is perfectly good (§7).
 
 ## 15. Definition of done
 
@@ -513,4 +555,5 @@ one cadence; close the issue by hand → it reopens once, not every tick.
 - [ ] The pre-alert clock survives a healthy start and a `degraded` tick (F2 regression test).
 - [ ] No job binds to `staging` or `production`; permissions are exactly the four scopes; `--dry-run`
       output pasted into the PR Evidence.
-- [ ] No new database credential; no deployment consumed; no GitHub Deployment created.
+- [ ] No new database credential; no Vercel deployment consumed; **no `staging`/`production`/
+      `production-migrations` GitHub Deployment** created (the `monitoring` records are expected).
