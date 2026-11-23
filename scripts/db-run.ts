@@ -39,11 +39,10 @@ import {
   REQUIRED_INDEXES,
   REQUIRED_TABLES,
 } from "../src/lib/schema-verification";
+import { assertDatabaseEnvironment, DatabaseUrlGuardError } from "../src/db/url-guard";
 
 type Target = "staging" | "production" | "local";
 type Command = "migrate" | "status" | "verify";
-
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 // ------------------------------------------------------------------ arguments
 function parseArgs(argv: string[]) {
@@ -99,11 +98,11 @@ function parseEnvFile(file: string): Record<string, string> {
   return out;
 }
 
-function resolveUrl(env: Target): { url: string; source: string } {
+function resolveUrl(env: Target): { url: string; source: string; fileEnv: Record<string, string> } {
   const exported = process.env.DATABASE_URL_DIRECT?.trim() || process.env.DATABASE_URL?.trim();
   if (exported) {
     const source = process.env.DATABASE_URL_DIRECT ? "shell DATABASE_URL_DIRECT" : "shell DATABASE_URL";
-    return { url: exported, source };
+    return { url: exported, source, fileEnv: {} };
   }
   const file = env === "local" ? ".env" : `.env.${env}`;
   const abs = path.resolve(process.cwd(), file);
@@ -114,7 +113,7 @@ function resolveUrl(env: Target): { url: string; source: string } {
   const parsed = parseEnvFile(abs);
   const url = (parsed.DATABASE_URL_DIRECT || parsed.DATABASE_URL || "").trim();
   if (!url) fail(`${file} has neither DATABASE_URL_DIRECT nor DATABASE_URL`);
-  return { url, source: `${file}:${parsed.DATABASE_URL_DIRECT ? "DATABASE_URL_DIRECT" : "DATABASE_URL"}` };
+  return { url, source: `${file}:${parsed.DATABASE_URL_DIRECT ? "DATABASE_URL_DIRECT" : "DATABASE_URL"}`, fileEnv: parsed };
 }
 
 // ------------------------------------------------------------------ identity
@@ -129,20 +128,35 @@ function describe(url: string) {
   };
 }
 
-function assertEnvironment(env: Target, url: string) {
-  const id = describe(url);
+function assertEnvironment(env: Target, url: string, fileEnv: Record<string, string>) {
   // errors = the target is wrong, refuse to continue. warnings = advisory, never fail.
   const errors: string[] = [];
   const warnings: string[] = [];
+  let invalid = false;
 
-  if (env === "local") {
-    if (!LOOPBACK.has(id.host)) errors.push(`local target must be loopback, got host "${id.host}"`);
-  } else {
-    if (LOOPBACK.has(id.host)) errors.push(`${env} target points at loopback "${id.host}"`);
-    if (id.host.includes("localhost")) errors.push(`${env} target is localhost`);
-    if (id.pooled) errors.push(`${env} target is a pooled (-pooler) host; migrations need the direct endpoint`);
+  try {
+    assertDatabaseEnvironment(url, {
+      deployEnv: env,
+      env: { ...process.env, ...fileEnv },
+      forMigration: true,
+      phase: "runtime",
+    });
+  } catch (error) {
+    if (!(error instanceof DatabaseUrlGuardError)) throw error;
+    errors.push(`${error.code}: ${error.message}`);
+    invalid = error.code === "database_url_invalid";
   }
 
+  // Do not let URL parsing echo the credential on an invalid URL.
+  if (invalid) {
+    return {
+      id: { host: "(invalid)", database: "", user: "", pooled: false, sslmode: "(unset)" },
+      errors,
+      warnings,
+    };
+  }
+
+  const id = describe(url);
   if (id.sslmode === "(unset)") {
     warnings.push("sslmode is not set — add ?sslmode=verify-full for hosted databases");
   } else if (id.sslmode === "require" || id.sslmode === "prefer") {
@@ -203,12 +217,12 @@ async function readApplied(client: Client): Promise<{ exists: boolean; hashes: s
   return { exists: true, hashes: rows.rows.map(r => r.hash) };
 }
 
-type Resolved = { url: string; source: string; id: ReturnType<typeof describe>; errors: string[]; warnings: string[] };
+type Resolved = { url: string; source: string; fileEnv: Record<string, string>; id: ReturnType<typeof describe>; errors: string[]; warnings: string[] };
 
 function resolveAndCheck(env: Target): Resolved {
-  const { url, source } = resolveUrl(env);
-  const { id, errors, warnings } = assertEnvironment(env, url);
-  return { url, source, id, errors, warnings };
+  const { url, source, fileEnv } = resolveUrl(env);
+  const { id, errors, warnings } = assertEnvironment(env, url, fileEnv);
+  return { url, source, fileEnv, id, errors, warnings };
 }
 
 function printTarget(r: Resolved, env: Target) {
@@ -233,6 +247,11 @@ async function cmdStatus(env: Target, json: boolean) {
   const r = resolveAndCheck(env);
   const { id, source, warnings, errors } = r;
   if (!json) printTarget(r, env);
+  // The guard is blocking: never connect to a target it rejected.
+  if (errors.length) {
+    if (json) console.log(JSON.stringify({ env, source, errors }, null, 2));
+    return 1;
+  }
   const { applied, entries, pending: pend } = await pending(r);
   const journalHashes = new Set(entries.map(entry => journalHash(entry, readFileSync(path.resolve(process.cwd(), `drizzle/${entry.tag}.sql`), "utf8"))));
   const unexpected = applied.hashes.filter(hash => !journalHashes.has(hash));
@@ -263,6 +282,10 @@ async function cmdVerify(env: Target, json: boolean, allowEmpty: boolean) {
   const r = resolveAndCheck(env);
   const { url, source, id, warnings, errors } = r;
   if (!json) printTarget(r, env);
+  if (errors.length) {
+    if (json) console.log(JSON.stringify({ env, source, errors, ok: false }, null, 2));
+    return 1;
+  }
   const entries = loadJournal();
 
   return withClient(url, async client => {
@@ -351,7 +374,14 @@ async function cmdMigrate(env: Target, dryRun: boolean, yes: boolean) {
   console.log("running drizzle-kit migrate…");
   const res = spawnSync("npx", ["drizzle-kit", "migrate"], {
     encoding: "utf8",
-    env: { ...process.env, DATABASE_URL: r.url },
+    env: {
+      ...process.env,
+      ...r.fileEnv,
+      APP_DEPLOY_ENV: env,
+      // Make the child prefer this exact URL and make the direct/pooled choice unambiguous.
+      DATABASE_URL: r.url,
+      DATABASE_URL_DIRECT: r.url,
+    },
   });
   // Keep the full output: it is uploaded as an artifact when a run fails, so the next
   // failure is diagnosable instead of "exit code 1".
