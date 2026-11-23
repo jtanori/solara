@@ -37,6 +37,7 @@ node scripts/check-setup.mjs production --strict
 - `NEXT_PUBLIC_*` vars are baked into the build — redeploy after changing them.
 - Never set `ALLOW_LOCAL_SEED*` or `LOCAL_SEED_PASSWORD` in Vercel — the app refuses them when `VERCEL` is set.
 - Hosted environments require `MAIL_TRANSPORT=resend|postmark`, `MAIL_FROM`, and the matching provider key. Never use `MAIL_TRANSPORT=outbox` in Vercel.
+- Canonical origins and sender values for `thanatos.mx` (`APP_URL`, `MAIL_FROM`, `MAIL_REPLY_TO`, `RESEND_API_KEY`, DNS and Vercel domain steps): [12-domains-and-email](12-domains-and-email.md).
 - Start with `CSP_MODE=report-only`; set `CSP_MODE=enforce` only after the observation window in `docs/setup/08-auth-security-hardening.md`.
 
 
