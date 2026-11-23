@@ -76,6 +76,22 @@ The shipped price table prices only `fixture-1`; a real pilot therefore requires
 the operator's processor profile, model IDs, aliases and price table. That is the
 same non-secret configuration the worker already requires.
 
+The only live transport in this slice is the **OpenAI Chat Completions** adapter
+(`/chat/completions`). A model served only on the Responses, Anthropic Messages
+or Gemini family needs its own adapter and tests; changing the base URL or model
+ID alone is not a substitute. The provider's model list names the family per
+model.
+
+OpenCode Go exposes the same models at `https://opencode.ai/inference/go/v1` but
+requires a stable `x-opencode-session` header. Set `READINGS_OPENCODE_SESSION` to
+a UUID; the adapter sends it. The Console pay-as-you-go endpoint is a different
+base URL and is not covered by a Go subscription.
+
+DeepSeek defaults to thinking mode. With the 2000-output-token cap it can return
+`finish_reason: length` with empty content, so set `READINGS_THINKING=disabled`
+for this adapter. A `200` response with no content is not a successful section;
+the local schema validation and repair path still applies.
+
 ## 4. Architecture
 
 ```
@@ -281,7 +297,16 @@ Named mutations for the PR:
 
 1. Use an isolated shell, never Vercel, never production.
 2. Set the provider/processor/model/price variables for the intended profile.
-3. Run one sample at a time:
+   The CLI loads `.env` through `dotenv` with **override**, so the file
+   wins over a stale exported `READINGS_*`; manual sourcing is not required.
+   Prices are **MXN per million tokens**. If the provider quotes USD, convert at
+   a stated FX rate (this pilot uses 20 MXN/USD) and keep that rate with the
+   evidence so the accounting is reproducible. Set `READINGS_THINKING=disabled`
+   when the provider defaults to thinking (DeepSeek).
+3. Confirm the chosen models belong to the adapter's API family. The live
+   adapter is Chat Completions only; a Responses/Anthropic/Gemini-only model
+   needs a matching adapter before it can be sampled.
+4. Run one sample at a time:
 
    ```bash
    npm run readings:sample -- \
@@ -293,23 +318,23 @@ Named mutations for the PR:
      --authorize-pilot
    ```
 
-4. Inspect `run.json`, `report.json` and the printed exposure.
-5. If the command reports `sampling_sample_incomplete`, the pilot directory is
+5. Inspect `run.json`, `report.json` and the printed exposure.
+6. If the command reports `sampling_sample_incomplete`, the pilot directory is
    sealed archival evidence: start a new `--pilot` id to retry. Never delete
    individual ledger lines or the report to force a retry.
    If it reports `sampling_budget_exhausted`, do not raise the cap in place:
    `run.json` binds the cap, so the directory refuses a different cap with
    `sampling_run_mismatch`, and a same-cap retry is an incomplete sample. Start
    a new `--pilot` id with a fresh authorization.
-6. Optionally produce the review packet:
+7. Optionally produce the review packet:
 
    ```bash
    npm run readings:evaluate -- --report .venv/genuine-sampling/pilot-2026-11-es/report.json
    ```
 
-7. Repeat for `paid-rich-v1` only after the core sample is understood. Each
+8. Repeat for `paid-rich-v1` only after the core sample is understood. Each
    invocation has its own 10 MXN cap; the two-sample pilot total is ≤20 MXN.
-8. Keep both generation flags off throughout. Send the report to #109 review;
+9. Keep both generation flags off throughout. Send the report to #109 review;
    the CLI does not approve it.
 
 ## 12. Acceptance checklist
