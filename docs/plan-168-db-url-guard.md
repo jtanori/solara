@@ -119,21 +119,21 @@ assertDatabaseEnvironment(rawUrl, {
 ### App boot — `src/db/index.ts`
 
 ```ts
-import { readAppIdentity } from "@/lib/build-identity";
 import { assertDatabaseEnvironment } from "@/db/url-guard";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required");
 
 assertDatabaseEnvironment(databaseUrl, {
-  deployEnv: readAppIdentity().env,
+  deployEnv: process.env.APP_DEPLOY_ENV?.trim() || "local",
   phase: process.env.NEXT_PHASE === "phase-production-build" ? "build" : "runtime",
 });
 ```
 
-Called before either pool is created. `readAppIdentity().env` is the inlined
-`APP_DEPLOY_ENV`; its `local` fallback makes a local boot with a loopback URL
-pass and a local boot with a hosted URL fail.
+Called before either pool is created. `process.env.APP_DEPLOY_ENV` is a literal
+member expression, so Next replaces it with the build stamp's value (#164); the
+`local` fallback makes a local boot with a loopback URL pass and a local boot
+with a hosted URL fail.
 
 ### Migration runner — `scripts/db-run.ts`
 
