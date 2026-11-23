@@ -82,6 +82,11 @@ or Gemini family needs its own adapter and tests; changing the base URL or model
 ID alone is not a substitute. The provider's model list names the family per
 model.
 
+OpenCode Go exposes the same models at `https://opencode.ai/inference/go/v1` but
+requires a stable `x-opencode-session` header. Set `READINGS_OPENCODE_SESSION` to
+a UUID; the adapter sends it. The Console pay-as-you-go endpoint is a different
+base URL and is not covered by a Go subscription.
+
 ## 4. Architecture
 
 ```

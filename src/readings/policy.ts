@@ -82,6 +82,7 @@ export function liveGenerationConfig(fetchImpl?: typeof fetch): LiveGenerationCo
       baseUrl: profile.baseUrl, apiKey,
       inputTokenLimits: profile.inputTokenLimits, fetchImpl,
       timeoutMs: process.env.READINGS_REQUEST_TIMEOUT_MS ? Number(process.env.READINGS_REQUEST_TIMEOUT_MS) : undefined,
+      sessionId: process.env.READINGS_OPENCODE_SESSION,
     });
     return { profile, settings, provider, fingerprint: hash({ profile, settings, payload: profile.payloadPolicy }) };
   } catch { return null; }

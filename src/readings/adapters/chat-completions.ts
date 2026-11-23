@@ -8,6 +8,8 @@ export type ChatAdapterOptions = {
   timeoutMs?: number;
   /** Verified processor contract: hard input-token caps, including all framing/schema. */
   inputTokenLimits?: Record<string, number>;
+  /** OpenCode Go routes on a stable session id; sent as `x-opencode-session`. */
+  sessionId?: string;
 };
 
 /** Safe diagnostic codes/status only. Never retain an upstream body or raw error. */
@@ -125,6 +127,8 @@ async function boundedBody(response: Response, signal: AbortSignal): Promise<str
 export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_TIMEOUT_MS) throw new ChatAdapterError("invalid provider timeout");
+  const sessionId = options.sessionId?.trim();
+  if (sessionId !== undefined && sessionId !== "" && !/^[A-Za-z0-9._:-]{1,128}$/.test(sessionId)) throw new ChatAdapterError("invalid provider session id");
   const base = new URL(options.baseUrl);
   if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new ChatAdapterError("invalid provider endpoint");
   const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/chat/completions`;
@@ -150,7 +154,7 @@ export function createChatAdapter(options: ChatAdapterOptions): ReadingProvider 
       controller.signal.throwIfAborted();
       const response = await abortable(doFetch(endpoint, {
         method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}`, ...(sessionId ? { "x-opencode-session": sessionId } : {}) },
         body, signal: controller.signal,
       }), controller.signal);
       const text = await boundedBody(response, controller.signal);
@@ -195,5 +199,5 @@ export function chatAdapterFromEnv(env: Record<string, string | undefined> = pro
   if (!baseUrl || !apiKey) return null;
   // Production orchestration supplies the validated processor/model contract.
   // The legacy resolver has no such contract and therefore cannot admit a call.
-  return createChatAdapter({ baseUrl, apiKey, timeoutMs: env.READINGS_REQUEST_TIMEOUT_MS ? Number(env.READINGS_REQUEST_TIMEOUT_MS) : undefined });
+  return createChatAdapter({ baseUrl, apiKey, timeoutMs: env.READINGS_REQUEST_TIMEOUT_MS ? Number(env.READINGS_REQUEST_TIMEOUT_MS) : undefined, sessionId: env.READINGS_OPENCODE_SESSION });
 }
