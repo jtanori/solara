@@ -68,7 +68,7 @@
     "@types/react-dom": "19.2.3",
     "drizzle-kit": "0.31.11",
     "esbuild": "0.28.2",
-    "eslint": "9.39.4",
+    "eslint": "10.15.0",
     "eslint-config-next": "16.4.6",
     "pdfjs-dist": "6.5.438",
     "picomatch": "file:vendor/solara-picomatch-v4-4.0.7-solara.3.tgz",
