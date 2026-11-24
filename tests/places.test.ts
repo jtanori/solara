@@ -9,10 +9,18 @@ import { handlePlaces, resolvePlacesLanguage } from "../src/lib/places";
 import { clearPlacesCacheForTests } from "../src/lib/places-cache";
 import { keyFor } from "../src/lib/rate-limit";
 
-function request(query: string, ip: string, origin = "same-origin", requestId?: string): Request {
-  return new Request(`https://solara.example/api/places?q=${encodeURIComponent(query)}&lang=en`, {
+function request(
+  query: string,
+  ip: string,
+  origin = "same-origin",
+  requestId?: string,
+  options: { lang?: "en" | "es"; cookie?: string } = {},
+): Request {
+  const lang = options.lang ?? "en";
+  return new Request(`https://solara.example/api/places?q=${encodeURIComponent(query)}&lang=${lang}`, {
     headers: {
       "x-forwarded-for": ip,
+      ...(options.cookie ? { cookie: options.cookie } : {}),
       ...(requestId ? { "x-request-id": requestId } : {}),
       ...(origin === "same-origin" ? { "Sec-Fetch-Site": "same-origin" } : { Origin: origin }),
     },
@@ -77,6 +85,42 @@ test("places caches identical queries and rate-limits per IP", {
     assert.equal(upstream.calls(), 1);
   } finally {
     await cleanup(keys);
+  }
+});
+
+test("places caches the same query separately per locale", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  // Same query, two locales: the upstream returns language-specific names, so a
+  // shared cache entry would hand English names to a Spanish reader (#229 review).
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Places tests require a loopback database");
+
+  clearPlacesCacheForTests();
+  const ip = "192.0.2.114";
+  const keys = [keyFor("places:ip", ip), budgetKey()];
+  await cleanup(keys);
+  const upstream = fakeFetch();
+  const deps = {
+    env: { APP_URL: "https://solara.example", PLACES_HOURLY_BUDGET: "1000" },
+    fetch: upstream.fetchImpl,
+  };
+
+  try {
+    const english = await handlePlaces(request("Mexicali", ip), deps);
+    const spanish = await handlePlaces(request("Mexicali", ip, "same-origin", undefined, { lang: "es" }), deps);
+    assert.equal(english.status, 200);
+    assert.equal(spanish.status, 200);
+    assert.equal(upstream.calls(), 2, "each locale must miss the other's entry");
+
+    // A repeat in the same locale is still a cache hit, so the split is not just
+    // "caching is broken".
+    const again = await handlePlaces(request("Mexicali", ip), deps);
+    assert.equal(again.status, 200);
+    assert.equal(upstream.calls(), 2);
+  } finally {
+    await cleanup(keys);
+    clearPlacesCacheForTests();
   }
 });
 

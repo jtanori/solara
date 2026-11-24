@@ -9,7 +9,7 @@ import {
   consumeRateLimit,
   keyFor,
 } from "@/lib/rate-limit";
-import { getCachedPlaces, setCachedPlaces } from "@/lib/places-cache";
+import { getCachedPlaces, placesCacheKey, setCachedPlaces } from "@/lib/places-cache";
 import { Semaphore, SemaphoreQueueFullError } from "@/lib/semaphore";
 import { log, requestMeta } from "@/lib/log";
 import { buildUpstreamUrl } from "@/lib/places-url";
@@ -83,7 +83,7 @@ export async function handlePlaces(request: Request, deps: PlacesDeps = {}): Pro
   );
   if (!ipLimit.allowed) return tooMany(ipLimit.retryAfterSeconds);
 
-  const cacheKey = `${name}\u0000${language}`;
+  const cacheKey = placesCacheKey(name, language);
   const cached = getCachedPlaces(cacheKey);
   if (cached) return NextResponse.json({ places: cached });
 

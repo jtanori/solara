@@ -133,6 +133,9 @@ async function main() {
       const { status, body } = await fetchWithSession("/usage-guide", freeCustomer.token);
       assert(status === 200, `free customer GET /usage-guide → 200 (got ${status})`);
       assert(body.includes("Your personal space") || body.includes("Your year, at your pace"), "free guide rendered");
+      // Page metadata wins over the root layout's: a static export here would defeat
+      // the locale-aware root metadata (#229 review).
+      assert(body.includes("<title>Solara | Usage guide</title>"), "English guide title follows the locale");
       for (const marker of OTHER_ROLE_MARKERS.free) assert(!body.includes(marker), `free payload must not contain other role marker "${marker}"`);
       assert(!body.includes('href="/setup"') && !body.includes('href="/blueprint"'), "free guide hides internal /setup and /blueprint section links");
       // ?role= ignored
@@ -146,6 +149,8 @@ async function main() {
       const { status, body } = await fetchWithSession("/usage-guide", freeCustomer.token, null);
       assert(status === 200, `free customer GET /usage-guide (no locale cookie) → 200 (got ${status})`);
       assert(body.includes("Tu espacio personal"), "Spanish free guide rendered by default");
+      assert(body.includes("<title>Solara | Guía de uso</title>"), "Spanish guide title follows the locale");
+      assert(!body.includes("<title>Solara | Usage guide</title>"), "the guide title must not stay English by default");
       assert(!body.includes("Your personal space"), "default locale must not fall back to English");
       assert(!body.includes("Cuida el producto"), "default free guide must not contain owner content");
     }
