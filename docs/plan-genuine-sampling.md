@@ -47,15 +47,17 @@ Decided by the operator on 2026-11-22 (recorded on #103 and #109):
 | Launch order | es-first; one reading is generated in exactly one locale |
 | Pilot scope | one complete sample per profile: `paid-core-v1` (9 sections) and `paid-rich-v1` (11) |
 | Sample case | one corpus case per run, chosen explicitly |
-| Locale | `es` for the pilot; `--locale en` is allowed for a later authorized parity run |
-| Hard cap | 10 MXN per invocation; the pilot total is two explicit invocations (≤20 MXN) |
+| Locale | `es` for the pilot. `--locale en` belongs to the post-production B.2 campaign and is not part of B.1. |
+| Hard cap | 10 MXN per invocation **and** at most the remaining campaign balance. The B.1 campaign authorizes 20 MXN total; a retry is a new pilot id and a separate authorization outside that ceiling. |
 | Coverage without spend | the full six-case corpus × both locales runs under fake transport in tests |
 | Editorial qualification | #109, separately authorized. Six complete reports per locale per profile; Spanish first. English sampling (stage B.2) is deferred to a post-production update — see [content qualification](plan-content-qualification-109.md). |
 
-The CLI hard cap is **per invocation**. The 20 MXN pilot total is the sum of the
-two explicitly authorized profile runs; a third invocation or a new pilot id is
-a new authorization. There is deliberately no hidden cross-process aggregate
-state: every spend is an explicit, capped invocation.
+The CLI hard cap is **per invocation**, not cumulative. The 20 MXN campaign
+authorization is enforced by the operator: before each run set
+`--max-spend-mxn` to `min(10, remaining)` and subtract the printed
+`exposureMxn`. A third invocation, a retry or a new pilot id is a new
+authorization outside that ceiling. There is deliberately no hidden
+cross-process aggregate state: every spend is an explicit, capped invocation.
 
 The CLI must refuse to start unless **all** of these are present:
 
@@ -227,6 +229,8 @@ Stable, non-secret codes (the CLI maps them to a non-zero exit):
 | Code | Meaning |
 | --- | --- |
 | `sampling_authorization_missing` | a required flag/env is absent |
+| `sampling_control_enabled` | `READINGS_GENERATION_ENABLED` or `READINGS_PAID_GENERATION_ENABLED` is `true` |
+| `sampling_profile_unqualified` | the processor profile still carries a `TBD`/`provisional` name or version |
 | `sampling_configuration_unavailable` | `paidGenerationConfig()` rejected the configuration |
 | `sampling_profile_mismatch` | `--profile` and `READINGS_PAID_PROFILE` disagree |
 | `sampling_case_unknown` | `--cases` names a case not in the frozen corpus |
@@ -301,8 +305,12 @@ six corpus cases each, once the #105 disclosure is signed and the configuration 
 frozen. English sampling is deferred post-production. This document remains the
 sampler's design gate; the campaign document adds the reporting and review gates.
 
-1. Use an isolated shell, never Vercel, never production.
+1. Use an isolated shell, never Vercel, never production. Keep both generation
+   controls false; the sampler refuses a `true` value (`sampling_control_enabled`)
+   even when the env file omits the key.
 2. Set the provider/processor/model/price variables for the intended profile.
+   The processor name and `policyVersion` must be the #105-reviewed values; the
+   provisional `TBD-105` example is refused (`sampling_profile_unqualified`).
    The CLI loads `.env` through `dotenv` with **override**, so the file
    wins over a stale exported `READINGS_*`; manual sourcing is not required.
    Prices are **MXN per million tokens**. If the provider quotes USD, convert at
@@ -338,8 +346,11 @@ sampler's design gate; the campaign document adds the reporting and review gates
    npm run readings:evaluate -- --report .venv/genuine-sampling/pilot-2026-11-es/report.json
    ```
 
-8. Repeat for `paid-rich-v1` only after the core sample is understood. Each
-   invocation has its own 10 MXN cap; the two-sample pilot total is ≤20 MXN.
+8. Repeat for `paid-rich-v1` only after the core sample is understood. Edit
+   `READINGS_PAID_PROFILE=paid-rich-v1` in the env file first: dotenv override
+   loads the file after the shell, and a mismatch is refused. Each invocation
+   is capped at 10 MXN and at the remaining campaign balance; a retry is a new
+   pilot id and a separate authorization.
 9. Keep both generation flags off throughout. Send the report to #109 review;
    the CLI does not approve it.
 

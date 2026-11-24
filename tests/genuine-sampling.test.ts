@@ -131,6 +131,38 @@ test("sampling CLI: refuses without explicit authorization, cap, case list or pr
   assert.deepEqual(parsed, { pilot: "pilot-test", profile: "paid-core-v1", locale: "es", cases: ["baseline"], capMicros: 10_000_000, output: undefined });
 });
 
+test("sampling CLI: refuses an enabled control and a provisional processor profile", () => {
+  const base = ["--pilot", "pilot-test", "--profile", "paid-core-v1", "--cases", "baseline", "--max-spend-mxn", "10", "--authorize-pilot"];
+
+  assert.equal(
+    errorCode(() => parseSamplingOptions(base, { READINGS_GENERATION_ENABLED: "true" })),
+    "sampling_control_enabled",
+  );
+  assert.equal(
+    errorCode(() => parseSamplingOptions(base, { READINGS_PAID_GENERATION_ENABLED: "true" })),
+    "sampling_control_enabled",
+  );
+  assert.equal(
+    errorCode(() => parseSamplingOptions(base, {
+      READINGS_PROCESSOR_PROFILE: JSON.stringify({ name: "OpenCode Console", policyVersion: "TBD-105" }),
+    })),
+    "sampling_profile_unqualified",
+  );
+  assert.equal(
+    errorCode(() => parseSamplingOptions(base, {
+      READINGS_PROCESSOR_PROFILE: JSON.stringify({ name: "OpenCode Console", policyVersion: "provisional" }),
+    })),
+    "sampling_profile_unqualified",
+  );
+  assert.equal(
+    errorCode(() => parseSamplingOptions(base, {
+      READINGS_GENERATION_ENABLED: "false",
+      READINGS_PROCESSOR_PROFILE: JSON.stringify({ name: "OpenCode Console", policyVersion: "2026-11-22" }),
+    })),
+    "no-error",
+  );
+});
+
 test("sampling: a cap below the first quote sends nothing and records no permit", async () => {
   const dir = tempDir();
   try {

@@ -15,9 +15,9 @@ mechanics stay in [genuine sampling](plan-genuine-sampling.md) and
 | Profiles | `paid-core-v1` and `paid-rich-v1`. |
 | Provider | OpenCode Go endpoint with `deepseek-v4.1-flash` / `deepseek-v4-pro`, `READINGS_THINKING=disabled`. No GPT configuration is retained; the old GPT pilot directories are failed attempts and not evidence. |
 | Processor naming | **TBD** (#105). The consent copy is not defined yet; this blocks the sampling campaign because approval binds the profile and payload identity. |
-| Reviewer | The operator, independent of the developer/prompt author. The review schema records the reviewer; it does not enforce independence. |
+| Reviewer | The operator, who did not author the prompts/content. The schema records the reviewer and evidence but does not verify identity; there is no GitHub-identity or separate-account gate. The approval guide's “no independent-person requirement” refers to identity verification, not this campaign rule. |
 | Approval database | A local disposable database. Hosted recording is a later, separate authorization. |
-| Budget | Two invocations, 10 MXN cap each; authorize at most 20 MXN including one retry. |
+| Budget | Campaign authorization: 20 MXN total. Each invocation is capped at 10 MXN **and** at the remaining balance. A retry is a new pilot id with its own separate authorization, outside the 20 MXN. |
 
 ## Evidence on disk
 
@@ -51,7 +51,9 @@ presentation, PDF, cost and failure-state work without another provider call.
    subprocessors and the Spanish-first copy. Finalize before sampling; a
    `policyVersion`/`POLICY_REVISION` bump invalidates prior evidence.
 7. **Frozen configuration** — [`.env.pilot.example`](../.env.pilot.example) and this
-   document. No prompt, schema, model or price edit during the campaign.
+   document. No prompt, schema, model or price edit during the campaign. The
+   example carries `policyVersion: "TBD-105"`; the sampler refuses it
+   (`sampling_profile_unqualified`) until #105 replaces it.
 
 ## Part B — sampling
 
@@ -71,9 +73,27 @@ DOTENV_CONFIG_PATH=.env.pilot npm run readings:sample -- \
   --max-spend-mxn 10 --authorize-pilot
 ```
 
+Before the rich run, edit `.env.pilot`: `READINGS_PAID_PROFILE=paid-rich-v1`.
+`dotenv` override loads the file after the shell, so an exported value does not
+win, and a mismatch is refused as `sampling_profile_mismatch`.
+
 Then evaluate, review twelve samples (six per profile) with every rubric criterion
 at 2, record two local approvals, and qualify six free-path documents. Measured
 pilot rates suggest roughly 8 MXN total; the authorized ceiling is 20.
+
+### Budget ledger (authorized: 20 MXN)
+
+`--max-spend-mxn` is **per invocation**, not cumulative. Before each run, set it
+to `min(10, remaining)`; after the run subtract the printed `exposureMxn`:
+
+| Run | Cap | Remaining before |
+|---|---|---|
+| `core-es` | `min(10, 20)` | 20.00 |
+| `rich-es` | `min(10, remaining)` | 20.00 − core exposure |
+
+A sealed or failed run needs a **new pilot id and a fresh authorization**; it is
+not funded from this 20 MXN. Never raise the cap in an existing pilot directory
+(`sampling_run_mismatch`).
 
 B.1 does not start until the #105 copy is signed and `contentVersion`/`configHash`
 are frozen.

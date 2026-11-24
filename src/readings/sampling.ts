@@ -37,8 +37,10 @@ import type { SectionKey } from "@/readings/types";
 
 export type SamplingCode =
   | "sampling_authorization_missing"
+  | "sampling_control_enabled"
   | "sampling_configuration_unavailable"
   | "sampling_profile_mismatch"
+  | "sampling_profile_unqualified"
   | "sampling_case_unknown"
   | "sampling_cap_invalid"
   | "sampling_run_mismatch"

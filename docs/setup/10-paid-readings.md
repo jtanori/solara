@@ -240,17 +240,22 @@ against the included facts. Score each criterion 0/1/2; only all-2 passes qualif
 specificity, factual agreement, cross-section consistency, language, completeness,
 no paid upsell, honest limitations. Notes, reviewer and evidence reference are
 mandatory. Copy the explicit full-report attestation only after performing that
-review. There is no independent-person/GitHub-identity requirement.
+review. The schema records the reviewer and evidence but does not verify identity;
+there is no GitHub-identity or separate-account gate. **The #109 campaign**
+additionally requires a reviewer who did not author the prompts/content, which
+the operator satisfies; that is a campaign rule, not an identity check.
 
 Validation defaults to check-only:
 
 ```bash
-npm run readings:approve-evaluation -- --report /private/report.json --review /private/review-en.json
+# B.1 is Spanish-first; the English review is post-production (B.2).
+npm run readings:approve-evaluation -- --report /private/report.json --review /private/review-es.json
 # Explicit privileged mutation only after authentic editorial review:
-npm run readings:approve-evaluation -- --report /private/report.json --review /private/review-en.json --record
+npm run readings:approve-evaluation -- --report /private/report.json --review /private/review-es.json --record
 ```
 
-Repeat for Spanish. Approval pins profile/contentVersion/locale/config, corpus,
+Repeat for the other locale only when that locale is qualified (English is B.2,
+post-production). Approval pins profile/contentVersion/locale/config, corpus,
 facts, prompt/schema hashes and report/sample hashes. It validates model tier,
 served aliases, exact quote/usage/price arithmetic, completeness and exposure.
 Synthetic-labelled/fixture-model reports and unfilled templates cannot approve.
