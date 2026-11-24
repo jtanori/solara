@@ -81,6 +81,14 @@ deploy_ready_ok() {
   [[ "$code" == "200" ]] && grep -q '"ok":true' "$body"
 }
 
+# True when a rendered page returned 200 with a non-empty body. Used by the
+# post-merge gate and by rollback verification (#212).
+deploy_page_ok() {
+  local code="$1"
+  local body="$2"
+  [[ "$code" == "200" && -s "$body" ]]
+}
+
 # Instant Rollback. The endpoint path below is the only part of this file that has NOT been
 # exercised against the live Vercel API (it needs a real VERCEL_TOKEN); #76's acceptance requires
 # exercising it once live, which is what confirms it. Every failure path prints manual recovery

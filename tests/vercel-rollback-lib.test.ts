@@ -58,3 +58,20 @@ test("a rollback with no captured target still tells the operator what to do", (
 print_manual_rollback "solara" "" "" 2>&1`);
   assert.match(out, /last known-good/);
 });
+
+test("deploy_page_ok requires HTTP 200 and a non-empty page", () => {
+  const out = bash(`${SOURCE}
+ok=$(mktemp); printf '<html>app</html>' > "$ok"
+empty=$(mktemp)
+deploy_page_ok 200 "$ok" && echo "200+body:pass" || echo "200+body:fail"
+deploy_page_ok 200 "$empty" && echo "200+empty:pass" || echo "200+empty:fail"
+deploy_page_ok 500 "$ok" && echo "500+body:pass" || echo "500+body:fail"
+deploy_page_ok 401 "$ok" && echo "401+body:pass" || echo "401+body:fail"
+rm -f "$ok" "$empty"`);
+  assert.deepEqual(out.trim().split("\n"), [
+    "200+body:pass",
+    "200+empty:fail",
+    "500+body:fail",
+    "401+body:fail",
+  ]);
+});

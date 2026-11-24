@@ -35,3 +35,16 @@ test("post-merge readiness does not downgrade failures to a warning", () => {
   assert.match(script, /did not become ready/);
 });
 
+
+test("page-health failures share the rollback and deploy-record path", () => {
+  // The gate sets a failure kind instead of exiting inside the success branch, so a
+  // rendered-page failure reaches the same decide_rollback/record_deploy path.
+  assert.match(script, /DEPLOY_FAILURE="readiness"/);
+  assert.match(script, /DEPLOY_FAILURE="page"/);
+  assert.match(script, /DEPLOY_FAILURE="auth"/);
+  assert.match(script, /FAILED \$DEPLOY_FAILURE/);
+  assert.match(script, /deploy_page_ok/);
+  assert.match(script, /record_deploy .* "FAILED \$DEPLOY_FAILURE"/);
+  assert.match(script, /not executed \(auth\/config\)/, "auth failures record without an automatic rollback");
+  assert.match(script, /rollback did not restore readiness and page rendering/);
+});

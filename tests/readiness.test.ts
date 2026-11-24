@@ -147,6 +147,33 @@ test("readiness fails fast when the boot guard would reject the deployment", asy
   assert.ok(Date.now() - started < 1_000, "the guard must short-circuit before opening a connection");
 });
 
+test("getReadiness() uses the production boot guard when called without an override", async () => {
+  const saved = {
+    DATABASE_URL: process.env.DATABASE_URL,
+    APP_DEPLOY_ENV: process.env.APP_DEPLOY_ENV,
+    STAGING_DB_ENDPOINT: process.env.STAGING_DB_ENDPOINT,
+    NEXT_PHASE: process.env.NEXT_PHASE,
+  };
+  try {
+    delete process.env.NEXT_PHASE;
+    process.env.APP_DEPLOY_ENV = "staging";
+    process.env.DATABASE_URL = "postgresql://user:pass@ep-stage-pooler.us-east-2.aws.neon.tech/app?sslmode=verify-full";
+    delete process.env.STAGING_DB_ENDPOINT;
+
+    const started = Date.now();
+    const result = await getReadiness();
+    assert.equal(result.ok, false, "the default path must not bypass the boot guard");
+    assert.equal(result.db, "error");
+    assert.equal(result.migrations.state, "diverged");
+    assert.ok(Date.now() - started < 1_000, "the production default must short-circuit before connecting");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("the boot guard reports the code app boot would throw, without a URL or host", () => {
   const saved = {
     DATABASE_URL: process.env.DATABASE_URL,
