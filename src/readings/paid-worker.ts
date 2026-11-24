@@ -1,14 +1,15 @@
 import { dispatchAttempt, GenerationBlocked } from "@/readings/execution";
 import { assembleSectionPrompt } from "@/readings/generate";
-import { MAX_OUTPUT_TOKENS_PER_SECTION } from "@/readings/config";
+import { MAX_OUTPUT_TOKENS_PER_SECTION, generationLocales } from "@/readings/config";
 import { sectionJsonSchema, validateSectionOutput } from "@/readings/schemas";
 import { PAID_HEARTBEAT_MS, PAID_RUN_MS } from "@/readings/paid-contract";
 import { calculatePaidSnapshot, paidDigest } from "@/readings/paid-chart";
 import { paidGenerationConfig, paidGenerationEnabled, paidModel, type PaidGenerationConfig } from "@/readings/paid-policy";
 import { PaidReadingStore, paidRecoveryHalt, type PaidRun } from "@/readings/paid-store";
 import { log } from "@/lib/log";
+import type { Locale } from "@/lib/i18n";
 
-export type PaidWorkerDeps = { store?: PaidReadingStore; config?: () => PaidGenerationConfig | null; enabled?: () => boolean };
+export type PaidWorkerDeps = { store?: PaidReadingStore; config?: () => PaidGenerationConfig | null; enabled?: () => boolean; locales?: () => Set<Locale> };
 const failureCode = (error: unknown) => error instanceof GenerationBlocked ? error.code : "paid_worker_unavailable";
 
 /** Trusted executor, not an HTTP handler. Its lifetime is independent of a browser. */
@@ -26,6 +27,14 @@ export async function workOnePaidReading(deps: PaidWorkerDeps = {}) {
   };
   const run = await store.claimNext(config, current);
   if (!run) return null;
+  // #224: a durable run admitted before the locale allowlist narrowed must not produce
+  // prose. Admission refuses new intents; this fences runs that were already queued.
+  if (!(deps.locales ?? generationLocales)().has(run.locale)) {
+    log.warn("readings.locale_not_qualified", { userId: run.userId, runId: run.id });
+    try { await store.fail(run, "locale_not_qualified"); }
+    catch { /* the lease/account lifecycle owns recovery; nothing was dispatched */ }
+    return null;
+  }
   return executePaidRun(run, store, config, current);
 }
 

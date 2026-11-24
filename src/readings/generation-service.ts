@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GenerationStore, type GenerationView } from "@/readings/generation-store";
-import { generationEnabled } from "@/readings/config";
+import { generationEnabled, generationLocales } from "@/readings/config";
 import { GenerationBlocked } from "@/readings/execution";
 import { GENERATION_DISPATCH_MS, hash, liveGenerationConfig, type LiveGenerationConfig } from "@/readings/policy";
 import { computeContentVersion } from "@/readings/content-version";
@@ -14,6 +14,7 @@ export type GenerationServiceDeps = {
   store?: GenerationStore;
   config?: () => LiveGenerationConfig | null;
   enabled?: () => boolean;
+  locales?: () => Set<Locale>;
 };
 
 /** The only production entry point for provider work. No paid tier/client digest input. */
@@ -29,6 +30,12 @@ export async function generateFreeReading(
   if (!enabled()) throw new GenerationBlocked("generation_disabled");
   const config = getConfig();
   if (!config) throw new GenerationBlocked("generation_unavailable");
+  // #224: unqualified locales fail closed BEFORE a permit is claimed, so the lifetime offer
+  // survives a refused request. The distinction stays in the log; the client copy is generic.
+  if (!(deps.locales ?? generationLocales)().has(locale)) {
+    log.warn("readings.locale_not_qualified", { userId, readingId });
+    throw new GenerationBlocked("generation_unavailable");
+  }
   if (requestSignal?.aborted) throw new GenerationBlocked("generation_cancelled");
   const contentVersion = hash({ sources: computeContentVersion(), config: config.fingerprint }).slice(0, 16);
   const claimed = await store.claim(userId, readingId, locale, config, contentVersion);

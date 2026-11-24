@@ -8,6 +8,8 @@
  * edit plus a test failure, not a silent margin leak.
  */
 
+import type { Locale } from "@/lib/i18n";
+
 export type ModelTier = "cheap" | "strong";
 
 export type ModelPrice = {
@@ -95,6 +97,31 @@ export function modelForTier(tier: ModelTier): string {
 /** The global kill switch: one flag disables generation, chart-only remains. */
 export function generationEnabled(): boolean {
   return process.env.READINGS_GENERATION_ENABLED === "true";
+}
+
+/**
+ * Locales whose generated prose may be produced (#224). English content qualification
+ * (sampling stage B.2) is deferred to a post-production update, so the runtime must fail
+ * closed for `en` even once generation is switched on.
+ *
+ *   unset            ⇒ `es` only — the gate is live without a deployment-time change
+ *   `es` / `es,en`   ⇒ exactly those locales (case-insensitive, whitespace-tolerant)
+ *   empty, or any unrecognised token ⇒ no locales at all
+ *
+ * A partially valid list is rejected rather than silently narrowed: an operator who types
+ * `es,fr` gets no generation and a failed run, not half of what they meant.
+ */
+export function generationLocales(): Set<Locale> {
+  const raw = process.env.READINGS_GENERATION_LOCALES;
+  if (raw === undefined) return new Set<Locale>(["es"]);
+  const tokens = raw.split(",").map(token => token.trim().toLowerCase()).filter(token => token !== "");
+  if (tokens.length === 0) return new Set<Locale>();
+  const allowed = new Set<Locale>();
+  for (const token of tokens) {
+    if (token !== "en" && token !== "es") return new Set<Locale>();
+    allowed.add(token);
+  }
+  return allowed;
 }
 
 /** Provider selection. Unset or unknown ⇒ generation cannot run (fails soft). */
