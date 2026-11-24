@@ -5,7 +5,7 @@ import test from "node:test";
 import { inArray } from "drizzle-orm";
 import { db } from "../src/db";
 import { rateLimits } from "../src/db/schema";
-import { handlePlaces } from "../src/lib/places";
+import { handlePlaces, resolvePlacesLanguage } from "../src/lib/places";
 import { clearPlacesCacheForTests } from "../src/lib/places-cache";
 import { keyFor } from "../src/lib/rate-limit";
 
@@ -172,4 +172,27 @@ test("places failures never log the key or query", {
   assert.doesNotMatch(output, /super-secret-key/);
   assert.doesNotMatch(output, /Mexicali/);
   assert.match(output, /places\.fetch_failed/);
+});
+
+test("places: the upstream language follows an explicit lang, then the cookie, then Spanish", () => {
+  // Pure resolution only: this asserts which upstream language is chosen, without
+  // spending a rate-limit slot or touching the network/database (#223).
+  const language = (url: string, cookie?: string) =>
+    resolvePlacesLanguage(new Request(url, { headers: cookie ? { cookie } : {} }), new URL(url).searchParams);
+  const base = "https://solara.example/api/places?q=Mexicali";
+
+  // The client always sends the UI locale, and it wins over a stale cookie.
+  assert.equal(language(`${base}&lang=en`, "solara_locale=es"), "en");
+  assert.equal(language(`${base}&lang=es`, "solara_locale=en"), "es");
+
+  // No explicit param: the visitor's cookie decides.
+  assert.equal(language(base, "solara_locale=en"), "en");
+
+  // No param and no cookie is Spanish now, not the previous silent English.
+  assert.equal(language(base), "es");
+  assert.equal(language(base, "other=1"), "es");
+
+  // A junk lang is not a locale choice; the cookie still is.
+  assert.equal(language(`${base}&lang=fr`, "solara_locale=en"), "en");
+  assert.equal(language(`${base}&lang=fr`), "es");
 });

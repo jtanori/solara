@@ -1,4 +1,37 @@
 export type Locale = "en" | "es";
+
+/**
+ * Spanish-first (#223). English remains a first-class locale: it is selected by the
+ * `solara_locale=en` cookie, never by removing anything from this module.
+ */
+export const DEFAULT_LOCALE: Locale = "es";
+
+/**
+ * Resolve a cookie value to a locale. Only the exact values the language switcher
+ * writes are trusted; a missing, empty or unrecognised cookie falls back to
+ * `DEFAULT_LOCALE` rather than to English. Pure and import-free so it is testable
+ * without a Next request scope.
+ */
+export function resolveLocale(raw: string | null | undefined): Locale {
+  return raw === "en" || raw === "es" ? raw : DEFAULT_LOCALE;
+}
+
+/**
+ * The `solara_locale` value out of a Cookie header. Kept here, next to the resolver,
+ * so route handlers that must avoid `next/headers` parse the cookie one way only.
+ * The first occurrence wins, matching `Cookie` header semantics.
+ */
+export function localeFromCookieHeader(header: string | null | undefined, name = "solara_locale"): Locale {
+  if (!header) return DEFAULT_LOCALE;
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    return resolveLocale(part.slice(separator + 1).trim());
+  }
+  return DEFAULT_LOCALE;
+}
+
 export const localeName = (locale: Locale) => locale === "es" ? "Español" : "English";
 
 const translatedSigns: Record<string, string> = {

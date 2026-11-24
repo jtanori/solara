@@ -13,6 +13,7 @@ import { getCachedPlaces, setCachedPlaces } from "@/lib/places-cache";
 import { Semaphore, SemaphoreQueueFullError } from "@/lib/semaphore";
 import { log, requestMeta } from "@/lib/log";
 import { buildUpstreamUrl } from "@/lib/places-url";
+import { localeFromCookieHeader, type Locale } from "@/lib/i18n";
 
 type GeocodingResult = {
   name?: string;
@@ -42,11 +43,24 @@ function tooMany(retryAfterSeconds: number) {
   );
 }
 
+/**
+ * Upstream search language. An explicit `?lang=` wins (the client sends the UI
+ * locale); otherwise the `solara_locale` cookie decides, and the product default is
+ * Spanish (#223) instead of the previous silent English. Read from the request header
+ * rather than `next/headers` so this handler stays callable from tests.
+ */
+export function resolvePlacesLanguage(request: Request, params: URLSearchParams): Locale {
+  const explicit = params.get("lang");
+  if (explicit === "en" || explicit === "es") return explicit;
+  return localeFromCookieHeader(request.headers.get("cookie"));
+}
+
 export async function handlePlaces(request: Request, deps: PlacesDeps = {}): Promise<Response> {
   const env = deps.env ?? process.env;
   const params = new URL(request.url).searchParams;
   const name = params.get("q")?.trim() ?? "";
-  const language = params.get("lang") === "es" ? "es" : "en";
+  const language = resolvePlacesLanguage(request, params);
+
   if (name.length < 2 || name.length > 100) return NextResponse.json({ places: [] });
   const context = requestMeta(request);
 
