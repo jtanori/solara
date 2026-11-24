@@ -6,6 +6,7 @@ import {
   type ContentCategory,
 } from "@/lib/content";
 import type { Locale } from "@/lib/i18n";
+import { DEFAULT_LOCALE } from "@/lib/i18n";
 import { canEditKnowledge } from "@/lib/roles";
 import type { Role } from "@/lib/types";
 
@@ -62,6 +63,11 @@ export function assessKnowledgeEdit(input: {
   } | null;
   /** Existing overrides, keyed by `contentKey`. */
   overrides?: Record<string, string>;
+  /**
+   * Locale for a submission that omits `locale`. Defaults to the product default:
+   * a missing field must never silently write an English override row (#223).
+   */
+  defaultLocale?: Locale;
 }): KnowledgeDecision {
   if (!canEditKnowledge(input.actor.role)) {
     return { allowed: false, rejection: { status: 403, error: "not_authorized" } };
@@ -70,7 +76,7 @@ export function assessKnowledgeEdit(input: {
   const category = (input.data?.category ?? "sun") as ContentCategory;
   const rawItem = input.data?.item ?? input.data?.sign ?? "";
   const item = typeof rawItem === "string" ? rawItem : "";
-  const locale: Locale = input.data?.locale === "es" ? "es" : "en";
+  const locale: Locale = input.data?.locale === "es" ? "es" : input.data?.locale === "en" ? "en" : (input.defaultLocale ?? DEFAULT_LOCALE);
 
   const itemIsValid = category === "house"
     ? /^(?:[1-9]|1[0-2])$/.test(item)
