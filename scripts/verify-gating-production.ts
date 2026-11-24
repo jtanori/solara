@@ -40,9 +40,16 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-async function fetchWithSession(path: string, token?: string) {
-  const headers: Record<string, string> = {};
-  if (token) headers.Cookie = `solara_session=${token}`;
+/**
+ * The product default is Spanish (#223), so this verifier pins the locale it asserts
+ * on instead of inheriting it. `locale: null` deliberately sends no cookie, which is
+ * how the default itself gets verified.
+ */
+async function fetchWithSession(path: string, token?: string, locale: "en" | "es" | null = "en") {
+  const cookie: string[] = [];
+  if (token) cookie.push(`solara_session=${token}`);
+  if (locale) cookie.push(`solara_locale=${locale}`);
+  const headers: Record<string, string> = cookie.length ? { Cookie: cookie.join("; ") } : {};
   const res = await fetch(`${BASE}${path}`, { headers, redirect: "manual" });
   const body = await res.text();
   return { status: res.status, body };
@@ -132,6 +139,15 @@ async function main() {
       const { body: body2 } = await fetchWithSession("/usage-guide?role=owner", freeCustomer.token);
       assert(body2.includes("Your personal space"), "?role= ignored for free customer (still free)");
       assert(!body2.includes("Oversee the product"), "?role=owner must not leak owner content to free");
+    }
+
+    // Default locale (#223): no cookie must render the Spanish guide, and only it.
+    {
+      const { status, body } = await fetchWithSession("/usage-guide", freeCustomer.token, null);
+      assert(status === 200, `free customer GET /usage-guide (no locale cookie) → 200 (got ${status})`);
+      assert(body.includes("Tu espacio personal"), "Spanish free guide rendered by default");
+      assert(!body.includes("Your personal space"), "default locale must not fall back to English");
+      assert(!body.includes("Cuida el producto"), "default free guide must not contain owner content");
     }
 
     // Owner (staff) should see only owner guide
