@@ -170,7 +170,7 @@ written. Record names, scopes and plans — never secret values. See
 | Plan (Hobby / Pro) | |
 | Production branch | |
 | Deployment Protection enabled? | |
-| Protection Bypass for Automation created? | |
+| Protection Bypass for Automation created? | (Vercel issues this; its copies and rotation are in `11-actions-deploys.md` §2.1) |
 | `git.deploymentEnabled` behaviour for feature-branch previews (spike S1) | |
 | Preview env var scopes (which rows are `staging`-only vs all-preview vs all-environments) | |
 | Preview routing verified: which database does a feature preview actually resolve to? (dashboard + a probe, not an inference) | |

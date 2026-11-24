@@ -58,7 +58,63 @@ Notes:
 - The read-only staging credential serves the production rehearsal gate and staging diagnostics; it is
   never used for a write.
 - `VERCEL_AUTOMATION_BYPASS_SECRET` is required when Deployment Protection is on; a 401/403 during
-  verification is a hard failure, never a skip.
+  verification is a hard failure, never a skip. See §2.1 for where it is issued, which copies exist
+  and how to rotate it.
+### 2.1 `VERCEL_AUTOMATION_BYPASS_SECRET`: issuer, copies and rotation
+
+**Vercel issues it. Vercel never stores your copy.** The value is minted once per project under
+Vercel → Project → Settings → **Deployment Protection** →
+*Protection Bypass for Automation*, and every consumer below holds its own copy. No application code reads it: `grep -r` over `src/` returns
+nothing. It is a deploy/verification credential, not a runtime variable (see the "do not put it in
+Vercel env vars" note below).
+
+**What it authenticates.** A protected deployment answers an unbypassed request with `401`/`403` or
+a `302` to `vercel.com/sso-api`. Holders present the value as a header (preferred) or a query
+parameter:
+
+```text
+x-vercel-protection-bypass: <secret>                                    # header: scripts, workflows
+?x-vercel-protection-bypass=<secret>                                    # query: where no header field exists
+```
+
+**Where the copies live.** Each row is a separate scope, so each needs its own copy; they are not
+interchangeable and nothing in this repository syncs them.
+
+| Consumer | Location | Used for |
+| --- | --- | --- |
+| Drift monitor | GitHub Environment **`monitoring`** → secret `VERCEL_AUTOMATION_BYPASS_SECRET` | `GET /api/version` + `GET /api/ready` on both hosts, every 15 minutes |
+| `scripts/deploy.sh` | GitHub Environments **`staging`** and **`production`** → same secret name | `deploy_ready_curl` in `scripts/lib/vercel-rollback.sh` sends the header on the pre-merge preview probe **and** the post-deploy `/api/ready` check |
+| Stripe (staging only) | Stripe Dashboard → the staging webhook **endpoint URL** | lets Stripe's POST reach `/api/billing/webhook`; see `02-stripe.md` |
+| Manual retrieval / QA | local shell or `.env` (not committed) | the `curl` checks in `12-domains-and-email.md` |
+| Local scripts | `.env` is the only place; `secretweaver.yaml` classifies it under the `deploy` group with `optional: [local, staging, production]` and never generates it (`sensitive: true`) | — |
+
+The drift monitor sends it on **two requests per tick, per target** and nothing else — it never
+calls the Vercel deploy API and consumes no Vercel deployment. Production (`www.thanatos.mx`) is public
+today, but the header is sent unconditionally so that turning protection on cannot create a silently
+unauthenticated path.
+
+> **Do not add it to Vercel's environment variables.** Vercel env vars are injected into the running
+> app, and the app never reads this value. Storing it there puts an unused secret in the runtime
+> process with no benefit. Vercel env vars hold app-runtime values only (`DATABASE_URL`, `APP_URL`,
+> `MAIL_*`, `RESEND_API_KEY`, …).
+
+> **One project-level token is assumed to serve both hosts.** Vercel issues bypass secrets per
+> project. If staging and production are ever separate Vercel projects, the secret must split into
+> `VERCEL_AUTOMATION_BYPASS_SECRET_STAGING` / `_PRODUCTION` rather than being repository-scoped
+> (`docs/plan-drift-monitor-165.md` §5). Confirm which project owns each custom domain before
+> creating the `monitoring` environment.
+
+**Rotating it.** `02-stripe.md` step 3 says to rotate the bypass secret after staging QA. All four
+copies must be updated together or something breaks:
+
+1. Vercel — create a new bypass secret, delete the old one.
+2. GitHub Environments `staging`, `production` **and** `monitoring` — a stale value makes the
+   monitor exit `1` on every tick and `deploy.sh` hard-fail.
+3. Stripe — the staging endpoint URL still carries the old value, so deliveries return `401`.
+4. Your local `.env` — the `12-domains-and-email.md` checks fail until it is refreshed.
+
+There is no automation for this; treat rotation as a four-step checklist.
+
 - **The drift monitor binds to `monitoring`, not to `staging` or `production`.** A job carrying an
   `environment:` key creates a GitHub Deployment (`task: deploy`). Two legs every 15 minutes would
   fabricate ~192 `success` records a day against `main`'s SHA — including while a real production

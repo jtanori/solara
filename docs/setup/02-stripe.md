@@ -46,6 +46,13 @@ Do not set `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`. Checkout is created server-side
 2. Register the endpoint at `https://staging.thanatos.mx/api/billing/webhook` and subscribe to `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_succeeded`, and `invoice.payment_failed`. Copy **that endpoint's** signing secret into `STRIPE_WEBHOOK_SECRET`; it is not the CLI listener secret.
 3. **Vercel Deployment Protection blocks the webhook.** The staging host requires authentication, so Stripe's POST is rejected before the app sees it. A `302` to `vercel.com/sso-api` in Workbench means protection, not a signature problem. Choose one:
    - append the project's automation bypass to the endpoint URL (`?x-vercel-protection-bypass=<secret>`) and confirm with **Send test event** that the response is `200`. Stripe stores that URL, so rotate the bypass secret after QA;
+
+     The secret is **Vercel's**, not Stripe's: Vercel issues it (Project → Settings → Deployment
+     Protection → *Protection Bypass for Automation*) and this step pastes a copy into Stripe's
+     endpoint config because Stripe's URL field has no header option. The same value is also held by
+     GitHub Environments `staging`, `production` and `monitoring`, and by your local `.env`;
+     `11-actions-deploys.md` §2.1 lists every copy and the rotation checklist. Stripe needs no
+     Vercel environment variable, and no application code reads this value.
    - temporarily disable Vercel Authentication for Preview during test-mode QA, then re-enable it;
    - keep the hosted endpoint as a delivery smoke test only, and exercise signature, replay and ordering locally with `stripe listen --forward-to localhost:3000/api/billing/webhook`.
 
