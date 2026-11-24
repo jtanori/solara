@@ -1,7 +1,20 @@
 name: migrate
 
-# Remote migration runner — triggered by local scripts/deploy.sh, not auto on push.
-# Secrets stay in GitHub Environments (staging → DATABASE_URL direct, production → DATABASE_URL direct).
+# Remote migration runner — the DATABASE_URL secret lives ONLY in GitHub Environments
+# (staging → Neon direct URL, production → Neon direct URL). It is never available to a
+# local shell, so this workflow is the supported way to migrate or to check the schema.
+#
+# Dispatch it with `npx tsx scripts/db-remote.ts --pr <n>` (preferred) or directly:
+#   gh workflow run migrate.yml -f env=staging -f pr=97 -f sha=<head-sha>
+#   gh workflow run migrate.yml -f env=staging -f pr=0  -f sha=<sha> -f mode=verify
+#
+# `mode: verify` performs no DDL — it reports whether the database matches drizzle/.
+#
+# PRODUCTION GATE — this repository has one human maintainer and no second reviewer, so
+# GitHub Environment reviewers are not usable (a required reviewer would have to approve
+# their own run, or block forever). The gate is enforced here instead, and every clause
+# fails closed: rehearsal consent, a specific commit SHA (never a branch tip), and a
+# migration that has already been applied to staging.
 on:
   workflow_dispatch:
     inputs:
@@ -11,28 +24,60 @@ on:
         type: choice
         options: [staging, production]
       pr:
-        description: PR number being deployed (audit trail)
+        description: PR number being deployed (audit trail; 0 for a bare schema check)
         required: true
         type: string
+        default: "0"
       sha:
-        description: PR head SHA to checkout and migrate (ensures PR's drizzle/ is used)
+        description: Commit SHA to checkout and migrate (must be a full 40-char SHA)
         required: true
         type: string
+      mode:
+        description: migrate applies pending migrations; verify only inspects
+        required: false
+        type: choice
+        options: [migrate, verify]
+        default: migrate
+      dry_run:
+        description: Print the pending migrations and skip all DDL
+        required: false
+        type: boolean
+        default: false
+      rehearsal_pr:
+        description: "PRODUCTION ONLY — the PR already migrated on staging that rehearses this change"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
   group: migrate-${{ inputs.env }}
   cancel-in-progress: false
 
-run-name: migrate ${{ inputs.env }} pr-${{ inputs.pr }} ${{ inputs.sha }}
+run-name: migrate ${{ inputs.env }} pr-${{ inputs.pr }} ${{ inputs.sha }} mode=${{ inputs.mode }} dry=${{ inputs.dry_run }}
 
 jobs:
   migrate:
     runs-on: ubuntu-latest
     environment: ${{ inputs.env }}
     steps:
+      - name: Validate inputs
+        env:
+          TARGET_ENV: ${{ inputs.env }}
+          SHA: ${{ inputs.sha }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character commit sha (got '$SHA') — migrations must target an exact commit, never a branch tip"
+            exit 1
+          fi
+          echo "target=$TARGET_ENV sha=$SHA mode=$MODE"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.sha }}
@@ -44,28 +89,195 @@ jobs:
 
       - run: npm ci
 
-      - name: Show pending migrations (no secrets)
+      - name: Show plan (no secrets)
         env:
           TARGET_ENV: ${{ inputs.env }}
           PR: ${{ inputs.pr }}
           SHA: ${{ inputs.sha }}
+          MODE: ${{ inputs.mode }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REHEARSAL_PR: ${{ inputs.rehearsal_pr }}
         run: |
-          echo "Environment: $TARGET_ENV pr=$PR sha=$SHA"
+          echo "Environment: $TARGET_ENV pr=$PR sha=$SHA mode=$MODE dry_run=$DRY_RUN rehearsal_pr=$REHEARSAL_PR"
           cat drizzle/meta/_journal.json
-          ls -l drizzle/*.sql || true
+          ls -l drizzle/*.sql
 
-      - name: Run drizzle-kit migrate against target
+      # ---------------------------------------------------------------- production gate
+      # No DDL below this point runs for production unless every check passes.
+      - name: Gate — production preconditions
+        if: ${{ inputs.env == 'production' && inputs.mode == 'migrate' && inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REHEARSAL_PR: ${{ inputs.rehearsal_pr }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "== 1. rehearsal consent =="
+          if [[ -z "${REHEARSAL_PR:-}" ]]; then
+            echo "::error::production migration requires rehearsal_pr — the PR number already migrated on staging that rehearses this change"
+            exit 1
+          fi
+          if ! [[ "$REHEARSAL_PR" =~ ^[0-9]+$ ]]; then
+            echo "::error::rehearsal_pr must be a PR number (got '$REHEARSAL_PR')"
+            exit 1
+          fi
+
+          echo "== 2. the rehearsing PR was really staged =="
+          STATE=$(gh pr view "$REHEARSAL_PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
+          if [[ "$STATE" != "OPEN" && "$STATE" != "MERGED" ]]; then
+            echo "::error::rehearsal PR #$REHEARSAL_PR is $STATE — it must be open or merged (i.e. it actually reached staging)"
+            exit 1
+          fi
+
+          echo "== 3. staging has a green, non-dry-run migrate run for this exact SHA =="
+          # A green `migrate staging pr-<n> <sha> mode=migrate dry=false` run is the proof
+          # that this exact migration already ran against a real database. A verify-only or
+          # dry-run run is not a rehearsal.
+          RUN_ID=""
+          for i in 1 2 3 4 5; do
+            RUN_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/migrate.yml/runs?per_page=100" \
+              --jq "[.workflow_runs[] | select(.conclusion==\"success\") | select(.name | contains(\"migrate staging\")) | select(.name | contains(\"pr-$REHEARSAL_PR\")) | select(.name | contains(\"$SHA\")) | select(.name | contains(\"mode=migrate\")) | select(.name | contains(\"dry=false\"))] | sort_by(.created_at) | reverse | .[0].id // empty" 2>/dev/null || true)
+            if [[ -n "$RUN_ID" ]]; then break; fi
+            sleep 5
+          done
+          if [[ -z "$RUN_ID" ]]; then
+            echo "::error::no successful non-dry-run 'migrate staging pr-$REHEARSAL_PR $SHA' run — dispatch it first with mode=migrate and dry_run=false"
+            exit 1
+          fi
+          echo "found staging run $RUN_ID for pr-$REHEARSAL_PR at $SHA"
+
+          ART_DIR=$(mktemp -d)
+          if ! gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "schema-verdict-staging-$SHA" --dir "$ART_DIR" >/dev/null 2>&1; then
+            echo "::error::staging run $RUN_ID has no schema-verdict-staging-$SHA artifact"
+            exit 1
+          fi
+          if [[ ! -f "$ART_DIR/migration-applied.json" ]]; then
+            echo "::error::staging run $RUN_ID has no migration-applied marker; a verify/dry-run is not a rehearsal"
+            exit 1
+          fi
+          node - "$ART_DIR/migration-applied.json" "$SHA" <<'NODE'
+          const fs = require("node:fs");
+          const [file, sha] = process.argv.slice(2);
+          const marker = JSON.parse(fs.readFileSync(file, "utf8"));
+          if (marker.env !== "staging" || marker.sha !== sha || marker.mode !== "migrate" || marker.dryRun !== false) {
+            console.error("staging artifact does not prove a real migrate for this SHA");
+            process.exit(1);
+          }
+          NODE
+          echo "verified staging migration marker for $SHA"
+
+          echo "== 4. exact-commit match =="
+          # The SHA below the gate must be the head of the rehearsed PR, or the rehearsal
+          # proved something about different code.
+          HEAD=$(gh pr view "$REHEARSAL_PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)
+          if [[ "$HEAD" != "$SHA" ]]; then
+            echo "::error::sha $SHA is not the head of rehearsal PR #$REHEARSAL_PR ($HEAD) — the rehearsal did not cover this commit"
+            exit 1
+          fi
+
+          echo "::notice::production gate passed — rehearsal pr-$REHEARSAL_PR, commit $SHA"
+          {
+            echo "### production gate passed"
+            echo "- rehearsal PR: #$REHEARSAL_PR"
+            echo "- commit: \`$SHA\`"
+            echo "- staging migrate run: $RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Guard the connection string
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
-          PR: ${{ inputs.pr }}
-          SHA: ${{ inputs.sha }}
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "ERROR: secrets.DATABASE_URL not set for environment '$TARGET_ENV' — add GitHub Environment secret DATABASE_URL (Neon direct URL)"
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::secrets.DATABASE_URL is not set for environment '$TARGET_ENV' — add the Neon DIRECT url (no -pooler) as a GitHub Environment secret"
             exit 1
           fi
-          TARGET_HOST=$(echo "$DATABASE_URL" | sed -E 's|.*@||; s|/.*||')
-          echo "Migrating $TARGET_ENV (pr $PR, sha $SHA) → host $TARGET_HOST"
-          npx drizzle-kit migrate
-          echo "Migrate complete for $TARGET_ENV pr $PR"
+          HOST=$(printf '%s' "$DATABASE_URL" | sed -E 's|.*@||; s|[/?].*||')
+          SSL=$(printf '%s' "$DATABASE_URL" | sed -nE 's|.*[?&]sslmode=([^&]*).*|\1|p')
+          echo "host=$HOST sslmode=${SSL:-unset}"
+          case "$HOST" in
+            *-pooler.*) echo "::error::DATABASE_URL points at a POOLED host ($HOST); migrations require the direct endpoint"; exit 1 ;;
+            localhost|127.0.0.1) echo "::error::DATABASE_URL points at loopback ($HOST) for a hosted environment"; exit 1 ;;
+          esac
+          if [ -z "${SSL:-}" ]; then
+            echo "::warning::DATABASE_URL has no sslmode — add ?sslmode=verify-full"
+          fi
+
+      # Read-only. In verify/dry-run mode a failure here is diagnostic, not fatal — let the
+      # final verify step produce the verdict so one run tells the whole story.
+      - name: Inspect current state
+        continue-on-error: ${{ inputs.mode == 'verify' || inputs.dry_run }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_ENV: ${{ inputs.env }}
+        run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" status
+
+      - name: Apply migrations
+        if: ${{ inputs.mode == 'migrate' && inputs.dry_run == false }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_ENV: ${{ inputs.env }}
+        run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" migrate --yes
+
+      - name: Record applied migration
+        if: ${{ inputs.mode == 'migrate' && inputs.dry_run == false }}
+        env:
+          TARGET_ENV: ${{ inputs.env }}
+          SHA: ${{ inputs.sha }}
+          PR: ${{ inputs.pr }}
+        run: |
+          node -e 'require("node:fs").writeFileSync("migration-applied.json", JSON.stringify({env:process.env.TARGET_ENV,sha:process.env.SHA,pr:process.env.PR,mode:"migrate",dryRun:false,appliedAt:new Date().toISOString()}))'
+
+      # The verdict is DATA, not the job conclusion. A verify run is allowed to find an empty
+      # database (that is useful information before a migration), so it must not turn the run
+      # red — but it must not claim success either. `--json` is always written to verify.json;
+      # the step marker and summary say which of the two happened, and db-remote.ts reads it.
+      - name: Confirm schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_ENV: ${{ inputs.env }}
+          MODE: ${{ inputs.mode }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          ALLOW=""
+          if [ "$MODE" = "verify" ] || [ "$DRY_RUN" = "true" ]; then ALLOW="--allow-incomplete"; fi
+          npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify --json $ALLOW > verify.json || true
+          npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify $ALLOW 2>&1 | tee verify.txt || true
+
+          IN_SYNC=$(node -e 'const j=require("./verify.json");process.stdout.write(String(j.ok))')
+          if [ "$IN_SYNC" = "true" ]; then
+            echo "::notice::IN SYNC — $TARGET_ENV schema and drizzle journal match"
+            echo "schema_verdict=in-sync" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::OUT OF SYNC — $TARGET_ENV does not match drizzle/ (see below)"
+            echo "schema_verdict=out-of-sync" >> "$GITHUB_OUTPUT"
+          fi
+          # A real (non-dry-run) migrate that leaves the schema out of sync is a hard failure.
+          if [ "$MODE" = "migrate" ] && [ "$DRY_RUN" != "true" ] && [ "$IN_SYNC" != "true" ]; then
+            echo "::error::$TARGET_ENV is still out of sync after applying migrations"
+            exit 1
+          fi
+          {
+            echo "### migrate $TARGET_ENV · mode=$MODE · pr #${{ inputs.pr }}"
+            echo ""
+            echo "**schema verdict: $([ "$IN_SYNC" = "true" ] && echo "in sync" || echo "OUT OF SYNC")**"
+            echo ""
+            echo '```'
+            cat verify.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish verdict artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-verdict-${{ inputs.env }}-${{ inputs.sha }}
+          path: |
+            verify.json
+            migrate.log
+            migration-applied.json
+          retention-days: 30
+          if-no-files-found: ignore

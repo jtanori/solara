@@ -1,0 +1,143 @@
+name: drift-monitor
+
+# Drift monitor (#165) — reads what is live, never changes it.
+#
+# Every 15 minutes, per environment: compare the branch head against
+# /api/version, read the schema state from /api/ready, and look for deploy or
+# migration runs in flight. A mismatch past its horizon opens ONE issue per
+# environment and updates it in place; a healthy tick closes it.
+#
+# Design: docs/plan-drift-monitor-165.md. Two properties are load-bearing and
+# were each a latent bug in an earlier draft:
+#
+#   * ONE job with a matrix, bound to `monitoring` — NOT to `staging` or
+#     `production`. Binding a job to an environment creates a GitHub Deployment
+#     (task=deploy); two legs x 96 ticks would fabricate ~192 `success` records a
+#     day and corrupt the deployment record ADR 012 and #174 read. It would also
+#     collide with `staging`'s branch policy, since scheduled runs execute on main.
+#   * `concurrency` is JOB-level. `matrix` is unavailable at the workflow root
+#     (only github/inputs/vars are), so a root-level group referencing
+#     matrix.target fails validation with Unrecognized named-value.
+#
+# This workflow does not deploy, migrate, or build: it consumes no Vercel
+# deployments and holds no database credential.
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub runs scheduled workflows from the default branch.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Classify and print, write nothing
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read # checkout
+  actions: read # deploy/migrate run lookup, previous run's state artifact
+  deployments: read # the production-migrations waiting status (D6)
+  issues: write # the single alert issue per environment
+
+env:
+  # One project-level token serves both environments; the host exempts custom
+  # domains, but the header is sent unconditionally so a tightened protection
+  # setting cannot create a silently unauthenticated path (plan §6).
+  VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+
+jobs:
+  monitor:
+    name: monitor (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    environment: monitoring
+    # Job-level, so `matrix` is in scope. Two legs never cancel each other: a
+    # staging failure must not strand production.
+    concurrency:
+      group: drift-monitor-${{ matrix.target }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [staging, production]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Restore the pre-alert clock
+        # NOT actions/download-artifact@v4 with only a name: in v4 an artifact is
+        # scoped to its own workflow run, and this run has uploaded nothing yet,
+        # so that form fails on every tick and the clock would never restore.
+        # Walk completed drift-monitor.yml runs on main instead — any conclusion,
+        # because one leg exiting 1 makes the whole run `failure` while the other
+        # leg's artifact is perfectly good.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p .drift-state
+          mapfile -t RUN_IDS < <(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/drift-monitor.yml/runs?branch=main&status=completed&per_page=20" \
+              --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | .id" 2>/dev/null || true
+          )
+          for RUN_ID in "${RUN_IDS[@]:-}"; do
+            [[ -z "${RUN_ID}" ]] && continue
+            if gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "drift-state-${TARGET}" --dir .drift-state >/dev/null 2>&1; then
+              if [[ -f ".drift-state/drift-state-${TARGET}.json" ]]; then
+                mv ".drift-state/drift-state-${TARGET}.json" .drift-state/current.json
+                echo "restored .drift-state/current.json from run ${RUN_ID}"
+                exit 0
+              fi
+            fi
+          done
+          echo "no prior state on main — this tick is a first observation"
+
+      - name: Run the monitor
+        id: monitor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ARGS=(--env "${{ matrix.target }}" --state .drift-state/current.json)
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            ARGS+=(--dry-run)
+          fi
+          npx tsx scripts/drift-monitor.ts "${ARGS[@]}"
+
+      - name: Write the state artifact
+        # Always: a healthy tick must upload an explicit cleared marker, or a
+        # previous drift run's artifact is still found by the next tick. A
+        # degraded or rejected tick re-uploads the prior state unchanged.
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p .drift-state/out
+          if [[ -f .drift-state/next.json ]]; then
+            cp .drift-state/next.json .drift-state/out/drift-state-${{ matrix.target }}.json
+          elif [[ -f .drift-state/current.json ]]; then
+            cp .drift-state/current.json .drift-state/out/drift-state-${{ matrix.target }}.json
+          fi
+          if [[ ! -f .drift-state/out/drift-state-${{ matrix.target }}.json ]]; then
+            printf '%s\n' '{"environment":"${{ matrix.target }}","kind":"unknown","liveCommit":null,"headCommit":null,"migrations":null,"runId":null,"runAttempt":null,"firstObserved":null,"alertedAt":null}' > .drift-state/out/drift-state-${{ matrix.target }}.json
+          fi
+
+      - name: Upload the state artifact
+        if: always() && inputs.dry_run != true
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-state-${{ matrix.target }}
+          path: .drift-state/out/drift-state-${{ matrix.target }}.json
+          retention-days: 5
+          overwrite: true
+
+      - name: Read the state artifact name the next run must look for
+        if: always()
+        run: echo "state artifact drift-state-${{ matrix.target }} (retention 5 days; ~480x the tick interval)"

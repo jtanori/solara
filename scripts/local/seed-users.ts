@@ -106,17 +106,17 @@ async function main() {
   const { users, subscriptions } = await import("../../src/db/schema");
   const { eq } = await import("drizzle-orm");
 
-  const passwordHash = hashPassword(password);
+  const passwordHash = await hashPassword(password);
   const allSeeds = [...SEEDS, ...BILLING_SEEDS.map(({ email, name }) => ({ email, name, role: "user" as const }))];
   console.log(`Seeding ${allSeeds.length} local accounts (${SEEDS.length} roles + ${BILLING_SEEDS.length} billing fixtures) into ${hostname} (idempotent by email)...`);
   for (const seed of allSeeds) {
     // Upsert by unique email — idempotent across re-runs.
     const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, seed.email)).limit(1);
     if (existing.length) {
-      await db.update(users).set({ name: seed.name, role: seed.role, passwordHash }).where(eq(users.email, seed.email));
+      await db.update(users).set({ name: seed.name, role: seed.role, passwordHash, emailVerifiedAt: new Date() }).where(eq(users.email, seed.email));
       console.log(`  updated ${seed.role} ${seed.email}`);
     } else {
-      await db.insert(users).values({ email: seed.email, name: seed.name, role: seed.role, passwordHash });
+      await db.insert(users).values({ email: seed.email, name: seed.name, role: seed.role, passwordHash, emailVerifiedAt: new Date() });
       console.log(`  inserted ${seed.role} ${seed.email}`);
     }
   }

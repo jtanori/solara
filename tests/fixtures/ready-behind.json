@@ -1,0 +1,7 @@
+{
+  "headCommit": "abc1234",
+  "headline": "feat: a change that has not reached the live deployment",
+  "version": { "ok": true, "commit": "abc1234", "env": "staging" },
+  "ready": { "ok": false, "db": "ok", "auth": "ok", "commit": "abc1234", "migrations": "behind" },
+  "runs": []
+}

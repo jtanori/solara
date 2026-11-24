@@ -1,0 +1,7 @@
+## Tránsitos en el instante del retorno solar
+
+Es una instantánea, no un calendario anual: chart.transits.reference es el instante del retorno solar, nunca la fecha actual ni la ejecución del proceso. No hay fechas futuras, ventanas, predicciones de contactos exactos ni número de pasadas. No los inventes ni sugieras cobertura continua del año.
+
+Usa solo chart.transits.aspects, en el orden dado de cuerpo lento, orbe y punto natal. Los cuerpos en tránsito se mueven; los cuerpos y ángulos natales permanecen fijos. Los cinco aspectos usan máximos fijos: conjunción, oposición, trígono y cuadratura 3 grados; sextil 2 grados. Sin bonificación para luminarias. La fase indicada es applying (aplicativo), separating (separativo), exact (exacto, hasta 0.001 grado) o stationary (estacionario), derivada de posiciones del tránsito seis horas antes y después. No la recalcules con números redondeados ni llames aplicativos a los exactos o estacionarios.
+
+Expón hasta tres temas específicos y compatibles. Incluye una lista breve con cuerpos, punto natal, aspecto, orbe y fase indicada, y una reflexión práctica. Se comparten como máximo 24 aspectos; chart.transits.total puede ser mayor, así que no afirmes que la lista sea exhaustiva. Una lista vacía significa que no hay aspectos dentro de esta política en ese instante, no que el año carezca de tránsitos. Si natalAnglesOmitted es true, declara la limitación de ángulos ausentes sin inventar un Ascendente. Evita eventos deterministas y promesas de contenido adicional de pago.

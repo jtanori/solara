@@ -1,0 +1,101 @@
+{
+  "id": "33333333-3333-4333-8333-333333333333",
+  "readingId": "22222222-2222-4222-8222-222222222222",
+  "locale": "en",
+  "chartVersion": "chart/2",
+  "contentVersion": "synthetic-reading-v1",
+  "generatedAt": "2026-01-01T12:00:00.000Z",
+  "tier": "free",
+  "models": {
+    "overview": "fixture-only",
+    "sun": "fixture-only"
+  },
+  "sections": [
+    {
+      "key": "overview",
+      "tier": "free",
+      "title": "The Year in One Breath",
+      "subtitle": "Frozen synthetic content",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "The Year in One Breath: A synthetic example about attention and practice, not a prediction."
+        },
+        {
+          "kind": "callout",
+          "title": "Practice",
+          "text": "Make time for a quiet moment each week."
+        },
+        {
+          "kind": "list",
+          "title": "Ideas",
+          "items": [
+            "Write one page.",
+            "Notice what changed."
+          ]
+        },
+        {
+          "kind": "keyValue",
+          "title": "Example facts",
+          "entries": [
+            {
+              "key": "Sun",
+              "value": "Taurus 25.1°"
+            }
+          ]
+        },
+        {
+          "kind": "aspectTable",
+          "title": "Example aspects",
+          "rows": [
+            {
+              "a": "Sun",
+              "b": "Moon",
+              "type": "square",
+              "orb": 1.2
+            }
+          ]
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated",
+      "closingQuestion": "What practice will you nurture this year?"
+    },
+    {
+      "key": "sun",
+      "tier": "free",
+      "title": "The Sun: Your Birthday Star",
+      "subtitle": "Frozen synthetic content",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "The Sun: Your Birthday Star: A synthetic example about attention and practice, not a prediction."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated",
+      "closingQuestion": "Where would you like to invest your energy?"
+    }
+  ],
+  "lockedSections": [],
+  "costMxn": 0,
+  "wastedCostMxn": 0,
+  "accounting": {
+    "settled": true,
+    "measuredMxn": 0,
+    "uncertainMxn": 0,
+    "halt": null
+  }
+}

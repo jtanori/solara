@@ -1,11 +1,24 @@
 node_modules/
 .next/
 .vercel/
+.venv/
+.pdf/
 .env
 .env.*
 !.env.example
 !.env.staging.example
 !.env.production.example
+!.env.pilot.example
 *.tsbuildinfo
 coverage/
+migrate.log
+.mail-outbox/
 .DS_Store
+
+# On-demand backlog snapshot (ADR 009 / #132) — must never be committed
+/docs/backlog-snapshot.md
+.scratch/
+
+# Build identity stamp, written by `prebuild` (scripts/build-stamp.mjs).
+# Generated per build; committing it would freeze one build's identity in the repo.
+/.build-stamp.json

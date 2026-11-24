@@ -2,6 +2,17 @@
 
 A bilingual solar-return prototype with Stripe subscriptions, city search and map selection, private editorial PDFs, and role-based content editing.
 
+## Current product direction
+
+Finish **Solar Return**, including a factual chart wheel and genuine LLM interpretations,
+then **payments**, then **Free/Premium**. Lunar Return, Natal Chart and Synastry remain
+pre-production scope; discuss their detail after Solar is complete. The eventual offer
+is one account-wide Free introduction usable on any one product and one Premium
+subscription with a larger shared allowance (quantity to be decided). Known birth
+times are required. These decisions do not change current limits or enable generation.
+See the [Solar completion plan](docs/plan-solar-return-completion.md) and
+[ADR 011](docs/decisions.md#adr-011--solar-return-first-and-a-shared-four-product-offer).
+
 ## Setup and deployment guides
 
 Start with the [setup guide index](docs/setup/README.md), or in development (`npm run dev`) open `/setup` in the running application for a bilingual, environment-specific checklist. Detailed guides cover local development, staging and production for:
@@ -25,9 +36,9 @@ Run the application with `npm run dev` and open `/usage-guide` to explore the bi
 
 ## Quick local start
 
-Use Node.js 22 and a **new, empty, disposable** PostgreSQL database. Configure `DATABASE_URL` and `APP_URL` in `.env` (copy `.env.example` only if `.env` does not already exist), then run `npm ci`, `npx drizzle-kit migrate`, and `npm run dev`. Run `node scripts/check-setup.mjs local` for a secret-safe format check.
+Use Node.js 22 and a **new, empty, disposable** PostgreSQL database. Configure `DATABASE_URL` and `APP_URL` in `.env` (copy `.env.example` only if `.env` does not already exist), then run `npm ci`, `npm run db:migrate`, and `npm run dev`. Run `node scripts/check-setup.mjs local` for a secret-safe format check.
 
-Earlier prototypes may have databases created with `drizzle-kit push` and no migration history. Do not run the initial migration blindly on those databases; use a fresh development database or obtain a reviewed baseline. Never use `push` against production. The CI workflow applies versioned migrations to a disposable database and runs `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`.
+Earlier prototypes may have databases created with `drizzle-kit push` and no migration history. Do not run the initial migration blindly on those databases; use a fresh development database or obtain a reviewed baseline. Never use `push` against production. The CI workflow applies versioned migrations to a disposable database, runs `npm run db:check`, and runs `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`. `/api/health` is liveness only; `/api/ready` is the deployment gate. See ADR 008 for the migration and rollback policy.
 
 Public registration creates a free user. A trusted operator must provision the first owner; see the foundation guide. No Stripe keys, prices or customer data are included.
 
@@ -37,4 +48,4 @@ Personal fields use named, standard autocomplete tokens for supported browsers. 
 
 ## Launch limitations
 
-This is not yet production-ready. Calculations and historical time zones require independent professional validation; Placidus is not implemented. Email verification, password recovery, staff MFA, rate limiting, full CSRF protection, report-version snapshots, editorial approval, privacy/consent operations and other controls remain launch work. Review provider licensing, tax and billing policies, dependencies, backups and incident procedures before accepting real customers.
+This is not yet production-ready. Whole-sign and Placidus calculations have independent numerical reference fixtures, but calculations and historical time zones still require professional qualification. Paid immutable editions, natal profections/return-instant transits, a durable worker and exact-version editorial tooling are implemented **with live generation off**; synthetic reports are not editorial sign-off. See the [paid runbook and release gates](docs/setup/10-paid-readings.md). Account claim by mailbox proof, password reset, auth rate limiting, structured logging, `/api/places` hardening, explicit database pool/TLS settings, strict origin checks and security headers are implemented, with CSP in report-only mode until a clean observation window. Staff MFA, genuine provider/editorial approval, hosted executor/PDF qualification, Stripe lifecycle testing and privacy/retention operations remain launch work. Review provider licensing, tax and billing policies, dependencies, backups and incident procedures before accepting real customers.

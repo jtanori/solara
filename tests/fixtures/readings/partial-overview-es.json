@@ -1,0 +1,66 @@
+{
+  "id": "44444444-4444-4444-8444-444444444444",
+  "readingId": "22222222-2222-4222-8222-222222222222",
+  "locale": "es",
+  "chartVersion": "chart/2",
+  "contentVersion": "synthetic-reading-v1",
+  "generatedAt": "2026-01-01T12:00:00.000Z",
+  "tier": "free",
+  "models": {
+    "overview": "fixture-only",
+    "sun": "fixture-only"
+  },
+  "sections": [
+    {
+      "key": "overview",
+      "tier": "free",
+      "title": "El año en un solo aliento",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "Obsolete promise: the words will catch up."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "failed",
+      "failureReason": "private_failure_sentinel"
+    },
+    {
+      "key": "sun",
+      "tier": "free",
+      "title": "El Sol: tu estrella de cumpleaños",
+      "subtitle": "Contenido sintético congelado",
+      "blocks": [
+        {
+          "kind": "prose",
+          "text": "El Sol: tu estrella de cumpleaños: Un ejemplo sintético sobre atención y práctica; no es una predicción."
+        }
+      ],
+      "facts": {
+        "sun": {
+          "sign": "Taurus",
+          "degree": 25.1,
+          "house": 3
+        }
+      },
+      "status": "generated",
+      "closingQuestion": "¿Dónde quieres invertir tu energía?"
+    }
+  ],
+  "lockedSections": [],
+  "costMxn": 0,
+  "wastedCostMxn": 0,
+  "accounting": {
+    "settled": true,
+    "measuredMxn": 0,
+    "uncertainMxn": 0,
+    "halt": null
+  }
+}

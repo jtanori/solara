@@ -2,18 +2,36 @@
   "name": "nextjs-postgresql-template",
   "private": true,
   "scripts": {
+    "predev": "npm run pdf:build",
     "dev": "next dev",
+    "prebuild": "npm run pdf:build && node scripts/build-stamp.mjs",
     "build": "next build",
+    "pdf:build": "node scripts/build-pdf.mjs",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "typegen": "next typegen",
     "test": "tsx --test tests/*.test.ts",
-    "test:integration": "RUN_BILLING_INTEGRATION_TESTS=1 tsx --test tests/*.test.ts",
+    "test:integration": "RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 tsx --test tests/*.test.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "tsx scripts/db-run.ts --env local migrate",
+    "db:status": "tsx scripts/db-run.ts --env local status",
+    "db:verify": "tsx scripts/db-run.ts --env local verify",
+    "db:migrate:remote": "tsx scripts/db-remote.ts",
+    "db:check": "tsx scripts/db-run.ts --env local verify",
     "check:setup": "node scripts/check-setup.mjs local",
-    "db:seed:local": "tsx scripts/local/seed-users.ts"
+    "rate-limits:report": "tsx scripts/report-rate-limits.ts",
+    "rate-limits:cleanup": "tsx scripts/cleanup-rate-limits.ts",
+    "account-leases:cleanup": "tsx scripts/cleanup-account-leases.ts",
+    "db:seed:local": "tsx scripts/local/seed-users.ts",
+    "db:check:remote": "tsx scripts/db-remote.ts --check",
+    "db:manifest": "tsx scripts/generate-migration-manifest.ts",
+    "db:manifest:check": "tsx scripts/generate-migration-manifest.ts --check",
+    "backlog:snapshot": "tsx scripts/backlog-snapshot.ts",
+    "readings:worker": "tsx scripts/paid-reading-worker.ts",
+    "readings:evaluate": "tsx scripts/evaluate-paid-readings.ts",
+    "readings:sample": "tsx scripts/sample-genuine-readings.ts",
+    "readings:approve-evaluation": "tsx scripts/approve-paid-reading-evaluation.ts"
   },
   "engines": {
     "node": ">=22"
@@ -37,20 +55,33 @@
     "react-leaflet": "^5.0.0",
     "server-only": "^0.0.1",
     "stripe": "^23.1.0",
-    "tz-lookup": "^6.1.25"
+    "tz-lookup": "^6.1.25",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "1.1.1",
+    "@sparticuz/chromium": "153.0.0",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "drizzle-kit": "0.31.10",
+    "drizzle-kit": "0.31.11",
+    "esbuild": "0.28.2",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.4.6",
+    "pdfjs-dist": "6.5.438",
+    "picomatch": "file:vendor/solara-picomatch-v4-4.0.7-solara.3.tgz",
+    "playwright-core": "1.65.1",
     "postcss": "^8.5.32",
     "tailwindcss": "4.1.17",
     "tsx": "^4.23.15",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "0.25.12"
+    },
+    "picomatch": "$picomatch"
   }
 }

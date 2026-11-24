@@ -13,13 +13,15 @@ Closes #<!-- issue number --> — <!-- title -->
 - [ ] Branch protection (applied `protect-staging`/`protect-main`) requires PR, `verify` status check, conversation resolution, and blocking force-push/deletion; `staging` requires linear history, `main` allows merge commits for promotions. See `docs/decisions.md` ADR 001 and ADR 004.
 
 ## Evidence
-- [ ] `npm ci` + `npx drizzle-kit migrate` (CI does this on a disposable DB)
+- [ ] `npm ci` + `npm run db:migrate` (CI does this on a disposable DB)
 - [ ] `npx next typegen`
 - [ ] `npm exec tsc -- --noEmit --pretty false`
 - [ ] `npx eslint src tests --max-warnings=0`
-- [ ] `npx tsx --test tests/*.test.ts` (or `RUN_BILLING_INTEGRATION_TESTS=1` when touching billing)
+- [ ] `RUN_INTEGRATION_TESTS=1 RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`
 - [ ] `npm run build` succeeds
-- [ ] Smoke checks (CI `verify` job): `GET /blueprint` → 404, `GET /setup` → 404, `GET /usage-guide` → 404 outside development, and no internal-doc content leaked (`EL PROYECTO DE SOLARA` absent). For internal-doc link gating also verify homepage/dashboard/footer contain no `/blueprint`, `/setup`, `/usage-guide` links outside development.
+- [ ] `npm run db:manifest:check` and `npm run db:check` pass
+- [ ] Smoke checks (CI `verify` job): `GET /api/health` and `GET /api/ready` return 200; `GET /blueprint` → 404, `GET /setup` → 404, `GET /usage-guide` → 404 outside development, and no internal-doc content leaked (`EL PROYECTO DE SOLARA` absent). For internal-doc link gating also verify homepage/dashboard/footer contain no `/blueprint`, `/setup`, `/usage-guide` links outside development.
+- [ ] Security smoke: HTML carries `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, and the CSP header; mutating `/api/*` without `Origin`/`Sec-Fetch-Site` → 403; same-origin request passes.
 - Paste local command output or CI run link:
 
 ## Test plan
@@ -35,12 +37,12 @@ Closes #<!-- issue number --> — <!-- title -->
 
 ## Rollout / Rollback
 - Rollout: merge to `staging` → QA on staging → promotion PR `staging → main` → Vercel production deploy. Secrets are per-environment (never use prod secrets locally; previews do not access prod data).
-- Rollback: revert squash commit on `staging`/`main` or promote previous `staging` commit; rolling back code does **not** automatically reverse a migration — plan compatibility and restore per `docs/setup/01-foundation-and-deployment.md`.
+- Rollback: revert squash commit on `staging`/`main` or promote previous `staging` commit; rolling back code does **not** automatically reverse a migration — plan compatibility and restore per ADR 008 and `docs/setup/01-foundation-and-deployment.md`.
 - Operational runbook updated: <!-- yes / no / N/A -->
 
 ## Checklist
 - [ ] No secrets committed (`.env` never committed; `.env.example` contains placeholders only)
-- [ ] Docs updated (`README.md`, `docs/setup/*`, `docs/decisions.md`, `BACKLOG.md` when issues change) and `BACKLOG.md` links resolve
+- [ ] Docs updated (`README.md`, `docs/setup/*`, `docs/decisions.md`) — there is no backlog file to edit (ADR 009)
 - [ ] No mocked/seed code in `src/` (keep in `scripts/`)
 - [ ] **Accepted for promotion** — maintainer posted deploy command as a comment:
   - feature PR → `staging`: `./scripts/deploy.sh --pr <number> --env staging`
@@ -52,7 +54,7 @@ Accepted-for-promotion comment copy — paste the one matching the target branch
 — Feature → staging (PR targets `staging`) —
 ✅ **Accepted for promotion — ready to deploy to staging**
 
-CI is green (`verify` 1m30s + Vercel Preview → `solara-stg.vercel.app`). Check `[x]` below then deploy — if drizzle/ changed, `deploy.sh` will trigger `.github/workflows/migrate.yml` for Environment `staging` (secret `DATABASE_URL` = Neon direct, no -pooler) *before* merging.
+CI is green (`verify` 1m30s + Vercel Preview → `staging.thanatos.mx`). Check `[x]` below then deploy — if drizzle/ changed, `deploy.sh` will trigger `.github/workflows/migrate.yml` for Environment `staging` (secret `DATABASE_URL` = Neon direct, no -pooler) *before* merging.
 
 - [ ] touches `drizzle/` — will dispatch `migrate.yml` (Env: staging)
 - [ ] does not touch `drizzle/` — direct merge
@@ -61,12 +63,12 @@ Run locally (no local DB URL needed):
 ```bash
 ./scripts/deploy.sh --pr <number> --env staging
 ```
-See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://solara-stg.vercel.app/api/health` → `{"ok":true}`.
+See `scripts/deploy.sh --help` and `docs/setup/00-manual-setup-ui.md`. After merge, verify `curl https://staging.thanatos.mx/api/health` → `{"ok":true}` and `/api/ready` → `{"ok":true}` (use `VERCEL_AUTOMATION_BYPASS_SECRET` for protected domains).
 
 — Promotion staging → main (PR targets `main`) —
 ✅ **Accepted for promotion — ready to deploy to production**
 
-Staging QA done on `https://solara-stg.vercel.app` + `verify` on `staging` is green. This promotion uses `merge commit` (not squash) to keep `staging` ancestor of `main` per ADR 004. If `drizzle/` changed, `deploy.sh` will trigger `migrate.yml` for Environment `production` (secret `DATABASE_URL` = Neon direct) *before* merging to avoid Vercel/migration race.
+Staging QA done on `https://staging.thanatos.mx` + `verify` on `staging` is green. This promotion uses `merge commit` (not squash) to keep `staging` ancestor of `main` per ADR 004. If `drizzle/` changed, `deploy.sh` will trigger `migrate.yml` for Environment `production` (secret `DATABASE_URL` = Neon direct) *before* merging to avoid Vercel/migration race.
 
 - [ ] touches `drizzle/` — will dispatch `migrate.yml` (Env: production)
 - [ ] does not touch `drizzle/` — direct merge
@@ -80,3 +82,38 @@ Requires repo `Allow merge commits:true` (Settings → General → Pull Requests
 
 ---
 Target branch for this PR is `staging`. Deploy via `scripts/deploy.sh` (see `docs/setup/00-manual-setup-ui.md`); `main` deploys production via Vercel — see ADR 001/ADR 004.
+
+## Pre-PR attestation
+
+The pre-PR quality gate ([`docs/PR_WORKFLOW.md`](../docs/PR_WORKFLOW.md) §1) was met:
+
+- [ ] Plan adherence: diff matches the issue/approved plan; deviations listed below
+- [ ] Coherence: one story, repo conventions, no orphan files
+- [ ] Code quality: error paths handled, no silent catches, no dead code
+- [ ] Security: authz/validation/injection/secrets/PII posture stated in Risk
+- [ ] Performance: no N+1/unbounded loops; metered resources fail closed
+- [ ] DRY: reused before created
+- [ ] Tests: new behavior covered; mutations run for defect guards and accounting logic
+- [ ] Migrations: additive; `db-run.ts` manifest updated; rehearsal planned
+- [ ] Config: new env vars in `.env*.example` and named in this body
+- [ ] Dependencies: justified, audit clean
+- [ ] Freshness: base fetched, merged if behind, gates re-run on the merged tree
+- [ ] Gates: typegen / tsc / eslint / tests / build output pasted above
+- [ ] Self-review: own diff read file-by-file
+
+## Deploy classification
+
+- [ ] `deploy:required` — touches runtime/build (`src/`, `drizzle/`, `next.config.ts`, `package*.json`, `.github/workflows/`)
+- [ ] `deploy:skip` — docs/chore only
+
+Reason: <!-- one line; the reviewer's verdict has the final call -->
+
+## Deviations from plan
+
+<!-- List each deviation and why, or "none". -->
+
+## Mutations (SEC-07)
+
+| Mutation | Test that fails | Result |
+| --- | --- | --- |
+<!-- One row per mutation run: what was broken, which test caught it, "caught" or the honest outcome. -->

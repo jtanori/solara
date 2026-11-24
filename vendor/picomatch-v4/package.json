@@ -1,0 +1,23 @@
+{
+  "name": "@solara/picomatch-v4",
+  "version": "4.0.7-solara.3",
+  "private": true,
+  "description": "Local security backport of picomatch 4.0.7; see ../README.md",
+  "license": "MIT",
+  "author": "Jon Schlinkert (https://github.com/jonschlinkert)",
+  "main": "index.js",
+  "engines": {
+    "node": ">=12"
+  },
+  "files": [
+    "index.js",
+    "posix.js",
+    "lib"
+  ],
+  "solaraSecurity": {
+    "upstreamName": "picomatch",
+    "upstreamVersion": "4.0.7",
+    "advisory": "GHSA-fc5q-39xc-vjpf",
+    "policy": "repeated-literal-grammar-v2"
+  }
+}

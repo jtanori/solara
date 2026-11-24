@@ -87,8 +87,8 @@ After this, a test PR `feature → staging → main` is already proven by #23/`#
 2. Create **solara-prod** (same region, separate project).
 3. For **each** project → **Dashboard → Connection Strings**:
    - Copy **Pooled** URL (contains `-pooler.` + `?sslmode=require`) → this is `DATABASE_URL` for the app.
-   - Copy **Direct** URL (no pooler) → this is `DATABASE_URL` for `npx drizzle-kit migrate`.
-   - Confirm **Pooling mode = Transaction** — required for `pg_advisory_xact_lock` used by Drizzle. Docs: <https://neon.com/docs/connect/connection-pooling>
+   - Copy **Direct** URL (no pooler) → this is `DATABASE_URL` for `db-run` migrations.
+   - Confirm **Pooling mode = Transaction** for the pooled application URL. Lifecycle coordination uses a database lease row, not a session lock, so it is pooler-safe. Docs: <https://neon.com/docs/connect/connection-pooling>
 
 > Never copy prod data to staging. Keep both `*_DIRECT` URLs out of Git — only paste into Vercel env vars or a secure shell for migrations.
 
@@ -98,22 +98,33 @@ After this, a test PR `feature → staging → main` is already proven by #23/`#
 
 If already imported:
 1. **Settings → Git → Production Branch:** set to `main`.
-2. **Settings → Domains:** (live: Production `solara-production.vercel.app` @ `039d9b6`, Staging `solara-stg.vercel.app` @ `a0454ed` — custom domains pending)
-   - Add `solara-production.vercel.app` (or your custom prod domain) → assign to **Production (`main`)**.
-   - Add `solara-stg.vercel.app` → Add → Git branch → `staging` → Preview. Docs: <https://vercel.com/docs/deployments/environments>
+2. **Settings → Domains:** (live: Production `www.thanatos.mx` → Production `main`; Staging `staging.thanatos.mx` → Git branch `staging` → Preview. The `*.vercel.app` domains remain as fallbacks.)
+   - Add `www.thanatos.mx` → assign to **Production (`main`)** and make it the primary domain.
+   - Add `thanatos.mx` → **Redirect** (308) to `www.thanatos.mx`. Sessions are host-only cookies, so serving both hosts would split sign-ins.
+   - Add `staging.thanatos.mx` → Add → Git branch → `staging` → Preview. Docs: <https://vercel.com/docs/deployments/environments>
+   - DNS records, TLS, Resend verification and the cutover order: [12-domains-and-email](12-domains-and-email.md).
 3. **Settings → Environment Variables** → **Add** (pay attention to **Environment** + **Git Branch** scopes):
 
    | Variable | Value | Environment | Git Branch |
    |---|---|---|---|
    | `DATABASE_URL` | `<staging pooled>` | Preview | `staging` |
-   | `APP_URL` | `https://solara-stg.vercel.app` | Preview | `staging` |
+   | `APP_URL` | `https://staging.thanatos.mx` | Preview | `staging` |
+   | `MAIL_TRANSPORT` | `resend` | Preview | `staging` |
+   | `MAIL_FROM` | `Solara <no-reply@thanatos.mx>` | Preview | `staging` |
+   | `MAIL_REPLY_TO` | `info@thanatos.mx` | Preview | `staging` |
+   | `RESEND_API_KEY` (Sensitive) | `re_...` | Preview | `staging` |
    | `DATABASE_URL` | `<prod pooled>` | Production | `main` |
-   | `APP_URL` | `https://solara-production.vercel.app` | Production | `main` |
+   | `APP_URL` | `https://www.thanatos.mx` | Production | `main` |
+   | `MAIL_TRANSPORT` | `resend` | Production | `main` |
+   | `MAIL_FROM` | `Solara <no-reply@thanatos.mx>` | Production | `main` |
+   | `MAIL_REPLY_TO` | `info@thanatos.mx` | Production | `main` |
+   | `RESEND_API_KEY` (Sensitive) | `re_...` | Production | `main` |
    | `STRIPE_SECRET_KEY` (test) | `sk_test_...` | Preview | `staging` |
-   | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (test) | `pk_test_...` | Preview | `staging` |
    | `STRIPE_WEBHOOK_SECRET` (test) | `whsec_...` | Preview | `staging` |
+   | `STRIPE_PRICE_ID_MXN` (test) | `price_...` | Preview | `staging` |
    | `STRIPE_SECRET_KEY` (live) | `sk_live_...` | Production | `main` |
    | `STRIPE_WEBHOOK_SECRET` (live) | `whsec_...` | Production | `main` |
+   | `STRIPE_PRICE_ID_MXN` (live) | `price_...` | Production | `main` |
 
    Add map keys similarly per `docs/setup/03-geocoding-and-maps.md`. Docs: <https://vercel.com/docs/projects/environment-variables>
 
@@ -128,11 +139,11 @@ If already imported:
 For **staging**:
 ```bash
 export DATABASE_URL="<STAGING_DIRECT_URL>"
-npx drizzle-kit migrate   # confirm target is staging-pooler host, not prod
+npx tsx scripts/db-run.ts --env staging migrate   # confirm target is staging, not prod
 node scripts/check-setup.mjs staging --strict
 ```
 
-Verify in staging domain: `GET /api/health` → `{"ok":true}`, sign-in, chart, map, both languages, PDF gate, test-mode Checkout + webhook (if Vercel protection blocks webhooks, add a narrow public `/api/billing/webhook` bypass — docs: <https://vercel.com/docs/security/deployment-protection>).
+Verify in staging domain: `GET /api/health` → `{"ok":true}` (liveness) and `GET /api/ready` → `{"ok":true}` (DB/schema/migrations/auth; use `VERCEL_AUTOMATION_BYPASS_SECRET` if deployment protection blocks it), sign-in, chart, map, both languages, PDF gate, test-mode Checkout + webhook (if Vercel protection blocks webhooks, add a narrow public `/api/billing/webhook` bypass — docs: <https://vercel.com/docs/security/deployment-protection>).
 
 For **production** (before real customers): repeat with prod direct URL, but only after launch gate in `README.md`/`docs/decisions.md` ADR 003 is green.
 
@@ -146,6 +157,67 @@ For **production** (before real customers): repeat with prod direct URL, but onl
 
 ---
 
+## Phase 0 — inventory for the Actions-owned pipeline (M5)
+
+Fill this in **before** issue 6 (`deploy-staging.yml`) or issue 7 (`deploy-production.yml`) is
+written. Record names, scopes and plans — never secret values. See
+[`docs/plan-deployment-alignment.md`](../plan-deployment-alignment.md) §11–13.
+
+### Vercel
+
+| Item | Recorded value |
+| --- | --- |
+| Plan (Hobby / Pro) | |
+| Production branch | |
+| Deployment Protection enabled? | |
+| Protection Bypass for Automation created? | (Vercel issues this; its copies and rotation are in `11-actions-deploys.md` §2.1) |
+| `git.deploymentEnabled` behaviour for feature-branch previews (spike S1) | |
+| Preview env var scopes (which rows are `staging`-only vs all-preview vs all-environments) | |
+| Preview routing verified: which database does a feature preview actually resolve to? (dashboard + a probe, not an inference) | |
+| `ALLOW_PREVIEW_ON_STAGING` set? (only with verified read-only staging access; never production; never migrate) | |
+| Preview guard decision **enforced** (isolated routing / verified read-only staging / quarantine with no hosted DB credential) | |
+| Any `DATABASE_URL` row scoped to **both** Preview and Production? | |
+| Runtime variable injection for a **promoted** candidate: mechanism and scope (production and staging) — prerequisite, not an S1 assumption | |
+
+### Neon
+
+| Item | Recorded value |
+| --- | --- |
+| Staging project / branch | |
+| Staging endpoint ID (`ep-…`) | |
+| Production project / branch (pooled + direct) | |
+| Production endpoint ID (`ep-…`) | |
+| Postgres major version (must match `ci.yml`) | |
+| Read-only staging role created for the rehearsal gate and staging diagnostics? | |
+| Read-only production role created for `production-diagnostics`? | |
+
+### Vercel environment variables — scope audit
+
+| Variable name | Preview | Production | Branch scope |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | | | |
+| `APP_URL` | | | |
+| `NEXT_PUBLIC_*` (list) | | | |
+| `STRIPE_*` (list) | | | |
+
+> A `DATABASE_URL` visible to both Preview and Production is the failure mode the boot guard
+> (issue 3) exists to make loud. If one already exists, fix the scope before Phase 3.
+>
+> **Build-time boundary (do not skip).** The build needs `DATABASE_URL` to *exist* but must not be
+> able to connect. Record the build-only, non-routable placeholder mechanism (or the import
+> refactor) and the proof that no hosted credential and no `vercel pull` env file is present in the
+> build workspace or the uploaded artifact. See [guide 11](11-actions-deploys.md) §2.
+
+### Spikes
+
+- [ ] **S1** — does `deploymentEnabled: { "staging": false }` suppress feature-branch previews?
+      Does `vercel deploy --prebuilt --env KEY=value` set runtime env or is it build-time only?
+      Record the observed result and the date.
+- [ ] **S2** — can a per-PR Neon branch receive its own runtime `DATABASE_URL` and be cleaned up on
+      close? Record the mechanism, not a credential.
+
+---
+
 ## Quick verification checklist (run locally after UI clicks)
 
 ```bash
@@ -155,4 +227,4 @@ vercel env ls   # or check dashboard env scoping
 node scripts/check-setup.mjs local
 ```
 
-Verify: `https://solara-stg.vercel.app/api/health` and `https://solara-production.vercel.app/api/health` should both return `{"ok":true}`.
+Verify: `https://staging.thanatos.mx/api/health` and `https://www.thanatos.mx/api/health` should both return `{"ok":true}`; `/api/ready` must also return `{"ok":true}` (with `"migrations":"exact"`), using `VERCEL_AUTOMATION_BYPASS_SECRET` if protection is enabled.

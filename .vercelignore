@@ -1,7 +1,24 @@
 # Never deploy local-only seed/mock code or build-time-only fixtures
 scripts/local
+scripts/report-rate-limits.ts
+scripts/cleanup-rate-limits.ts
+# These local-only reading tools depend on the excluded tests/ tree.
+# Keep build-pdf.mjs and the runtime worker/fonts in the deployment input.
+scripts/benchmark-reading-pdf.ts
+scripts/verify-reading-browser.ts
+scripts/verify-reading-mutations.mjs
+scripts/verify-dependency-mutations.mjs
+scripts/evaluate-paid-readings.ts
+scripts/approve-paid-reading-evaluation.ts
+scripts/sample-genuine-readings.ts
+scripts/check-migration-safety.ts
+# CI-only: the drift monitor (#165) reads public endpoints; it must not ship.
+scripts/drift-monitor.ts
+scripts/lib/paid-evaluation-corpus.ts
+scripts/gen-annual-facts-fixtures.py
 tests
 drizzle/meta
+.mail-outbox
 .env
 .env.*
 !.env.example

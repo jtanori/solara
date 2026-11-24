@@ -16,13 +16,19 @@ function attributes(tag:string){return Object.fromEntries([...tag.matchAll(/([\w
 function input(html:string,id:string){const tag=(html.match(/<input\b[^>]*>/g)??[]).find(value=>attributes(value).id===id);assert.ok(tag,`missing ${id}`);return attributes(tag);}
 function formAttributes(html:string){const tag=(html.match(/<form\b[^>]*>/g)??[])[0];assert.ok(tag,"missing form");return attributes(tag);}
 
-test("server-rendered signup fields use safe initial hints and preserve password managers",()=>{
+test("server-rendered signup collects name and email before the claim step",()=>{
   const html=render(React.createElement(AuthForm,{destination:"/dashboard",locale:"en"}));
   const form=formAttributes(html);
   assert.equal(form.method,"post");assert.equal(form.action,"/api/auth");
   assert.deepEqual({name:input(html,"auth-name").name,autocomplete:input(html,"auth-name").autocomplete},{name:"name",autocomplete:"off"});
   assert.deepEqual({name:input(html,"auth-email").name,type:input(html,"auth-email").type,autocomplete:input(html,"auth-email").autocomplete},{name:"email",type:"email",autocomplete:"off"});
-  assert.equal(input(html,"auth-password").name,"password");assert.equal(input(html,"auth-password").autocomplete,"new-password");
+  assert.equal(html.includes('id="auth-password"'),false);
+});
+
+test("server-rendered login keeps password-manager hints",()=>{
+  const html=render(React.createElement(AuthForm,{destination:"/dashboard",locale:"en",initialMode:"login"}));
+  assert.equal(input(html,"auth-password").name,"password");
+  assert.equal(input(html,"auth-password").autocomplete,"current-password");
 });
 
 test("landing and onboarding use named forms with conservative initial hints",()=>{
