@@ -98,9 +98,14 @@ test("no git and no Vercel turns every field into a determinate unknown, not a t
 test("the stamp is byte-stable for identical inputs", () => {
   const first = stampWith({ APP_COMMIT_SHA: "abcdef1234567890", VERCEL_ENV: "preview" }).stamp;
   const second = stampWith({ APP_COMMIT_SHA: "abcdef1234567890", VERCEL_ENV: "preview" }).stamp;
+  // `builtAt` is the run clock and `release` embeds its epoch, so two child
+  // builds can legitimately differ across a second boundary. Freeze both before
+  // comparing; the release shape has its own test.
+  const stable = (stamp: typeof first) =>
+    JSON.stringify(stamp).replace(/"builtAt":"[^"]*"/, "").replace(/"release":"[^"]*"/, "");
   assert.deepEqual(Object.keys(first), Object.keys(second), "key order is fixed, not incidental");
   assert.equal(first.commit, second.commit);
   assert.equal(first.env, second.env);
-  assert.equal(JSON.stringify(first).replace(/"builtAt":"[^"]*"/, ""), JSON.stringify(second).replace(/"builtAt":"[^"]*"/, ""));
+  assert.equal(stable(first), stable(second));
   assert.match(first.builtAt, /^\d{4}-\d{2}-\d{2}T/);
 });
