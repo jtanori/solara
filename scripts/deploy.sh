@@ -459,6 +459,30 @@ done
 ROLLBACK_RECORD="—"
 if [[ "$READY" == true ]]; then
   echo "✅ $APP_URL/api/ready → {\"ok\":true}"
+
+  # /api/ready uses its own pool, so it can be green while every page 500s because
+  # the boot guard rejects the database module (#212). Render a public page too.
+  echo "Waiting for Vercel $APP_URL/account (rendered page) ..."
+  PAGE_TMP="$(mktemp)"
+  CLEANUP_FILES+=("$PAGE_TMP")
+  page_curl() { deploy_ready_curl "$APP_URL/account" "$PAGE_TMP"; }
+  PAGE_CODE="$(page_curl || true)"
+  if [[ "$PAGE_CODE" == "401" || "$PAGE_CODE" == "403" ]]; then
+    echo "ERROR: $APP_URL/account is blocked by Vercel Authentication (HTTP $PAGE_CODE)." >&2
+    echo "Set VERCEL_AUTOMATION_BYPASS_SECRET for this environment and re-run." >&2
+    exit 1
+  fi
+  PAGE_OK=false
+  for i in {1..12}; do
+    PAGE_CODE="$(page_curl || true)"
+    if [[ "$PAGE_CODE" == "200" && -s "$PAGE_TMP" ]]; then PAGE_OK=true; break; fi
+    sleep 5
+  done
+  if [[ "$PAGE_OK" != true ]]; then
+    echo "ERROR: $APP_URL/account did not render (last HTTP $PAGE_CODE); the deployment cannot boot its database module." >&2
+    exit 1
+  fi
+  echo "✅ $APP_URL/account → 200"
 else
   echo "ERROR: $APP_URL/api/ready did not become ready (last HTTP $READY_CODE):" >&2
   cat "$READY_TMP" >&2 || true

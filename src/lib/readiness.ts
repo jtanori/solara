@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from "pg";
+import { bootGuardFailure } from "@/db/boot-guard";
 import { normalizeDatabaseUrl } from "@/lib/database-url";
 import { log } from "@/lib/log";
 import { EXPECTED_MIGRATIONS, type MigrationManifestEntry } from "@/lib/migration-manifest";
@@ -199,6 +200,26 @@ export async function evaluateReadiness(
   return buildReadiness(await withDeadline(Promise.resolve().then(probe), deadlineMs), expected);
 }
 
-export async function getReadiness(): Promise<Readiness> {
+/**
+ * Production entry point. The boot guard is checked *before* the readiness pool
+ * exists: if the database module would throw at import, readiness must not claim
+ * `ok:true` from its own connection (#212). `checkBoot` is injectable so a test
+ * can prove the short-circuit without opening a socket.
+ */
+export async function getReadiness(
+  checkBoot: () => string | null = bootGuardFailure,
+): Promise<Readiness> {
+  const bootFailure = checkBoot();
+  if (bootFailure) {
+    log.error("ready.boot_guard_failed", { code: bootFailure });
+    return buildReadiness({
+      dbOk: false,
+      missingTables: [],
+      missingColumns: [],
+      missingIndexes: [],
+      appliedMigrations: [],
+      authOk: false,
+    });
+  }
   return evaluateReadiness(() => probeReadiness(getReadinessPool()));
 }
