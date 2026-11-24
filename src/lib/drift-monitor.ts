@@ -108,6 +108,12 @@ export type ClassifyInput = {
   clockLiveCommit?: string | null;
   /** The migration state that clock belongs to. */
   clockMigrations?: MigrationState | null;
+  /**
+   * The kind that clock was recorded for. Without it a clock started by one
+   * check is aged by another: an `awaiting-approval` clock that is 25 minutes
+   * old makes a commit pushed ten seconds ago read as `stale-commit` (R2-2).
+   */
+  clockKind?: DriftKind | null;
   now: number;
 };
 
@@ -227,18 +233,42 @@ export function readEndpoint(input: {
  * otherwise a deploy that went live two minutes ago would inherit the age of the
  * one before it and read as stale.
  */
+/** The kinds whose clock belongs to the commit check. */
+const COMMIT_CLOCK_KINDS: readonly DriftKind[] = ["observing-commit", "stale-commit"];
+/** The kinds whose clock belongs to the schema check. */
+const MIGRATION_CLOCK_KINDS: readonly DriftKind[] = ["observing-migrations", "stale-migrations"];
+
+/**
+ * Whether a carried clock belongs to the check asking about it.
+ *
+ * Two conditions, both necessary:
+ *
+ * - a **positive** subject match. The old form returned the prior clock
+ *   whenever `clockLiveCommit` was null, so an unattributed clock aged any
+ *   subject at all (R2-2.2).
+ * - a **kind-family** match. An approval wait 25 minutes long must not make a
+ *   commit pushed ten seconds ago look stale (R2-2.1).
+ */
 function clockApplies(input: {
   prior: number | null;
+  clockKind?: DriftKind | null;
   clockLiveCommit?: string | null;
   clockMigrations?: MigrationState | null;
   liveCommit?: string | null;
   migrations?: MigrationState | null;
+  families: readonly DriftKind[];
+  requireCommit?: boolean;
+  requireMigrations?: boolean;
 }): number | null {
-  const { prior, clockLiveCommit, clockMigrations, liveCommit, migrations } = input;
+  const { prior, clockKind, clockLiveCommit, clockMigrations, liveCommit, migrations } = input;
   if (prior === null) return null;
-  // A subject the state never recorded cannot be aged.
-  if (clockLiveCommit !== undefined && clockLiveCommit !== null && clockLiveCommit !== liveCommit) return null;
-  if (clockMigrations !== undefined && clockMigrations !== null && clockMigrations !== migrations) return null;
+  if (clockKind != null && !input.families.includes(clockKind)) return null;
+  if (input.requireCommit) {
+    if (typeof clockLiveCommit !== "string" || clockLiveCommit !== liveCommit) return null;
+  }
+  if (input.requireMigrations) {
+    if (typeof clockMigrations !== "string" || clockMigrations !== migrations) return null;
+  }
   return prior;
 }
 
@@ -315,7 +345,8 @@ export function classifyDrift(input: ClassifyInput): Classification {
 
   // (c) the endpoint answering from the wrong environment is not health
   if (version.env && version.env !== target) {
-    return startClock("env-mismatch", prior, now, { ...base, headCommit });
+    const clock = clockApplies({ prior, clockKind: input.clockKind, families: ["env-mismatch"] });
+    return { kind: "env-mismatch", firstObserved: clock ?? now, headCommit, ...base, runId: null, runAttempt: null };
   }
 
   // (d) designed states — no alert, no clock
@@ -357,34 +388,42 @@ export function classifyDrift(input: ClassifyInput): Classification {
     // not reset a commit clock: the deploy is no fresher because a migration ran.
     const clock = clockApplies({
       prior,
+      clockKind: input.clockKind,
       clockLiveCommit: input.clockLiveCommit,
       liveCommit,
-      migrations,
+      families: COMMIT_CLOCK_KINDS,
+      requireCommit: true,
     });
     const kind = clock !== null && now - clock >= STALE_HORIZON_MS ? "stale-commit" : "observing-commit";
-    return {
-      kind,
-      firstObserved: clock ?? now,
-      headCommit,
-      ...base,
-      runId: null,
-      runAttempt: null,
-    };
+    const started = clock ?? now;
+    return { kind, firstObserved: started, headCommit, ...base, runId: null, runAttempt: null };
   }
 
   // (g) schema drift. `ahead` is time-bounded (ADR 012); `behind`/`diverged`
   // already make readiness answer 503, so waiting would delay a real alarm.
   if (migrations !== null && migrations !== "exact") {
     if (migrations !== "ahead") {
-      return { kind: "stale-migrations", firstObserved: prior ?? now, headCommit, ...base, runId: null, runAttempt: null };
+      // `behind`/`diverged` alert immediately; the clock only decides how long
+      // the issue has been open, so it must belong to the schema check.
+      const clock = clockApplies({
+        prior,
+        clockKind: input.clockKind,
+        clockMigrations: input.clockMigrations,
+        migrations,
+        families: MIGRATION_CLOCK_KINDS,
+        requireMigrations: true,
+      });
+      return { kind: "stale-migrations", firstObserved: clock ?? now, headCommit, ...base, runId: null, runAttempt: null };
     }
     // ...and the migration clock ages against the migration state only, so an
     // unrelated deploy does not restart a stuck-schema timer.
     const clock = clockApplies({
       prior,
+      clockKind: input.clockKind,
       clockMigrations: input.clockMigrations,
-      liveCommit,
       migrations,
+      families: MIGRATION_CLOCK_KINDS,
+      requireMigrations: true,
     });
     const kind = clock !== null && now - clock >= STALE_HORIZON_MS ? "stale-migrations" : "observing-migrations";
     return { kind, firstObserved: clock ?? now, headCommit, ...base, runId: null, runAttempt: null };
@@ -455,19 +494,36 @@ export function reconcileState(input: {
   migrations: MigrationState | null;
 }): MonitorState | null {
   const { artifact, issue, liveCommit, migrations } = input;
+
+  /**
+   * Each candidate is matched by *its own* kind family, not by both fields. A
+   * schema clock must not be invalidated because a deploy moved, and a commit
+   * clock must not be invalidated because a migration ran — coupling them
+   * re-creates the cross-subject reset this function exists to prevent.
+   */
   const matches = (state: MonitorState | null): boolean => {
     if (state === null) return false;
+    // A clock with no timestamp is not a clock. Comparing `Date.parse(null)`
+    // yields NaN, which silently makes every comparison false.
     if (state.firstObserved === null) return false;
-    if (state.liveCommit !== null && liveCommit !== null && state.liveCommit !== liveCommit) return false;
-    if (state.migrations !== null && migrations !== null && state.migrations !== migrations) return false;
+    if (Number.isNaN(Date.parse(state.firstObserved))) return false;
+
+    if (COMMIT_CLOCK_KINDS.includes(state.kind)) {
+      return state.liveCommit !== null && state.liveCommit === liveCommit;
+    }
+    if (MIGRATION_CLOCK_KINDS.includes(state.kind)) {
+      return state.migrations !== null && state.migrations === migrations;
+    }
+    if (state.kind === "env-mismatch") return true;
+    // Approval and transient clocks are not reconciled against a subject here;
+    // they are keyed by (runId, runAttempt) by the caller.
     return true;
   };
 
-  const subjectMatched = [artifact, issue].filter(matches) as MonitorState[];
-  const pool = subjectMatched.length > 0 ? subjectMatched : ([artifact, issue].filter(Boolean) as MonitorState[]);
-  if (pool.length === 0) return null;
+  const candidates = [artifact, issue].filter(matches) as MonitorState[];
+  if (candidates.length === 0) return null;
 
-  return pool.reduce((oldest, candidate) => {
+  return candidates.reduce((oldest, candidate) => {
     const oldestAt = Date.parse(oldest.firstObserved as string);
     const candidateAt = Date.parse(candidate.firstObserved as string);
     return candidateAt < oldestAt ? candidate : oldest;

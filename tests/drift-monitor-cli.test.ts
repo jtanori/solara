@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -108,7 +108,7 @@ test("the clock persists across ticks and ages the subject", async () => {
   assert.match(second.logs, /action=open/);
 });
 
-test("a degraded read leaves the prior state untouched", async () => {
+test("an unchanged young subject keeps its original clock", async () => {
   // A tick that could not verify its inputs must not rewrite the clock (D9).
   const state = statePath();
   const prior = {
@@ -166,7 +166,9 @@ test("a bad argument fails loudly instead of guessing", async () => {
 function routed(routes: Record<string, { status: number; body: string }>): typeof fetch {
   return (async (input: string | URL | Request) => {
     const url = String(input);
-    const key = Object.keys(routes).find(pattern => new RegExp(pattern).test(url));
+    // Plain substring match: these keys contain `?` and `/`, which mean
+    // something else to a regex and silently failed to match.
+    const key = Object.keys(routes).find(pattern => url.includes(pattern));
     const route = key === undefined ? { status: 500, body: "" } : routes[key];
     return new Response(route.body, { status: route.status });
   }) as unknown as typeof fetch;
@@ -215,4 +217,248 @@ test("the real read path takes the head from GitHub and a 502 makes it unknown",
   });
   assert.equal(code, 0);
   assert.match(logs, /kind=unknown/, "a missing head is cannot-tell, never exact");
+});
+
+test("a tick that cannot classify writes no state at all", async () => {
+  // D9. `read.status` is "ok" here while the classification is `unknown`, which
+  // is exactly the case the old gate missed: it rewrote next.json with a null
+  // subject but the previous timestamp, and the NEXT tick then opened a false
+  // stale-commit alert.
+  const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    [
+      "ready 502",
+      {},
+      {
+        "/api/version": { status: 200, body: JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }) },
+        "/api/ready": { status: 502, body: "" },
+        "/issues?state=open": { status: 200, body: "[]" },
+      },
+    ],
+    [
+      "db error",
+      {},
+      {
+        "/api/version": { status: 200, body: JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }) },
+        "/api/ready": { status: 503, body: JSON.stringify({ ok: false, db: "error", migrations: "diverged" }) },
+        "/issues?state=open": { status: 200, body: "[]" },
+      },
+    ],
+  ];
+  for (const [label, , routes] of cases) {
+    const state = statePath();
+    const { code, logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+      token: "configured",
+      fetchImpl: routed({
+        ...routes,
+        "/actions/workflows": { status: 200, body: JSON.stringify({ workflows: [] }) },
+        // An empty issue list, so this test cannot pass merely because the
+        // lookup failed for an unrelated reason.
+        "/issues?state=open": { status: 200, body: "[]" },
+      }),
+    });
+    assert.equal(code, 0, `${label} is degraded, not a red run`);
+    assert.match(logs, /degraded: (unreachable|classification unknown)/, `${label} must be reported as degraded`);
+    assert.equal(existsSync(join(state, "..", "next.json")), false, `${label} must not rewrite the clock`);
+  }
+});
+
+test("a 401 on the head lookup exits 1", async () => {
+  const { code } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example"], {
+    token: "configured",
+    fetchImpl: routed({
+      "/api/version": { status: 200, body: JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }) },
+      "/api/ready": { status: 200, body: JSON.stringify({ ok: true, db: "ok", migrations: "exact" }) },
+      "/commits/staging": { status: 401, body: "" },
+    }),
+  });
+  assert.equal(code, 1, "a rejected token must not be silently green");
+});
+
+test("a 403 on the actions API exits 1", async () => {
+  const { code } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example"], {
+    token: "configured",
+    fetchImpl: routed({
+      "/api/version": { status: 200, body: JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }) },
+      "/api/ready": { status: 200, body: JSON.stringify({ ok: true, db: "ok", migrations: "exact" }) },
+      "/commits/staging": { status: 200, body: JSON.stringify({ sha: "abc1234", commit: { message: "x" } }) },
+      "/actions/workflows": { status: 403, body: "" },
+    }),
+  });
+  assert.equal(code, 1, "an unreadable run list is a rejection, not 'nothing in flight'");
+});
+
+test("a 5xx on the run scan degrades instead of closing an alert", async () => {
+  // An empty run list from a failed query looks exactly like "nothing in
+  // flight", which would close an open overdue-approval issue.
+  const state = statePath();
+  const { code, logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+    token: "configured",
+    fetchImpl: routed({
+      "/api/version": { status: 200, body: JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }) },
+      "/api/ready": { status: 200, body: JSON.stringify({ ok: true, db: "ok", migrations: "exact" }) },
+      "/commits/staging": { status: 200, body: JSON.stringify({ sha: "abc1234", commit: { message: "x" } }) },
+      "/actions/workflows": { status: 502, body: "" },
+      "/issues?state=open": { status: 200, body: "[]" },
+    }),
+  });
+  assert.equal(code, 0);
+  assert.match(logs, /run scan failed/, "an unverifiable scan is reported as such, not as healthy");
+  assert.equal(existsSync(join(state, "..", "next.json")), false);
+});
+
+test("a cleared artifact does not shadow the issue's approval clock", async () => {
+  // The workflow writes an "unknown" stub when a tick cannot produce state. That
+  // stub is non-null, so `artifactState ?? issueState` would pick it and discard
+  // a 65-minute-old open approval wait — the alert would never fire.
+  const state = statePath();
+  writeFileSync(
+    state,
+    JSON.stringify({
+      environment: "staging",
+      kind: "unknown",
+      liveCommit: null,
+      headCommit: null,
+      migrations: null,
+      runId: null,
+      runAttempt: null,
+      firstObserved: null,
+      alertedAt: null,
+    }),
+  );
+
+  const sixtyFiveMinutesAgo = new Date(Date.now() - 65 * 60_000).toISOString();
+  let patched: Record<string, unknown> | null = null;
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "PATCH") {
+      patched = JSON.parse(String(init.body));
+      return new Response("{}", { status: 200 });
+    }
+    if (/\/api\/version/.test(url)) {
+      return new Response(JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }), { status: 200 });
+    }
+    if (/\/api\/ready/.test(url)) {
+      return new Response(JSON.stringify({ ok: true, db: "ok", migrations: "exact" }), { status: 200 });
+    }
+    if (/\/api\/ready|\/commits\//.test(url)) {
+      return new Response(JSON.stringify({ sha: "abc1234", commit: { message: "x" } }), { status: 200 });
+    }
+    if (/\/commits\/staging/.test(url)) {
+      return new Response(JSON.stringify({ sha: "abc1234", commit: { message: "x" } }), { status: 200 });
+    }
+    if (/\/actions\/workflows\?/.test(url)) {
+      return new Response(
+        JSON.stringify({ workflows: [{ id: 1, path: ".github/workflows/migrate.yml" }] }),
+        { status: 200 },
+      );
+    }
+    if (/\/actions\/workflows\/1\/runs/.test(url)) {
+      return new Response(
+        JSON.stringify({
+          workflow_runs: [
+            { id: 777, run_attempt: 1, status: "waiting", path: ".github/workflows/migrate.yml", head_sha: "abc1234" },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    if (/pending_deployments/.test(url)) {
+      return new Response(JSON.stringify([{ environment: { name: "staging-migrations" } }]), { status: 200 });
+    }
+    if (/\/deployments/.test(url)) return new Response("[]", { status: 200 });
+    if (/\/issues\?state=open/.test(url)) {
+      return new Response(
+        JSON.stringify([
+          {
+            number: 9,
+            title: "drift-monitor: staging",
+            user: { login: "github-actions[bot]", type: "Bot" },
+            author_association: "NONE",
+            body: `<!-- drift-monitor:{"environment":"staging","kind":"awaiting-approval","liveCommit":"abc1234","headCommit":"abc1234","migrations":"exact","runId":777,"runAttempt":1,"firstObserved":"${sixtyFiveMinutesAgo}","alertedAt":null} -->`,
+          },
+        ]),
+        { status: 200 },
+      );
+    }
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const { logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+    token: "configured",
+    fetchImpl: transport,
+  });
+  assert.match(logs, /kind=overdue-approval/, "the open issue's 65-minute clock must still be found");
+  assert.ok(patched !== null, "an overdue approval must be written");
+});
+
+test("a 5xx while closing degrades instead of crashing", async () => {
+  // Closing is a write like any other: a transient fault must leave the alert
+  // open and exit 0, not escape as exit 2 ("the monitor is broken").
+  let closed = false;
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "PATCH" && /issues\/9/.test(url)) {
+      closed = true;
+      return new Response("", { status: 502 });
+    }
+    if (/\/api\/version/.test(url)) {
+      return new Response(JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }), { status: 200 });
+    }
+    if (/\/api\/ready/.test(url)) {
+      return new Response(JSON.stringify({ ok: true, db: "ok", migrations: "exact" }), { status: 200 });
+    }
+    if (/\/commits\/staging/.test(url)) {
+      return new Response(JSON.stringify({ sha: "abc1234", commit: { message: "x" } }), { status: 200 });
+    }
+    if (/\/actions\/workflows\?/.test(url)) {
+      return new Response(JSON.stringify({ workflows: [] }), { status: 200 });
+    }
+    if (/\/issues\?state=open/.test(url)) {
+      return new Response(
+        JSON.stringify([
+          {
+            number: 9,
+            title: "drift-monitor: staging",
+            user: { login: "github-actions[bot]", type: "Bot" },
+            author_association: "NONE",
+            body: '<!-- drift-monitor:{"environment":"staging","kind":"stale-commit","liveCommit":"abc1234","headCommit":"fff9999","migrations":"exact","runId":null,"runAttempt":null,"firstObserved":"2026-01-01T00:00:00Z","alertedAt":null} -->',
+          },
+        ]),
+        { status: 200 },
+      );
+    }
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const { code, logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example"], {
+    token: "configured",
+    fetchImpl: transport,
+  });
+  assert.equal(code, 0, "a transient close failure is degraded, not a bug");
+  assert.equal(closed, true, "the close must have been attempted");
+  assert.match(logs, /could not close issue #9/, "the failure must be reported, not swallowed");
+});
+
+test("a failure listing runs for a known workflow degrades the tick", async () => {
+  // Distinct from a failed workflow list: here the monitor *knows* a monitored
+  // workflow exists but cannot read its runs, so an empty list is unverifiable
+  // and must not be read as "nothing in flight".
+  const state = statePath();
+  const { code, logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+    token: "configured",
+    fetchImpl: routed({
+      "/api/version": { status: 200, body: JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }) },
+      "/api/ready": { status: 200, body: JSON.stringify({ ok: true, db: "ok", migrations: "exact" }) },
+      "/commits/staging": { status: 200, body: JSON.stringify({ sha: "abc1234", commit: { message: "x" } }) },
+      "/actions/workflows?": {
+        status: 200,
+        body: JSON.stringify({ workflows: [{ id: 3, path: ".github/workflows/migrate.yml" }] }),
+      },
+      "/actions/workflows/3/runs": { status: 500, body: "" },
+      "/issues?state=open": { status: 200, body: "[]" },
+    }),
+  });
+  assert.equal(code, 0);
+  assert.match(logs, /run scan failed/, "the unreadable run list must be named");
+  assert.equal(existsSync(join(state, "..", "next.json")), false);
 });

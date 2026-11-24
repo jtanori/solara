@@ -89,7 +89,12 @@ test("stale commit under the horizon only observes", () => {
 });
 
 test("stale commit past the horizon alerts", () => {
-  const result = classify({ headCommit: "fff9999", firstObserved: minutesAgo(25) });
+  const result = classify({
+    headCommit: "fff9999",
+    firstObserved: minutesAgo(25),
+    clockKind: "observing-commit",
+    clockLiveCommit: "abc1234",
+  });
   assert.equal(result.kind, "stale-commit");
   assert.equal(decideAlert({ classification: result, issueOpen: false, previousObservation: null }), "open");
 });
@@ -107,6 +112,10 @@ test("the clock survives consecutive ticks from a healthy start", () => {
       read: okRead(),
       runs: [],
       firstObserved: clock,
+      // The clock belongs to the commit check, and to the live commit it was
+      // started for; without both a carried age means nothing.
+      clockKind: "observing-commit",
+      clockLiveCommit: "abc1234",
       now,
     });
     kinds.push(first.kind);
@@ -116,13 +125,19 @@ test("the clock survives consecutive ticks from a healthy start", () => {
 });
 
 test("live advancing resets the clock instead of inheriting staleness", () => {
-  const stale = classify({ headCommit: "fff9999", firstObserved: minutesAgo(30) });
+  const stale = classify({
+    headCommit: "fff9999",
+    firstObserved: minutesAgo(30),
+    clockKind: "observing-commit",
+    clockLiveCommit: "abc1234",
+  });
   assert.equal(stale.kind, "stale-commit");
   // A fresh deploy lands: the drift subject changed, so the clock must restart.
   // The state recorded which commit the clock belonged to, and live has moved.
   const fresh = classify({
     headCommit: "fff9999",
     firstObserved: minutesAgo(30),
+    clockKind: "stale-commit",
     clockLiveCommit: "sha0",
     read: okRead({ commit: "sha1" }),
   });
@@ -213,9 +228,19 @@ test("waitingFor is measured from the resolved start", () => {
 /* --------------------------------------------------------------- migrations */
 
 test("ahead is quiet while young and alerts past the horizon", () => {
-  const young = classify({ firstObserved: minutesAgo(5), read: okRead({}, { migrations: "ahead" }) });
+  const young = classify({
+    firstObserved: minutesAgo(5),
+    clockKind: "observing-migrations",
+    clockMigrations: "ahead",
+    read: okRead({}, { migrations: "ahead" }),
+  });
   assert.equal(young.kind, "observing-migrations");
-  const old = classify({ firstObserved: minutesAgo(25), read: okRead({}, { migrations: "ahead" }) });
+  const old = classify({
+    firstObserved: minutesAgo(25),
+    clockKind: "observing-migrations",
+    clockMigrations: "ahead",
+    read: okRead({}, { migrations: "ahead" }),
+  });
   assert.equal(old.kind, "stale-migrations");
   assert.equal(decideAlert({ classification: old, issueOpen: false, previousObservation: null }), "open");
 });
@@ -665,6 +690,97 @@ test("the alert body reports the current age and names the run", () => {
   });
   assert.match(body, /Diverged for: 65 minutes/);
   assert.match(body, /run #42, attempt 3/);
+});
+
+test("an unexpected status carrying JSON is still unreachable", () => {
+  // 418 is not a payload this monitor understands; reading its body as a
+  // readiness verdict would be inventing data.
+  assert.deepEqual(readEndpoint({ status: 418, body: '{"ok":true}', kind: "version" }), {
+    status: "unknown",
+    reason: "unreachable",
+  });
+});
+
+test("an approval clock never ages an unrelated commit check", () => {
+  // A 25-minute approval wait, then a run finishes and a commit lands ten
+  // seconds ago. Reusing the approval clock here opens a false stale-commit on
+  // a push that is ten seconds old.
+  const result = classify({
+    headCommit: "sha2",
+    firstObserved: minutesAgo(25),
+    clockKind: "awaiting-approval",
+    clockLiveCommit: "abc1234",
+    read: okRead({ commit: "abc1234" }),
+  });
+  assert.equal(result.kind, "observing-commit");
+  assert.equal(result.firstObserved, NOW, "the new subject starts its own clock");
+});
+
+test("an unattributed clock cannot be aged", () => {
+  // The old form returned the prior clock whenever the recorded subject was
+  // null, which aged any subject at all against a clock belonging to nothing.
+  const result = classify({
+    headCommit: "fff9999",
+    firstObserved: minutesAgo(60),
+    clockKind: "observing-commit",
+    clockLiveCommit: null,
+    read: okRead({ commit: "abc1234" }),
+  });
+  assert.equal(result.kind, "observing-commit");
+});
+
+test("a schema clock survives a deploy that moved", () => {
+  // Requiring both fields to match re-couples the two clocks: a deploy must not
+  // invalidate a stuck-schema timer.
+  const issue: MonitorState = {
+    environment: "staging",
+    kind: "stale-migrations",
+    liveCommit: "sha0",
+    headCommit: "sha0",
+    migrations: "ahead",
+    runId: null,
+    runAttempt: null,
+    firstObserved: new Date(NOW - 40 * MINUTE).toISOString(),
+    alertedAt: null,
+  };
+  const reconciled = reconcileState({
+    artifact: null,
+    issue,
+    liveCommit: "sha9",
+    migrations: "ahead",
+  });
+  assert.equal(reconciled?.kind, "stale-migrations", "the schema clock is not invalidated by a deploy");
+  assert.equal(Date.parse(reconciled?.firstObserved as string), NOW - 40 * MINUTE);
+});
+
+test("a schema clock only ages the schema state it was recorded for", () => {
+  // A different migration verdict is a different subject: `diverged -> ahead`
+  // must restart the timer, or a resolution looks just as old as the fault.
+  const result = classify({
+    firstObserved: minutesAgo(40),
+    clockKind: "observing-migrations",
+    clockMigrations: "diverged",
+    read: okRead({}, { migrations: "ahead" }),
+  });
+  assert.equal(result.kind, "observing-migrations");
+  assert.equal(result.firstObserved, NOW, "the new schema verdict starts its own clock");
+});
+
+test("reconcile ignores a clock with no timestamp instead of comparing NaN", () => {
+  const noClock: MonitorState = {
+    environment: "staging",
+    kind: "observing-commit",
+    liveCommit: "abc1234",
+    headCommit: "fff9999",
+    migrations: "exact",
+    runId: null,
+    runAttempt: null,
+    firstObserved: null,
+    alertedAt: null,
+  };
+  const real: MonitorState = { ...noClock, firstObserved: new Date(NOW - 5 * MINUTE).toISOString() };
+  assert.equal(reconcileState({ artifact: noClock, issue: real, liveCommit: "abc1234", migrations: "exact" })?.firstObserved, real.firstObserved);
+  assert.equal(reconcileState({ artifact: noClock, issue: null, liveCommit: "abc1234", migrations: "exact" }), null);
 });
 
 test("the three constants are the documented cadence and horizons", () => {

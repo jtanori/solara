@@ -200,12 +200,14 @@ async function fetchHeadCommit(ctx: Ctx, branch: string): Promise<HeadInfo | nul
  * workflow are excluded by name: without that the monitor sees *itself*
  * `in_progress` on `main` every tick and suppresses every alert forever.
  */
+type RunScan = { runs: InFlightRun[]; degraded: boolean };
+
 async function fetchInFlightRuns(
   ctx: Ctx,
   target: Target,
   now: number,
   waitState: MonitorState | null,
-): Promise<InFlightRun[]> {
+): Promise<RunScan> {
   let workflows: Array<{ id: number; path: string }>;
   try {
     const response = await github<{ workflows: Array<{ id: number; path: string }> }>(
@@ -213,13 +215,18 @@ async function fetchInFlightRuns(
       `/repos/${ctx.repo}/actions/workflows?per_page=100`,
     );
     workflows = response.workflows ?? [];
-  } catch {
-    // Cannot tell which runs exist; do not suppress on a guess.
-    return [];
+  } catch (error) {
+    // A 401/403 is a configuration failure and must exit 1, not read as "no
+    // runs exist" — which would suppress every alert forever. A transient fault
+    // (or a 404 before the workflow exists) is a degraded tick, signalled to the
+    // caller rather than silently treated as "nothing in flight".
+    if (error instanceof GithubError && error.rejected) throw error;
+    return { runs: [], degraded: true };
   }
 
   const inScope = workflows.filter(workflow => isMonitoredWorkflow(workflow.path, target));
   const runs: InFlightRun[] = [];
+  let degraded = false;
 
   for (const workflow of inScope) {
     let records: RunRecord[];
@@ -258,8 +265,10 @@ async function fetchInFlightRuns(
     } catch (error) {
       // A workflow that does not exist yet is [] (the mechanism is absent), but a
       // 401/403 is a real permission failure and must surface.
-      const status = (error as { status?: number }).status;
-      if (status === 401 || status === 403) throw error;
+      if (error instanceof GithubError && error.rejected) throw error;
+      // Cannot tell what is in flight: report degraded so the tick never closes
+      // an open issue on an empty run list it could not verify.
+      degraded = true;
       continue;
     }
 
@@ -314,7 +323,7 @@ async function fetchInFlightRuns(
       runs.push(inFlight);
     }
   }
-  return runs;
+  return { runs, degraded };
 }
 
 async function pendingEnvironments(ctx: Ctx, runId: number): Promise<string[]> {
@@ -357,7 +366,8 @@ async function resolveWaitingStart(ctx: Ctx, record: RunRecord, target: Target, 
       const start = resolveApprovalWaitStart({ statuses, now });
       if (start !== null) return start;
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof GithubError && error.rejected) throw error;
     return null;
   }
   return null;
@@ -374,10 +384,14 @@ type Issue = {
 };
 
 async function findIssue(ctx: Ctx, target: Target): Promise<Issue | null> {
-  const issues = await github<Issue[]>(ctx, `/repos/${ctx.repo}/issues?state=open&per_page=100`, {});
+  const issues = await github<Issue[] | Issue>(ctx, `/repos/${ctx.repo}/issues?state=open&per_page=100`, {});
+  // The endpoint pages, but a transport or proxy may hand back a single object.
+  // `.find` on a non-array threw, which marked the tick degraded for a reason
+  // that has nothing to do with the monitor's inputs.
+  const list = Array.isArray(issues) ? issues : [issues];
   // Trusted author only: the repository is public, so title matching alone lets
   // an outsider own the state block and silence the alert (F7).
-  const match = issues.find(issue => issue.title === ISSUE_TITLE[target] && isMonitorIssue(issue));
+  const match = list.find(issue => issue.title === ISSUE_TITLE[target] && isMonitorIssue(issue));
   return match ?? null;
 }
 
@@ -396,7 +410,7 @@ function writeArtifactState(path: string, state: MonitorState): void {
   writeFileSync(path, `${JSON.stringify(state)}\n`, "utf8");
 }
 
-export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number> {
+async function runOnce(argv: string[], deps?: Partial<Ctx>): Promise<number> {
   const ctx: Ctx = { ...defaultCtx(), ...deps };
   const args = parseArgs(argv);
   const target = args.env;
@@ -409,6 +423,8 @@ export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number>
   let headCommit: string | null;
   let runs: InFlightRun[] = [];
   let fixtureRuns: InFlightRun[] | null = null;
+  /** The run scan could not be trusted, so this tick must not write or close. */
+  let runsDegraded = false;
 
   if (args.fixture !== null) {
     const fixture = JSON.parse(readFileSync(args.fixture, "utf8")) as {
@@ -468,11 +484,21 @@ export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number>
       if (run.state !== "waiting" || run.waitingSince !== undefined) {
         return { ...run, waitingForMs: waitingFor(run, now, run.waitingSince ?? now) };
       }
-      const fallback = approvalFallbackClock({ state: artifactState ?? issueState, runId: run.runId, runAttempt: run.runAttempt, now });
+      // Both stores are candidates: the oldest matching `(runId, runAttempt)`
+      // clock wins, so a stub artifact cannot hide the issue's real clock.
+      const fallback = olderWaitClock(
+        approvalClockFor(artifactState, run, now),
+        approvalClockFor(issueState, run, now),
+      );
       return { ...run, waitingSince: fallback, waitingForMs: waitingFor(run, now, fallback) };
     });
   } else {
-    runs = await fetchInFlightRuns(ctx, target, now, artifactState ?? issueState);
+    // Pick the wait clock per run, not per store: an artifact written by a
+    // cleared/unknown tick is non-null but carries no subject, and `??` would
+    // let it shadow an open issue's real approval clock.
+    const scan = await fetchInFlightRuns(ctx, target, now, pickWaitState(artifactState, issueState));
+    runs = scan.runs;
+    runsDegraded = scan.degraded;
   }
 
   const previous = reconcileState({
@@ -490,6 +516,8 @@ export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number>
     firstObserved: previous?.firstObserved ? Date.parse(previous.firstObserved) : undefined,
     clockLiveCommit: previous?.liveCommit ?? undefined,
     clockMigrations: previous?.migrations ?? undefined,
+    // The clock's kind is what stops one check's age being reused by another.
+    clockKind: previous?.kind ?? undefined,
     now,
   });
 
@@ -526,10 +554,26 @@ export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number>
     alertedAt: null,
   };
 
-  // D9: a tick that could not verify the state must not rewrite the clock. The
-  // workflow re-uploads the prior artifact unchanged in that case.
-  if (read.status === "unknown" || read.status === "rejected" || issueLookupFailed) {
-    log(`degraded: ${read.status === "ok" ? "issue lookup failed" : read.reason} — state left untouched; the prior artifact is re-uploaded`);
+  // D9: a tick that could not verify its inputs must not rewrite the clock and
+  // must not close an issue. `classification.kind === "unknown"` is the general
+  // case — a null head, an "unknown" commit, a db error — where `read.status` is
+  // still "ok", so gating on the read alone let a degraded tick clobber state.
+  // `classification.kind === "unknown"` already covers every `read.status ===
+  // "unknown"` case, so only `rejected` (which the classifier reports as
+  // `unknown` too) needs naming separately to pick the exit code below.
+  if (read.status === "rejected" || classification.kind === "unknown" || issueLookupFailed || runsDegraded) {
+    // Most specific cause first: a failed run scan also produces a `pending`-less
+    // classification, and naming "classification unknown" there would hide the
+    // fact that the run list — not the deployment — was what went unverified.
+    const why =
+      read.status !== "ok"
+        ? read.reason
+        : runsDegraded
+          ? "run scan failed"
+          : issueLookupFailed
+            ? "issue lookup failed"
+            : "classification unknown";
+    log(`degraded: ${why} — state left untouched; the prior artifact is re-uploaded`);
     return read.status === "rejected" ? 1 : 0;
   }
 
@@ -578,15 +622,23 @@ export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number>
   }
 
   if (action === "close" && issue !== null) {
-    await github(ctx, `/repos/${ctx.repo}/issues/${issue.number}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        state: "closed",
-        body: `${renderAlertBody({ state, headline, inFlight: "none", now })}\n\n_Closed by the drift monitor at ${new Date(now).toISOString()}: the state matched._`,
-      }),
-      headers: { "Content-Type": "application/json" },
-    });
-    log(`closed alert issue #${issue.number}`);
+    try {
+      await github(ctx, `/repos/${ctx.repo}/issues/${issue.number}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          state: "closed",
+          body: `${renderAlertBody({ state, headline, inFlight: "none", now })}\n\n_Closed by the drift monitor at ${new Date(now).toISOString()}: the state matched._`,
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+      log(`closed alert issue #${issue.number}`);
+    } catch (error) {
+      // A 401/403 means the token cannot write at all; anything else is a
+      // transient fault. Either way this must not escape as exit 2.
+      if (error instanceof GithubError && error.rejected) return 1;
+      log(`degraded: could not close issue #${issue.number} (${(error as Error).message}); the alert stays open`);
+      return 0;
+    }
   }
 
   if (args.state !== null) writeArtifactState(nextStatePath(args.state), state);
@@ -595,6 +647,58 @@ export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number>
 
 function isReadyMigration(ready: ReadyBody | null): ready is ReadyBody & { migrations: MigrationState } {
   return ready !== null && isMigrationState(ready.migrations);
+}
+
+/**
+ * The entry point.
+ *
+ * Every GitHub call can reject with a 401/403 (a missing, expired or
+ * under-scoped token). That is a configuration failure and must be **exit 1**;
+ * letting it escape `main()` produced exit 2, "the monitor is broken", which
+ * sends the reader looking for a code bug that is not there.
+ */
+export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number> {
+  try {
+    return await runOnce(argv, deps);
+  } catch (error) {
+    if (error instanceof GithubError && error.rejected) {
+      log(`rejected: ${error.message} — the token cannot read or write what the monitor needs`);
+      return 1;
+    }
+    // Anything else really is a bug in the monitor.
+    throw error;
+  }
+}
+
+/**
+ * Which store supplies the wait clock when the run ids are not yet known.
+ *
+ * `??` is wrong here: an artifact written by a cleared or unknown tick is
+ * non-null but carries no subject, and would shadow an open issue's real clock.
+ */
+function pickWaitState(artifact: MonitorState | null, issue: MonitorState | null): MonitorState | null {
+  const usable = (state: MonitorState | null): boolean =>
+    state !== null && state.firstObserved !== null && state.runId !== null;
+  if (usable(artifact) && usable(issue)) {
+    return Date.parse(artifact!.firstObserved as string) <= Date.parse(issue!.firstObserved as string) ? artifact : issue;
+  }
+  return usable(artifact) ? artifact : usable(issue) ? issue : null;
+}
+
+/** The persisted clock for exactly this run attempt, or null. */
+function approvalClockFor(state: MonitorState | null, run: InFlightRun, now: number): number | null {
+  if (state === null) return null;
+  const fallback = approvalFallbackClock({ state, runId: run.runId, runAttempt: run.runAttempt, now });
+  // approvalFallbackClock returns `now` when the state does not match, so a
+  // match is only real when the state actually carries this attempt's key.
+  const matches = state.runId === run.runId && state.runAttempt === run.runAttempt && state.firstObserved !== null;
+  return matches ? fallback : null;
+}
+
+/** The older of two candidate clocks, or `now` when neither applies. */
+function olderWaitClock(a: number | null, b: number | null, now = Date.now()): number {
+  const candidates = [a, b].filter((value): value is number => value !== null);
+  return candidates.length === 0 ? now : Math.min(...candidates);
 }
 
 /** The artifact the workflow uploads: a sibling of the restored file. */
@@ -620,6 +724,13 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith("drift-monitor.ts"
       process.exitCode = code;
     })
     .catch(error => {
+      // A rejection means the token cannot do its job — exit 1, not 2. Exit 2
+      // is reserved for a genuine bug in the monitor.
+      if (error instanceof GithubError && error.rejected) {
+        console.error(`drift-monitor: rejected — ${error.message}`);
+        process.exitCode = 1;
+        return;
+      }
       console.error(`drift-monitor: internal error — ${error instanceof Error ? error.message : String(error)}`);
       // 2, never 1: a bug in the monitor must not read as "rejected by the host".
       process.exitCode = 2;
