@@ -23,8 +23,33 @@ export type SamplingCliOptions = {
 
 const VALUE_FLAGS = new Set(["--pilot", "--profile", "--locale", "--cases", "--max-spend-mxn", "--output"]);
 
+/**
+ * A processor profile that still carries the pre-#105 marker must not run. The
+ * schema alone accepts any string, so this is the fail-closed guard that makes
+ * the provisional `.env.pilot.example` value unusable until it is replaced.
+ */
+function processorProfileIsUnqualified(raw: string | undefined): boolean {
+  if (!raw) return false;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return false;
+    const { name, policyVersion } = parsed as Record<string, unknown>;
+    return [name, policyVersion].some(value =>
+      typeof value === "string" && /\btbd\b|provisional/i.test(value),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function parseSamplingOptions(argv: string[], env: Record<string, string | undefined>): SamplingCliOptions {
   if (env.VERCEL || env.NODE_ENV === "production") throw new SamplingError("sampling_authorization_missing");
+
+  // dotenv only overrides keys present in the chosen file, so an exported true
+  // switch can survive. Refuse before parsing the rest of the command.
+  if (env.READINGS_GENERATION_ENABLED === "true" || env.READINGS_PAID_GENERATION_ENABLED === "true") {
+    throw new SamplingError("sampling_control_enabled");
+  }
 
   const values: Record<string, string> = {};
   let authorize = false;
@@ -65,6 +90,9 @@ export function parseSamplingOptions(argv: string[], env: Record<string, string 
   const profile = values["--profile"] ?? envProfile ?? PAID_PROFILE;
   if (!isPaidProfile(profile) || (envProfile !== undefined && envProfile !== profile)) {
     throw new SamplingError("sampling_profile_mismatch");
+  }
+  if (processorProfileIsUnqualified(env.READINGS_PROCESSOR_PROFILE)) {
+    throw new SamplingError("sampling_profile_unqualified");
   }
 
   return { pilot, profile, locale, cases, capMicros, output: values["--output"] };
