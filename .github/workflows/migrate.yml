@@ -188,6 +188,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          PROD_DB_ENDPOINT: ${{ vars.PROD_DB_ENDPOINT }}
+          STAGING_DB_ENDPOINT: ${{ vars.STAGING_DB_ENDPOINT }}
         run: |
           set -euo pipefail
           if [ -z "${DATABASE_URL:-}" ]; then
@@ -204,6 +206,22 @@ jobs:
           if [ -z "${SSL:-}" ]; then
             echo "::warning::DATABASE_URL has no sslmode — add ?sslmode=verify-full"
           fi
+          # The guard in src/db/url-guard.ts fails closed unless the environment's endpoint
+          # label is present: it is what proves DATABASE_URL points at the intended database.
+          # Without this, db-run.ts aborts with `database_url_endpoint_unset` and the real
+          # cause is buried under a config error. Fail here, where the fix is obvious.
+          case "$TARGET_ENV" in
+            production) EXPECTED_VAR="PROD_DB_ENDPOINT"; EXPECTED_VALUE="${PROD_DB_ENDPOINT:-}" ;;
+            staging)    EXPECTED_VAR="STAGING_DB_ENDPOINT"; EXPECTED_VALUE="${STAGING_DB_ENDPOINT:-}" ;;
+            *)          EXPECTED_VAR=""; EXPECTED_VALUE="" ;;
+          esac
+          if [ -n "$EXPECTED_VAR" ] && [ -z "$EXPECTED_VALUE" ]; then
+            echo "::error::$EXPECTED_VAR is not set for environment '$TARGET_ENV' — add it as an Environment VARIABLE (Settings → Environments → $TARGET_ENV → Variables), or the database guard refuses to connect"
+            exit 1
+          fi
+          if [ -n "$EXPECTED_VAR" ]; then
+            echo "$EXPECTED_VAR=$EXPECTED_VALUE"
+          fi
 
       # Read-only. In verify/dry-run mode a failure here is diagnostic, not fatal — let the
       # final verify step produce the verdict so one run tells the whole story.
@@ -212,6 +230,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          PROD_DB_ENDPOINT: ${{ vars.PROD_DB_ENDPOINT }}
+          STAGING_DB_ENDPOINT: ${{ vars.STAGING_DB_ENDPOINT }}
         run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" status
 
       - name: Apply migrations
@@ -219,6 +239,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          PROD_DB_ENDPOINT: ${{ vars.PROD_DB_ENDPOINT }}
+          STAGING_DB_ENDPOINT: ${{ vars.STAGING_DB_ENDPOINT }}
         run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" migrate --yes
 
       - name: Record applied migration
@@ -238,6 +260,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          PROD_DB_ENDPOINT: ${{ vars.PROD_DB_ENDPOINT }}
+          STAGING_DB_ENDPOINT: ${{ vars.STAGING_DB_ENDPOINT }}
           MODE: ${{ inputs.mode }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
