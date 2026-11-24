@@ -59,7 +59,8 @@ Notes:
   never used for a write.
 - `VERCEL_AUTOMATION_BYPASS_SECRET` is required when Deployment Protection is on; a 401/403 during
   verification is a hard failure, never a skip. See §2.1 for where it is issued, which copies exist
-  and how to rotate it.
+  and how to rotate it, and [`bypass-secret-howto.md`](bypass-secret-howto.md) for the step-by-step
+  setup and verification procedure.
 ### 2.1 `VERCEL_AUTOMATION_BYPASS_SECRET`: issuer, copies and rotation
 
 **Vercel issues it. Vercel never stores your copy.** The value is minted once per project under
@@ -83,7 +84,7 @@ interchangeable and nothing in this repository syncs them.
 | Consumer | Location | Used for |
 | --- | --- | --- |
 | Drift monitor | GitHub Environment **`monitoring`** → secret `VERCEL_AUTOMATION_BYPASS_SECRET` | `GET /api/version` + `GET /api/ready` on both hosts, every 15 minutes |
-| `scripts/deploy.sh` | GitHub Environments **`staging`** and **`production`** → same secret name | `deploy_ready_curl` in `scripts/lib/vercel-rollback.sh` sends the header on the pre-merge preview probe **and** the post-deploy `/api/ready` check |
+| `scripts/deploy.sh` | GitHub Environments **`staging`** and **`production`** → same secret name | `deploy_ready_curl` in `scripts/lib/vercel-rollback.sh` sends the header on: the pre-merge preview `/api/ready` probe (`lib/vercel-preview.sh`), the post-deploy `/api/ready` check, the rendered-page check on `/account` (added by #212 — `/api/ready` has its own pool and can be green while pages 500), and the rollback confirmation probe |
 | Stripe (staging only) | Stripe Dashboard → the staging webhook **endpoint URL** | lets Stripe's POST reach `/api/billing/webhook`; see `02-stripe.md` |
 | Manual retrieval / QA | local shell or `.env` (not committed) | the `curl` checks in `12-domains-and-email.md` |
 | Local scripts | `.env` is the only place; `secretweaver.yaml` classifies it under the `deploy` group with `optional: [local, staging, production]` and never generates it (`sensitive: true`) | — |

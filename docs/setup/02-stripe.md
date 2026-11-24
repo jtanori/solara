@@ -51,8 +51,9 @@ Do not set `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`. Checkout is created server-side
      Protection → *Protection Bypass for Automation*) and this step pastes a copy into Stripe's
      endpoint config because Stripe's URL field has no header option. The same value is also held by
      GitHub Environments `staging`, `production` and `monitoring`, and by your local `.env`;
-     `11-actions-deploys.md` §2.1 lists every copy and the rotation checklist. Stripe needs no
-     Vercel environment variable, and no application code reads this value.
+     `11-actions-deploys.md` §2.1 lists every copy and the rotation checklist, and
+     `bypass-secret-howto.md` walks through creating and verifying it. Stripe needs no Vercel
+     environment variable, and no application code reads this value.
    - temporarily disable Vercel Authentication for Preview during test-mode QA, then re-enable it;
    - keep the hosted endpoint as a delivery smoke test only, and exercise signature, replay and ordering locally with `stripe listen --forward-to localhost:3000/api/billing/webhook`.
 
