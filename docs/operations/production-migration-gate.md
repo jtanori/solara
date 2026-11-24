@@ -111,6 +111,18 @@ do
 done
 rm -f "$WF"
 
+# 2b. the workflow that executes must be the workflow at the migrated commit (#236).
+#     --ref picks the workflow file and -f sha picks the checkout; GitHub does not relate
+#     them, so a stale ref runs an old gate against new code. db-remote.ts refuses this for
+#     every dispatch it makes; repeat it here because step 4 dispatches with raw `gh`.
+REF_BLOB=$(gh api "repos/jtanori/solara/contents/.github/workflows/migrate.yml?ref=$PROMO_REF" --jq .sha)
+SHA_BLOB=$(gh api "repos/jtanori/solara/contents/.github/workflows/migrate.yml?ref=$PROMO_SHA" --jq .sha)
+[[ "$REF_BLOB" == "$SHA_BLOB" ]] || {
+  echo "ERROR: migrate.yml on $PROMO_REF (blob ${REF_BLOB:0:7}) is not the file at ${PROMO_SHA:0:7} (blob ${SHA_BLOB:0:7})"
+  echo "       The workflow that runs would not be the one reviewed. Dispatch from a ref that carries the same file."
+  exit 1
+}
+
 # This is a version-presence check, not proof that the gate behaves correctly.
 # The reviewed workflow and CI are the behavioral assurance.
 

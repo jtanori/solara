@@ -99,6 +99,13 @@ jobs:
           REHEARSAL_PR: ${{ inputs.rehearsal_pr }}
         run: |
           echo "Environment: $TARGET_ENV pr=$PR sha=$SHA mode=$MODE dry_run=$DRY_RUN rehearsal_pr=$REHEARSAL_PR"
+          # --ref selects the workflow file, -f sha selects the checkout; GitHub does not relate
+          # them (#236). Record both so a dispatch that executed a different file is visible.
+          echo "workflow_ref=${GITHUB_WORKFLOW_REF:-unknown}"
+          echo "executed_from=${GITHUB_SHA:-unknown} target=$SHA"
+          if [ -n "${GITHUB_SHA:-}" ] && [ "$GITHUB_SHA" != "$SHA" ]; then
+            echo "::warning::the workflow that is executing (${GITHUB_SHA:0:7}) is not the target commit (${SHA:0:7}) — only the checkout at \$sha is used, so this is safe solely if both migrate.yml blobs are identical (db-remote.ts enforces that)"
+          fi
           cat drizzle/meta/_journal.json
           ls -l drizzle/*.sql
 
@@ -188,6 +195,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          PROD_DB_ENDPOINT: ${{ vars.PROD_DB_ENDPOINT }}
+          STAGING_DB_ENDPOINT: ${{ vars.STAGING_DB_ENDPOINT }}
         run: |
           set -euo pipefail
           if [ -z "${DATABASE_URL:-}" ]; then
@@ -204,6 +213,22 @@ jobs:
           if [ -z "${SSL:-}" ]; then
             echo "::warning::DATABASE_URL has no sslmode — add ?sslmode=verify-full"
           fi
+          # The guard in src/db/url-guard.ts fails closed unless the environment's endpoint
+          # label is present: it is what proves DATABASE_URL points at the intended database.
+          # Without this, db-run.ts aborts with `database_url_endpoint_unset` and the real
+          # cause is buried under a config error. Fail here, where the fix is obvious.
+          case "$TARGET_ENV" in
+            production) EXPECTED_VAR="PROD_DB_ENDPOINT"; EXPECTED_VALUE="${PROD_DB_ENDPOINT:-}" ;;
+            staging)    EXPECTED_VAR="STAGING_DB_ENDPOINT"; EXPECTED_VALUE="${STAGING_DB_ENDPOINT:-}" ;;
+            *)          EXPECTED_VAR=""; EXPECTED_VALUE="" ;;
+          esac
+          if [ -n "$EXPECTED_VAR" ] && [ -z "$EXPECTED_VALUE" ]; then
+            echo "::error::$EXPECTED_VAR is not set for environment '$TARGET_ENV' — add it as an Environment VARIABLE (Settings → Environments → $TARGET_ENV → Variables), or the database guard refuses to connect"
+            exit 1
+          fi
+          if [ -n "$EXPECTED_VAR" ]; then
+            echo "$EXPECTED_VAR=$EXPECTED_VALUE"
+          fi
 
       # Read-only. In verify/dry-run mode a failure here is diagnostic, not fatal — let the
       # final verify step produce the verdict so one run tells the whole story.
@@ -212,6 +237,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          PROD_DB_ENDPOINT: ${{ vars.PROD_DB_ENDPOINT }}
+          STAGING_DB_ENDPOINT: ${{ vars.STAGING_DB_ENDPOINT }}
         run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" status
 
       - name: Apply migrations
@@ -219,6 +246,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          PROD_DB_ENDPOINT: ${{ vars.PROD_DB_ENDPOINT }}
+          STAGING_DB_ENDPOINT: ${{ vars.STAGING_DB_ENDPOINT }}
         run: npx tsx scripts/db-run.ts --env "$TARGET_ENV" migrate --yes
 
       - name: Record applied migration
@@ -238,6 +267,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TARGET_ENV: ${{ inputs.env }}
+          PROD_DB_ENDPOINT: ${{ vars.PROD_DB_ENDPOINT }}
+          STAGING_DB_ENDPOINT: ${{ vars.STAGING_DB_ENDPOINT }}
           MODE: ${{ inputs.mode }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
@@ -246,6 +277,17 @@ jobs:
           if [ "$MODE" = "verify" ] || [ "$DRY_RUN" = "true" ]; then ALLOW="--allow-incomplete"; fi
           npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify --json $ALLOW > verify.json || true
           npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify $ALLOW 2>&1 | tee verify.txt || true
+
+          # `ok:false` is drift — information in verify/dry-run mode, a failure after a real
+          # migrate. `errors[]`, a missing ok or unparsable JSON means the inspection failed,
+          # and a failed inspection must be red in every mode (#236): a guard or connection
+          # error reported as "out of sync" is a green run three steps from its cause.
+          VERDICT_RC=0
+          npx tsx scripts/schema-verdict.ts verify.json || VERDICT_RC=$?
+          if [ "$VERDICT_RC" -ne 0 ]; then
+            echo "::error::$TARGET_ENV could not be inspected — see verify.txt above; this is a failed inspection, not schema drift"
+            exit 1
+          fi
 
           IN_SYNC=$(node -e 'const j=require("./verify.json");process.stdout.write(String(j.ok))')
           if [ "$IN_SYNC" = "true" ]; then

@@ -87,37 +87,28 @@ Expected: 3 rows listed with target `Production`.
 
 ---
 
-## Step 2 — Back-merge `main` into `staging`
+## Step 2 — Prove the promotion carries main's content
+
+`staging` requires linear history and its ruleset has no bypass actors, so a merge-commit
+back-merge cannot land (#240). The gate no longer asks for ancestry — after a merge-commit
+promotion `main` always carries a commit `staging` does not have. It asks whether merging
+`main` into the promotion head would change anything:
 
 ```bash
 git fetch origin main staging
-git switch -c chore/promote-sync-main origin/staging
-git merge --no-ff origin/main -m "chore: back-merge main into staging (promotion prerequisite)"
-git push origin chore/promote-sync-main
-gh pr create --base staging --head chore/promote-sync-main \
-  --title "chore: back-merge main into staging (promotion prerequisite)" \
-  --body "Brings main's commits into staging so deploy.sh's base-freshness gate can pass the promotion. Zero file changes; requires a merge commit (see Step 2 note)."
+BASE_SHA=$(git rev-parse origin/main)
+HEAD_SHA=$(git rev-parse origin/staging)
+npx tsx scripts/promotion-ancestry.ts --head "$HEAD_SHA" --base "$BASE_SHA"
 ```
 
-Expected: `verify` green, then merge it:
+Expected: `ancestor` (nothing to prove) or `content-contained` (main's changes are already on
+`staging` under different SHAs — the promotion proceeds).
 
-```bash
-gh pr merge <that-pr-number> --merge
-```
+If it prints `needs-back-merge`, `main` carries content `staging` lacks. Re-land it on
+`staging` through a normal PR (cherry-pick or a fresh commit) and re-run. If it prints
+`conflicted`, resolve it the same way: re-land the change, do not attempt a back-merge.
 
-If the ruleset blocks a merge commit on `staging`, **do not fall back to squash**: a squash keeps the
-content and drops the SHAs, so `main` is still not an ancestor, the promotion PR stays `BEHIND`, and
-`deploy.sh`'s base-freshness gate refuses it. There is no override. The one supported route is to
-lift `required_linear_history`, merge the back-merge with `--merge`, and restore the rule — see
-`production-bootstrap-2026-11-10.md` §4.1a.
-
-Confirm afterwards, before opening the promotion PR:
-
-```bash
-git fetch origin main staging
-git merge-base --is-ancestor origin/main origin/staging && echo "ancestry: literal"
-git log --oneline --cherry-pick --left-only origin/main...origin/staging   # must print nothing
-```
+`deploy.sh` runs exactly this check in its base-freshness gate and refuses anything else.
 
 ---
 

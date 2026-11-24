@@ -512,6 +512,18 @@ require a PR and the `verify` check, so merges are audited — but audit is not 
   green does not prove the old build works against a newer schema.
 
 ### Consequences
+- Dispatch is bound to the commit (#236). `--ref` selects the workflow **file** and `-f sha`
+  selects the checkout; GitHub does not relate them, so `db-remote.ts` requires the `migrate.yml`
+  blob at the ref to equal the blob at the migrated SHA and refuses otherwise, then discards the
+  verdict if the ref moved during dispatch. `--ref` is no longer trusted on its own.
+- A promotion is gated on content, not ancestry (#240). After a merge-commit promotion `main`
+  always carries a commit `staging` does not have, and `protect-staging` requires linear history
+  with no bypass actors, so the back-merge that restored ancestry (#232) can no longer land. The
+  gate accepts a head whose trial merge adds nothing to it — every main change present under a
+  different SHA — and refuses when `main` carries content `staging` lacks, naming the commits to
+  re-land through a normal PR.
+- A database that could not be inspected is a failed run, never schema drift (#236). Verify and
+  dry-run may legitimately report `drift`; a guard or connection error is fatal in every mode.
 - `scripts/deploy.sh` is retired once Deployments-aware monitoring exists; `scripts/promote.sh`
   only opens the promotion PR and watches the resulting run.
 - `migrate.yml` becomes break-glass: verify plus an emergency forward-fix, with an operator dispatch

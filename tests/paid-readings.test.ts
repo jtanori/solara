@@ -30,7 +30,7 @@ import type { ChartInput } from "../src/lib/types";
 
 const enabled = process.env.RUN_INTEGRATION_TESTS === "1";
 const gated = { skip: enabled ? false : "requires disposable local PostgreSQL and RUN_INTEGRATION_TESTS=1" };
-const envKeys = ["READINGS_GENERATION_ENABLED", "READINGS_PAID_GENERATION_ENABLED", "READINGS_PAID_EXECUTOR", "READINGS_PAID_PROFILE", "READINGS_PROVIDER", "READINGS_CHEAP_MODEL", "READINGS_STRONG_MODEL", "READINGS_API_BASE_URL", "READINGS_API_KEY", "READINGS_PROCESSOR_PROFILE", "READINGS_MODEL_PRICES", "READINGS_REQUEST_TIMEOUT_MS"];
+const envKeys = ["READINGS_GENERATION_ENABLED", "READINGS_PAID_GENERATION_ENABLED", "READINGS_PAID_EXECUTOR", "READINGS_PAID_PROFILE", "READINGS_PROVIDER", "READINGS_CHEAP_MODEL", "READINGS_STRONG_MODEL", "READINGS_API_BASE_URL", "READINGS_API_KEY", "READINGS_PROCESSOR_PROFILE", "READINGS_MODEL_PRICES", "READINGS_REQUEST_TIMEOUT_MS", "READINGS_GENERATION_LOCALES"];
 let savedEnv: Record<string, string | undefined>;
 const allocated: string[] = [];
 const approvalHashes = new Set<string>();
@@ -46,7 +46,7 @@ beforeEach(async () => {
   if (!enabled) return;
   assert.ok(["127.0.0.1", "localhost"].includes(new URL(process.env.DATABASE_URL!).hostname), "disposable loopback database only");
   savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
-  Object.assign(process.env, { READINGS_GENERATION_ENABLED: "true", READINGS_PAID_GENERATION_ENABLED: "true", READINGS_PAID_EXECUTOR: "database-worker-v1", READINGS_PAID_PROFILE: PAID_PROFILE,
+  Object.assign(process.env, { READINGS_GENERATION_ENABLED: "true", READINGS_GENERATION_LOCALES: "en,es", READINGS_PAID_GENERATION_ENABLED: "true", READINGS_PAID_EXECUTOR: "database-worker-v1", READINGS_PAID_PROFILE: PAID_PROFILE,
     READINGS_PROVIDER: "chat-completions", READINGS_CHEAP_MODEL: "paid-cheap", READINGS_STRONG_MODEL: "paid-strong", READINGS_API_BASE_URL: "https://processor.invalid/v1",
     READINGS_API_KEY: "FAKE_PAID_PROVIDER_KEY", READINGS_PROCESSOR_PROFILE: JSON.stringify(profile), READINGS_MODEL_PRICES: JSON.stringify(prices), READINGS_REQUEST_TIMEOUT_MS: "2000" });
   await store.setEnabled(true);
