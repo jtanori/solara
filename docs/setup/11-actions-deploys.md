@@ -59,8 +59,9 @@ Notes:
   never used for a write.
 - `VERCEL_AUTOMATION_BYPASS_SECRET` is required when Deployment Protection is on; a 401/403 during
   verification is a hard failure, never a skip. See §2.1 for where it is issued, which copies exist
-  and how to rotate it, and [`bypass-secret-howto.md`](bypass-secret-howto.md) for the step-by-step
-  setup and verification procedure.
+  and how to rotate it. [`bypass-secret-howto.md`](bypass-secret-howto.md) is the step-by-step
+  setup, and [`operations/drift-monitor-setup-runbook.md`](../operations/drift-monitor-setup-runbook.md)
+  covers every remaining configuration step for the monitor, in order.
 ### 2.1 `VERCEL_AUTOMATION_BYPASS_SECRET`: issuer, copies and rotation
 
 **Vercel issues it. Vercel never stores your copy.** The value is minted once per project under
