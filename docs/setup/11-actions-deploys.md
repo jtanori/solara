@@ -49,7 +49,7 @@ preview database once #176 or its fallback lands.
 | `production` | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `main` |
 | `production-migrations` | `DATABASE_URL` (direct, production), `DATABASE_URL_STAGING_READONLY` | branch `main`, required reviewer = operator, **Prevent self-review OFF** |
 | `production-diagnostics` | `DATABASE_URL_PRODUCTION_READONLY` | branch `main`, read-only role, no reviewer |
-| `monitoring` | `VERCEL_AUTOMATION_BYPASS_SECRET` **only** | branch `main`, no reviewer, no database credential |
+| `monitoring` | `VERCEL_AUTOMATION_BYPASS_SECRET` **only** | no reviewer, no database credential; branch policy optional — see the note below |
 
 Notes:
 
@@ -117,6 +117,12 @@ copies must be updated together or something breaks:
 
 There is no automation for this; treat rotation as a four-step checklist.
 
+- **`monitoring` branch policy is a choice, not a requirement.** A required branch policy here would
+  only affect `workflow_dispatch`, and dispatch is impossible before the workflow reaches the default
+  branch anyway (`HTTP 404` — the workflow is not registered with the Actions API until it is on
+  `main`). After promotion, *Selected → `main`* refuses a dispatch from any other ref; leaving it
+  unset allows one. The environment exists with no policy (all branches), which is functional. See
+  [`operations/drift-monitor-setup-runbook.md`](../operations/drift-monitor-setup-runbook.md) §1.
 - **The drift monitor binds to `monitoring`, not to `staging` or `production`.** A job carrying an
   `environment:` key creates a GitHub Deployment (`task: deploy`). Two legs every 15 minutes would
   fabricate ~192 `success` records a day against `main`'s SHA — including while a real production

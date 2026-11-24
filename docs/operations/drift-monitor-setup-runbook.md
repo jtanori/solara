@@ -59,17 +59,24 @@ gh api --method PUT repos/jtanori/solara/environments/monitoring
 
 ### Branch policy — a decision you should make consciously
 
-`11-actions-deploys.md` §2 documents `monitoring` as *branch `main`*. It is **not enforceable the way
-`staging`/`production` are**, because scheduled workflows run on `main` but the `workflow_dispatch`
-dry run is executed from whatever ref you name. If you set *Deployment branches: Selected → `main`*
-and then dispatch with `--ref <branch>`, GitHub rejects the run before any step executes.
+**Verified fact that simplifies this:** a `workflow_dispatch` on this workflow returns
+`HTTP 404 Not Found` until the file exists on the **default branch** — the workflow is not registered
+with the Actions API at all (`gh api .../actions/workflows` lists only `ci`, `migrate` and Dependabot).
+So before promotion *no* dispatch is possible from *any* ref, and the branch-policy question has no
+practical effect until after the workflow lands on `main`.
+
+After promotion it does matter: with a *Selected → `main`* policy, dispatching with `--ref <branch>`
+is rejected before any step executes. With no policy (all branches), it works from any branch.
 
 Two coherent choices:
 
 | Choice | Policy | Cost |
 | --- | --- | --- |
-| **A — documented, strict** (recommended) | Selected → `main` only | pre-promotion dry runs must be done **locally** (`npx tsx scripts/drift-monitor.ts --env … --dry-run`), or from `main` after promotion; Step 5b becomes post-promotion only |
-| **B — permissive** | All branches | `workflow_dispatch` works from any branch, including before promotion; slightly weaker, and diverges from the documented row |
+| **A — documented, strict** | Selected → `main` only | post-promotion dry runs must use `--ref main`; a dispatch from a feature branch is refused |
+| **B — permissive** | All branches (`deployment_branch_policy: null`) | `workflow_dispatch` works from any ref after promotion; slightly weaker, and diverges from the documented `main` row |
+
+The environment currently has **no branch policy** (`deployment_branch_policy: null`), i.e. choice B.
+That is functional. Either leave it and update the §2 row, or apply choice A below.
 
 Whatever you choose, update the `monitoring` row in `11-actions-deploys.md` §2 if you pick B, so the
 doc and the setting agree.
@@ -138,9 +145,12 @@ ignored. If protection is *on* and the secret is missing or stale, every tick ex
 These are not in the workflow and cannot be set from it. Both require **admin**; this token gets
 `403` reading them, so verify in the UI.
 
-1. **Actions enabled for the repository** — Settings → Actions → General → *Allow all actions and
-   reusable workflows*. A restricted allow-list that excludes `actions/checkout`,
-   `actions/setup-node` or `actions/upload-artifact` breaks the run at the first step.
+1. **Actions enabled / allow-list — no action needed, and here is the proof.** The workflow uses only
+   `actions/checkout@v4`, `actions/setup-node@v4` and `actions/upload-artifact@v4`. All three already
+   run successfully in this repository: `ci.yml` uses checkout and setup-node on every PR (and passes
+   on this branch), and `migrate.yml` uses all three, succeeding on 2026-11-18. A restricted
+   allow-list that excluded any of them would already have broken those workflows. **Nothing to
+   change**; this row exists so you can skip it with confidence rather than guess.
 2. **Workflow permissions** — Settings → Actions → General → *Workflow permissions*.
    The workflow declares its own `permissions:` map (`contents: read`, `actions: read`,
    `deployments: read`, `issues: write`), and an explicit map **overrides** the repository default
@@ -194,9 +204,13 @@ Expect a **reported** `kind` (`exact`, `observing-commit`, `behind`, …) and
 `kind=unknown` with exit `0` is **not** success — it means the host was unreachable and the tick was
 degraded. Check the URL before the secret.
 
-### 5b. After merge to `staging` — nothing runs
+### 5b. After merge to `staging` — nothing runs, and nothing *can* be run
 
-Correct and expected. `schedule:` only fires from `main`.
+Correct and expected. `schedule:` only fires from `main`, and `workflow_dispatch` returns
+`HTTP 404` because the workflow is not on the default branch. There is no pre-promotion dispatch to
+try; do not read the 404 as a configuration fault.
+
+The only pre-promotion check is 5a run from a machine that can reach the hosts.
 
 ### 5c. After promotion to `main` — the real test
 
