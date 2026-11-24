@@ -20,7 +20,7 @@ import type { ChartInput } from "../src/lib/types";
 
 const enabled = process.env.RUN_INTEGRATION_TESTS === "1";
 const gated = { skip: !enabled ? "requires RUN_INTEGRATION_TESTS=1 and disposable local PostgreSQL" : false };
-const envKeys = ["READINGS_GENERATION_ENABLED", "READINGS_PROVIDER", "READINGS_CHEAP_MODEL", "READINGS_STRONG_MODEL", "READINGS_API_BASE_URL", "READINGS_API_KEY", "READINGS_PROCESSOR_PROFILE", "READINGS_MODEL_PRICES", "READINGS_REQUEST_TIMEOUT_MS"];
+const envKeys = ["READINGS_GENERATION_ENABLED", "READINGS_PROVIDER", "READINGS_CHEAP_MODEL", "READINGS_STRONG_MODEL", "READINGS_API_BASE_URL", "READINGS_API_KEY", "READINGS_PROCESSOR_PROFILE", "READINGS_MODEL_PRICES", "READINGS_REQUEST_TIMEOUT_MS", "READINGS_GENERATION_LOCALES"];
 let savedEnv: Record<string, string | undefined>;
 const allocated: string[] = [];
 const input: ChartInput = {
@@ -37,7 +37,7 @@ beforeEach(() => {
   assert.ok(["localhost", "127.0.0.1"].includes(new URL(process.env.DATABASE_URL!).hostname), "disposable local DB only");
   savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
   Object.assign(process.env, {
-    READINGS_GENERATION_ENABLED: "true", READINGS_PROVIDER: "chat-completions",
+    READINGS_GENERATION_ENABLED: "true", READINGS_GENERATION_LOCALES: "en,es", READINGS_PROVIDER: "chat-completions",
     READINGS_CHEAP_MODEL: "test-model", READINGS_STRONG_MODEL: "test-model", READINGS_API_BASE_URL: "https://processor.invalid/v1",
     READINGS_API_KEY: "FAKE_PROVIDER_KEY_SENTINEL", READINGS_PROCESSOR_PROFILE: JSON.stringify(profile),
     READINGS_MODEL_PRICES: JSON.stringify({ "test-model": { inputMxnPerMillion: 15, outputMxnPerMillion: 60 } }), READINGS_REQUEST_TIMEOUT_MS: "1000",

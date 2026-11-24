@@ -104,6 +104,11 @@ Post-production. Until it is done, generation must fail closed for `en` even if
 Spanish generation is enabled (separate issue). English UI and stored documents are
 unaffected.
 
+Enforced at runtime by `READINGS_GENERATION_LOCALES` (#224): unset means `es` only; an
+empty or unrecognised value enables nothing. The free service, paid admission and the paid
+worker all refuse before a permit is reserved, and the client sees the generic
+"generation unavailable" shape with the locale recorded only in the log.
+
 ## Gates
 
 1. Disclosure signed; configuration frozen.

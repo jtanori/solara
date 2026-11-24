@@ -44,6 +44,7 @@ covered by [the paid runbook](10-paid-readings.md). See the historical
 | Variable | Requirement |
 | --- | --- |
 | `READINGS_GENERATION_ENABLED` | Leave empty or `false`; only exact `true` enables dispatch. |
+| `READINGS_GENERATION_LOCALES` | Comma-separated qualified locales. Unset ⇒ `es` only; empty or any token other than `es`/`en` ⇒ none. English generation is deferred until sampling stage B.2 qualifies it (#224); the runtime refuses it before any permit, with the locale visible only in logs. |
 | `READINGS_PROVIDER` | Account path accepts `chat-completions`, never fixture fallback. |
 | `READINGS_PROCESSOR_PROFILE` | Non-secret JSON: stable ID, actual processor name, privacy version, per-model full billable-input caps, explicit served-model aliases. |
 | `READINGS_API_BASE_URL` | Canonical HTTPS endpoint base; no credentials/query/fragment; redirects refused. Endpoint changes invalidate prior consent. |
