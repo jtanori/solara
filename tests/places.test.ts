@@ -5,14 +5,22 @@ import test from "node:test";
 import { inArray } from "drizzle-orm";
 import { db } from "../src/db";
 import { rateLimits } from "../src/db/schema";
-import { handlePlaces } from "../src/lib/places";
+import { handlePlaces, resolvePlacesLanguage } from "../src/lib/places";
 import { clearPlacesCacheForTests } from "../src/lib/places-cache";
 import { keyFor } from "../src/lib/rate-limit";
 
-function request(query: string, ip: string, origin = "same-origin", requestId?: string): Request {
-  return new Request(`https://solara.example/api/places?q=${encodeURIComponent(query)}&lang=en`, {
+function request(
+  query: string,
+  ip: string,
+  origin = "same-origin",
+  requestId?: string,
+  options: { lang?: "en" | "es"; cookie?: string } = {},
+): Request {
+  const lang = options.lang ?? "en";
+  return new Request(`https://solara.example/api/places?q=${encodeURIComponent(query)}&lang=${lang}`, {
     headers: {
       "x-forwarded-for": ip,
+      ...(options.cookie ? { cookie: options.cookie } : {}),
       ...(requestId ? { "x-request-id": requestId } : {}),
       ...(origin === "same-origin" ? { "Sec-Fetch-Site": "same-origin" } : { Origin: origin }),
     },
@@ -77,6 +85,42 @@ test("places caches identical queries and rate-limits per IP", {
     assert.equal(upstream.calls(), 1);
   } finally {
     await cleanup(keys);
+  }
+});
+
+test("places caches the same query separately per locale", {
+  skip: process.env.RUN_INTEGRATION_TESTS !== "1",
+}, async () => {
+  // Same query, two locales: the upstream returns language-specific names, so a
+  // shared cache entry would hand English names to a Spanish reader (#229 review).
+  const host = new URL(process.env.DATABASE_URL ?? "").hostname.replace(/^\[|\]$/g, "");
+  assert.ok(["localhost", "127.0.0.1", "::1"].includes(host), "Places tests require a loopback database");
+
+  clearPlacesCacheForTests();
+  const ip = "192.0.2.114";
+  const keys = [keyFor("places:ip", ip), budgetKey()];
+  await cleanup(keys);
+  const upstream = fakeFetch();
+  const deps = {
+    env: { APP_URL: "https://solara.example", PLACES_HOURLY_BUDGET: "1000" },
+    fetch: upstream.fetchImpl,
+  };
+
+  try {
+    const english = await handlePlaces(request("Mexicali", ip), deps);
+    const spanish = await handlePlaces(request("Mexicali", ip, "same-origin", undefined, { lang: "es" }), deps);
+    assert.equal(english.status, 200);
+    assert.equal(spanish.status, 200);
+    assert.equal(upstream.calls(), 2, "each locale must miss the other's entry");
+
+    // A repeat in the same locale is still a cache hit, so the split is not just
+    // "caching is broken".
+    const again = await handlePlaces(request("Mexicali", ip), deps);
+    assert.equal(again.status, 200);
+    assert.equal(upstream.calls(), 2);
+  } finally {
+    await cleanup(keys);
+    clearPlacesCacheForTests();
   }
 });
 
@@ -172,4 +216,27 @@ test("places failures never log the key or query", {
   assert.doesNotMatch(output, /super-secret-key/);
   assert.doesNotMatch(output, /Mexicali/);
   assert.match(output, /places\.fetch_failed/);
+});
+
+test("places: the upstream language follows an explicit lang, then the cookie, then Spanish", () => {
+  // Pure resolution only: this asserts which upstream language is chosen, without
+  // spending a rate-limit slot or touching the network/database (#223).
+  const language = (url: string, cookie?: string) =>
+    resolvePlacesLanguage(new Request(url, { headers: cookie ? { cookie } : {} }), new URL(url).searchParams);
+  const base = "https://solara.example/api/places?q=Mexicali";
+
+  // The client always sends the UI locale, and it wins over a stale cookie.
+  assert.equal(language(`${base}&lang=en`, "solara_locale=es"), "en");
+  assert.equal(language(`${base}&lang=es`, "solara_locale=en"), "es");
+
+  // No explicit param: the visitor's cookie decides.
+  assert.equal(language(base, "solara_locale=en"), "en");
+
+  // No param and no cookie is Spanish now, not the previous silent English.
+  assert.equal(language(base), "es");
+  assert.equal(language(base, "other=1"), "es");
+
+  // A junk lang is not a locale choice; the cookie still is.
+  assert.equal(language(`${base}&lang=fr`, "solara_locale=en"), "en");
+  assert.equal(language(`${base}&lang=fr`), "es");
 });
