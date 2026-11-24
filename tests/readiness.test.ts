@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { bootGuardFailure } from "../src/db/boot-guard";
 import {
   buildReadiness,
   classifyMigrations,
   evaluateReadiness,
+  getReadiness,
   READINESS_DEADLINE_MS,
   READINESS_WARM_TARGET_MS,
   type AppliedMigration,
@@ -133,4 +135,69 @@ test("not ready when the database is unreachable", () => {
   assert.equal(result.db, "error");
   assert.equal(result.auth, "degraded");
   assert.equal(result.migrations.state, "diverged", "unreachable means the state is unknown");
+});
+
+test("readiness fails fast when the boot guard would reject the deployment", async () => {
+  const started = Date.now();
+  const result = await getReadiness(() => "database_url_endpoint_unset");
+  assert.equal(result.ok, false, "a deployment that cannot boot its database module is not ready");
+  assert.equal(result.db, "error");
+  assert.equal(result.auth, "degraded");
+  assert.equal(result.migrations.state, "diverged");
+  assert.ok(Date.now() - started < 1_000, "the guard must short-circuit before opening a connection");
+});
+
+test("getReadiness() uses the production boot guard when called without an override", async () => {
+  const saved = {
+    DATABASE_URL: process.env.DATABASE_URL,
+    APP_DEPLOY_ENV: process.env.APP_DEPLOY_ENV,
+    STAGING_DB_ENDPOINT: process.env.STAGING_DB_ENDPOINT,
+    NEXT_PHASE: process.env.NEXT_PHASE,
+  };
+  try {
+    delete process.env.NEXT_PHASE;
+    process.env.APP_DEPLOY_ENV = "staging";
+    process.env.DATABASE_URL = "postgresql://user:pass@ep-stage-pooler.us-east-2.aws.neon.tech/app?sslmode=verify-full";
+    delete process.env.STAGING_DB_ENDPOINT;
+
+    const started = Date.now();
+    const result = await getReadiness();
+    assert.equal(result.ok, false, "the default path must not bypass the boot guard");
+    assert.equal(result.db, "error");
+    assert.equal(result.migrations.state, "diverged");
+    assert.ok(Date.now() - started < 1_000, "the production default must short-circuit before connecting");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("the boot guard reports the code app boot would throw, without a URL or host", () => {
+  const saved = {
+    DATABASE_URL: process.env.DATABASE_URL,
+    APP_DEPLOY_ENV: process.env.APP_DEPLOY_ENV,
+    STAGING_DB_ENDPOINT: process.env.STAGING_DB_ENDPOINT,
+    PROD_DB_ENDPOINT: process.env.PROD_DB_ENDPOINT,
+    NEXT_PHASE: process.env.NEXT_PHASE,
+  };
+  try {
+    delete process.env.NEXT_PHASE;
+    process.env.APP_DEPLOY_ENV = "staging";
+    process.env.DATABASE_URL = "postgresql://user:pass@ep-stage-pooler.us-east-2.aws.neon.tech/app?sslmode=verify-full";
+    delete process.env.STAGING_DB_ENDPOINT;
+    assert.equal(bootGuardFailure(), "database_url_endpoint_unset");
+
+    process.env.STAGING_DB_ENDPOINT = "ep-not-this-one";
+    assert.equal(bootGuardFailure(), "database_url_endpoint_mismatch");
+
+    process.env.STAGING_DB_ENDPOINT = "ep-stage";
+    assert.equal(bootGuardFailure(), null, "a matching endpoint passes");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });

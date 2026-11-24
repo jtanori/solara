@@ -44,7 +44,10 @@ export function readBuildIdentity(file: string = STAMP_FILE): BuildIdentity {
 /** Reads the raw file, or undefined for any reason it is unreadable. */
 export function readStampFile(file: string = STAMP_FILE): string | undefined {
   try {
-    return readFileSync(resolvePath(process.cwd(), file), "utf8");
+    // The path is dynamic by design (tests pass a temp file, `next.config.ts`
+    // reads the build stamp). Without the hint Turbopack cannot bound the input
+    // and traces the whole project into the server output (#213).
+    return readFileSync(resolvePath(/* turbopackIgnore: true */ process.cwd(), file), "utf8");
   } catch {
     return undefined;
   }

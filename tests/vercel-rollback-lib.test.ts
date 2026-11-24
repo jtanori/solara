@@ -58,3 +58,42 @@ test("a rollback with no captured target still tells the operator what to do", (
 print_manual_rollback "solara" "" "" 2>&1`);
   assert.match(out, /last known-good/);
 });
+
+test("deploy_page_ok requires HTTP 200 and a non-empty page", () => {
+  const out = bash(`${SOURCE}
+ok=$(mktemp); printf '<html>app</html>' > "$ok"
+empty=$(mktemp)
+deploy_page_ok 200 "$ok" && echo "200+body:pass" || echo "200+body:fail"
+deploy_page_ok 200 "$empty" && echo "200+empty:pass" || echo "200+empty:fail"
+deploy_page_ok 500 "$ok" && echo "500+body:pass" || echo "500+body:fail"
+deploy_page_ok 401 "$ok" && echo "401+body:pass" || echo "401+body:fail"
+rm -f "$ok" "$empty"`);
+  assert.deepEqual(out.trim().split("\n"), [
+    "200+body:pass",
+    "200+empty:fail",
+    "500+body:fail",
+    "401+body:fail",
+  ]);
+});
+
+test("deploy_page_class separates a protection block from a broken release", () => {
+  // 401/403 must be "auth", never "page": only "page"/"readiness" reach the
+  // rollback decision, so a misclassification would move production for a
+  // configuration problem (#212 review).
+  const out = bash(`${SOURCE}
+ok=$(mktemp); printf '<html>app</html>' > "$ok"
+empty=$(mktemp)
+for code in 200 401 403 500 000; do
+  printf '%s:%s\\n' "$code" "$(deploy_page_class "$code" "$ok")"
+done
+printf '200-empty:%s\\n' "$(deploy_page_class 200 "$empty")"
+rm -f "$ok" "$empty"`);
+  assert.deepEqual(out.trim().split("\n"), [
+    "200:ok",
+    "401:auth",
+    "403:auth",
+    "500:page",
+    "000:page",
+    "200-empty:page",
+  ]);
+});

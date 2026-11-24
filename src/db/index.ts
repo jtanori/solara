@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool, type PoolConfig } from "pg";
 import { log } from "@/lib/log";
 import { coordinationPoolMax, normalizeDatabaseUrl, poolMax } from "@/lib/database-url";
-import { assertDatabaseEnvironment } from "./url-guard";
+import { assertBootDatabase } from "./boot-guard";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -10,12 +10,9 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
 }
 
-// Fail closed before either pool exists. The deploy environment is the inlined
-// build identity (#164); a loopback placeholder is allowed only while Next builds.
-assertDatabaseEnvironment(databaseUrl, {
-  deployEnv: process.env.APP_DEPLOY_ENV?.trim() || "local",
-  phase: process.env.NEXT_PHASE === "phase-production-build" ? "build" : "runtime",
-});
+// Fail closed before either pool exists, through the same resolver readiness uses
+// (#212). A loopback placeholder is allowed only while Next builds.
+assertBootDatabase(databaseUrl);
 
 export function databasePoolConfig(
   rawUrl: string,

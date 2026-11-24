@@ -457,50 +457,102 @@ for i in {1..24}; do
   sleep 5
 done
 ROLLBACK_RECORD="—"
-if [[ "$READY" == true ]]; then
-  echo "✅ $APP_URL/api/ready → {\"ok\":true}"
-else
+DEPLOY_FAILURE=""
+FAILURE_DETAIL=""
+
+if [[ "$READY" != true ]]; then
+  DEPLOY_FAILURE="readiness"
+  FAILURE_DETAIL="last HTTP $READY_CODE"
   echo "ERROR: $APP_URL/api/ready did not become ready (last HTTP $READY_CODE):" >&2
   cat "$READY_TMP" >&2 || true
+else
+  echo "✅ $APP_URL/api/ready → {\"ok\":true}"
+
+  # /api/ready uses its own pool, so it can be green while every page 500s because
+  # the boot guard rejects the database module (#212). Render a public page too.
+  echo "Waiting for Vercel $APP_URL/account (rendered page) ..."
+  PAGE_TMP="$(mktemp)"
+  CLEANUP_FILES+=("$PAGE_TMP")
+  page_curl() { deploy_ready_curl "$APP_URL/account" "$PAGE_TMP"; }
+  # Classify every probe, not just the first: protection can turn on mid-rollout,
+  # and a late 401/403 must not be recorded as a broken release.
+  PAGE_STATE=""
+  for i in {1..12}; do
+    PAGE_CODE="$(page_curl || true)"
+    PAGE_STATE="$(deploy_page_class "$PAGE_CODE" "$PAGE_TMP")"
+    [[ "$PAGE_STATE" == "ok" || "$PAGE_STATE" == "auth" ]] && break
+    sleep 5
+  done
+  case "$PAGE_STATE" in
+    ok)
+      echo "✅ $APP_URL/account → 200" ;;
+    auth)
+      DEPLOY_FAILURE="auth"
+      FAILURE_DETAIL="HTTP $PAGE_CODE (Vercel Authentication)"
+      echo "ERROR: $APP_URL/account is blocked by Vercel Authentication (HTTP $PAGE_CODE)." >&2
+      echo "Set VERCEL_AUTOMATION_BYPASS_SECRET for this environment and re-run." >&2 ;;
+    *)
+      DEPLOY_FAILURE="page"
+      FAILURE_DETAIL="last HTTP $PAGE_CODE"
+      echo "ERROR: $APP_URL/account did not render (last HTTP $PAGE_CODE); the deployment cannot boot its database module." >&2 ;;
+  esac
+fi
+
+if [[ -n "$DEPLOY_FAILURE" ]]; then
   echo "" >&2
-  echo "== Rollback (#76) ==" >&2
+  echo "== Failure: $DEPLOY_FAILURE ($FAILURE_DETAIL) ==" >&2
   ROLLBACK_CREDS="absent"
   if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then ROLLBACK_CREDS="present"; fi
-  ROLLBACK_DECISION=$(decide_rollback "$ENV" "$ROLLBACK_CREDS" "$ROLLBACK_TARGET")
-  if [[ "$ROLLBACK_DECISION" == "auto" ]]; then
-    if vercel_promote_deployment "$VERCEL_PROJECT_ID" "$ROLLBACK_TARGET" "${VERCEL_TEAM_ID:-}"; then
-      echo "Rolled back to $ROLLBACK_TARGET${ROLLBACK_TARGET_URL:+ ($ROLLBACK_TARGET_URL)}; re-checking readiness..." >&2
-      ROLLBACK_RECORD="to $ROLLBACK_TARGET"
-      RB_CODE="$(ready_curl || true)"
-      for i in {1..12}; do
+
+  if [[ "$DEPLOY_FAILURE" == "auth" ]]; then
+    # Protection/config, not a broken release: record it, never move production.
+    ROLLBACK_RECORD="not executed (auth/config)"
+    echo "No automatic rollback: fix the bypass/protection setting and re-run." >&2
+  else
+    ROLLBACK_DECISION=$(decide_rollback "$ENV" "$ROLLBACK_CREDS" "$ROLLBACK_TARGET")
+    if [[ "$ROLLBACK_DECISION" == "auto" ]]; then
+      if vercel_promote_deployment "$VERCEL_PROJECT_ID" "$ROLLBACK_TARGET" "${VERCEL_TEAM_ID:-}"; then
+        echo "Rolled back to $ROLLBACK_TARGET${ROLLBACK_TARGET_URL:+ ($ROLLBACK_TARGET_URL)}; re-checking readiness and a rendered page..." >&2
+        ROLLBACK_RECORD="to $ROLLBACK_TARGET"
         RB_CODE="$(ready_curl || true)"
-        deploy_ready_ok "$RB_CODE" "$READY_TMP" && break
-        sleep 5
-      done
-      if deploy_ready_ok "$RB_CODE" "$READY_TMP"; then
-        echo "Rollback verified: $APP_URL/api/ready → {\"ok\":true} on the previous deployment." >&2
+        for i in {1..12}; do
+          RB_CODE="$(ready_curl || true)"
+          deploy_ready_ok "$RB_CODE" "$READY_TMP" && break
+          sleep 5
+        done
+        RB_PAGE_TMP="$(mktemp)"
+        CLEANUP_FILES+=("$RB_PAGE_TMP")
+        RB_PAGE_CODE="$(deploy_ready_curl "$APP_URL/account" "$RB_PAGE_TMP" || true)"
+        for i in {1..12}; do
+          RB_PAGE_CODE="$(deploy_ready_curl "$APP_URL/account" "$RB_PAGE_TMP" || true)"
+          deploy_page_ok "$RB_PAGE_CODE" "$RB_PAGE_TMP" && break
+          sleep 5
+        done
+        if deploy_ready_ok "$RB_CODE" "$READY_TMP" && deploy_page_ok "$RB_PAGE_CODE" "$RB_PAGE_TMP"; then
+          echo "Rollback verified: /api/ready and /account are healthy on the previous deployment." >&2
+        else
+          echo "ERROR: rollback did not restore readiness and page rendering (ready HTTP $RB_CODE, page HTTP $RB_PAGE_CODE). Manual intervention required." >&2
+          ROLLBACK_RECORD="to $ROLLBACK_TARGET (NOT verified)"
+        fi
       else
-        echo "ERROR: rollback did not restore readiness (last HTTP $RB_CODE). Manual intervention required." >&2
-        ROLLBACK_RECORD="to $ROLLBACK_TARGET (NOT verified)"
+        echo "ERROR: automated rollback failed." >&2
+        ROLLBACK_RECORD="attempted, FAILED"
+        print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL" "$ENV"
       fi
     else
-      echo "ERROR: automated rollback failed." >&2
-      ROLLBACK_RECORD="attempted, FAILED"
+      case "$ROLLBACK_DECISION" in
+        manual-not-production)
+          echo "No automatic rollback for $ENV: Vercel Instant Rollback moves the production alias," >&2
+          echo "and this project's staging and production share one project. Refusing to touch production." >&2
+          ROLLBACK_RECORD="manual (staging is not auto-rollbackable), not executed" ;;
+        *)
+          echo "No automatic rollback available (VERCEL_TOKEN/VERCEL_PROJECT_ID unset or no target captured)." >&2
+          ROLLBACK_RECORD="manual, not executed" ;;
+      esac
       print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL" "$ENV"
     fi
-  else
-    case "$ROLLBACK_DECISION" in
-      manual-not-production)
-        echo "No automatic rollback for $ENV: Vercel Instant Rollback moves the production alias," >&2
-        echo "and this project's staging and production share one project. Refusing to touch production." >&2
-        ROLLBACK_RECORD="manual (staging is not auto-rollbackable), not executed" ;;
-      *)
-        echo "No automatic rollback available (VERCEL_TOKEN/VERCEL_PROJECT_ID unset or no target captured)." >&2
-        ROLLBACK_RECORD="manual, not executed" ;;
-    esac
-    print_manual_rollback "${VERCEL_PROJECT_ID:-solara}" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_URL" "$ENV"
   fi
-  record_deploy "$ENV" "$MERGE_SHA" "$PR" "${MIGRATIONS_RECORD:-unknown}" "FAILED readiness" "$ROLLBACK_RECORD"
+  record_deploy "$ENV" "$MERGE_SHA" "$PR" "${MIGRATIONS_RECORD:-unknown}" "FAILED $DEPLOY_FAILURE" "$ROLLBACK_RECORD"
   exit 1
 fi
 
