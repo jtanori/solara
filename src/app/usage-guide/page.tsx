@@ -8,7 +8,19 @@ import { getLocale } from "@/lib/i18n-server";
 import { resolveUsageGuideAccess } from "@/lib/usage-guide-access";
 
 export const dynamic = "force-dynamic";
-export const metadata: Metadata = { title: "Solara | Usage guide", robots: { index: false, follow: false } };
+
+/**
+ * Page-level metadata wins over the root layout's, so this page has to localize its
+ * own title or it silently defeats the locale-aware root metadata (#223 review).
+ * The guide is internal, so `noindex` stays on both locales.
+ */
+export async function generateMetadata(): Promise<Metadata> {
+  const es = (await getLocale()) === "es";
+  return {
+    title: es ? "Solara | Guía de uso" : "Solara | Usage guide",
+    robots: { index: false, follow: false },
+  };
+}
 
 export default async function UsageGuidePage({ searchParams }: { searchParams: Promise<{ role?: string }> }) {
   const [locale, user, params] = await Promise.all([getLocale(), currentUser(), searchParams]);

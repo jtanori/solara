@@ -237,3 +237,26 @@ test("knowledge: a cell with no compiled default is never marked as an override"
   // Ophiuchus is not a valid sign, so this is refused outright — the guard holds.
   assert.equal(decision.allowed, false);
 });
+
+test("knowledge: a submission without a locale follows the editor's locale, never English by default", () => {
+  // #223: the route passes the resolved locale, so an omitted field cannot silently
+  // write an English override row. Only the exact values the UI can send are trusted.
+  const submit = (data: Record<string, unknown>, defaultLocale?: "en" | "es") =>
+    assessKnowledgeEdit({ actor: { role: "editor" }, data, ...(defaultLocale ? { defaultLocale } : {}) });
+
+  const spanish = submit({ category: "sun", item: "Aries", body: "Un cambio meditado." });
+  assert.equal(spanish.allowed === true && spanish.key, contentKey("sun", "Aries", "es"));
+
+  const englishUi = submit({ category: "sun", item: "Aries", body: "A considered change." }, "en");
+  assert.equal(englishUi.allowed === true && englishUi.key, contentKey("sun", "Aries", "en"));
+
+  // An explicit locale still beats the fallback in both directions.
+  const explicitEn = submit({ category: "sun", item: "Aries", locale: "en", body: "x" }, "es");
+  assert.equal(explicitEn.allowed === true && explicitEn.key, contentKey("sun", "Aries", "en"));
+  const explicitEs = submit({ category: "sun", item: "Aries", locale: "es", body: "x" }, "en");
+  assert.equal(explicitEs.allowed === true && explicitEs.key, contentKey("sun", "Aries", "es"));
+
+  // An unrecognised value is not a locale; it falls back rather than reaching a key.
+  const junk = submit({ category: "sun", item: "Aries", locale: "fr", body: "x" }, "en");
+  assert.equal(junk.allowed === true && junk.key, contentKey("sun", "Aries", "en"));
+});

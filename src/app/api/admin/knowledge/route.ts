@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { auditLogs, knowledge } from "@/db/schema";
 import { currentUser } from "@/lib/auth";
+import { getLocale } from "@/lib/i18n-server";
 import type { ContentCategory } from "@/lib/content";
 import type { Locale } from "@/lib/i18n";
 import { assessKnowledgeEdit } from "@/lib/knowledge-edit";
@@ -11,7 +12,7 @@ export async function PUT(request:Request) {
   const data=await request.json().catch(()=>null) as {category?:ContentCategory;item?:string;sign?:string;locale?:Locale;body?:string}|null;
   // Authorization is decided inside the same pure policy that validates the body,
   // so the two can never disagree about who may write what.
-  const decision=assessKnowledgeEdit({ actor: { role: actor?.role ?? "user" }, data });
+  const decision=assessKnowledgeEdit({ actor: { role: actor?.role ?? "user" }, data, defaultLocale: await getLocale() });
   if(!decision.allowed){
     const {status,error}=decision.rejection;
     return NextResponse.json({ error: error === "not_authorized" ? "Not authorized." : "Please provide valid editorial content.", code: error }, { status });
