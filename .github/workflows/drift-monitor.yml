@@ -71,22 +71,33 @@ jobs:
       - run: npm ci
 
       - name: Restore the pre-alert clock
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: drift-state-${{ matrix.target }}
-          path: .drift-state
-
-      - name: Restore previous state into the expected path
+        # NOT actions/download-artifact@v4 with only a name: in v4 an artifact is
+        # scoped to its own workflow run, and this run has uploaded nothing yet,
+        # so that form fails on every tick and the clock would never restore.
+        # Walk completed drift-monitor.yml runs on main instead — any conclusion,
+        # because one leg exiting 1 makes the whole run `failure` while the other
+        # leg's artifact is perfectly good.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          if [[ -f .drift-state/drift-state-${{ matrix.target }}.json ]]; then
-            mv .drift-state/drift-state-${{ matrix.target }}.json .drift-state/current.json
-            echo "restored .drift-state/current.json"
-          else
-            echo "no prior state — this tick is a first observation"
-            mkdir -p .drift-state
-          fi
+          mkdir -p .drift-state
+          mapfile -t RUN_IDS < <(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/drift-monitor.yml/runs?branch=main&status=completed&per_page=20" \
+              --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | .id" 2>/dev/null || true
+          )
+          for RUN_ID in "${RUN_IDS[@]:-}"; do
+            [[ -z "${RUN_ID}" ]] && continue
+            if gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "drift-state-${TARGET}" --dir .drift-state >/dev/null 2>&1; then
+              if [[ -f ".drift-state/drift-state-${TARGET}.json" ]]; then
+                mv ".drift-state/drift-state-${TARGET}.json" .drift-state/current.json
+                echo "restored .drift-state/current.json from run ${RUN_ID}"
+                exit 0
+              fi
+            fi
+          done
+          echo "no prior state on main — this tick is a first observation"
 
       - name: Run the monitor
         id: monitor

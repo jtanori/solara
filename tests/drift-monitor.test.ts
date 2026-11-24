@@ -16,6 +16,7 @@ import {
   isMonitoredWorkflow,
   isTrustedAuthor,
   parseStateComment,
+  reconcileState,
   readEndpoint,
   renderAlertBody,
   renderStateComment,
@@ -246,9 +247,36 @@ test("an endpoint answering from the wrong environment is not health", () => {
   assert.equal(result.kind, "env-mismatch");
 });
 
-test("a 200 carrying HTML is a rejection, not a schema verdict", () => {
-  const read = readEndpoint({ status: 200, body: "<!DOCTYPE html><html>Sign in</html>", kind: "version" });
+test("the Vercel challenge is a rejection, not a schema verdict", () => {
+  const read = readEndpoint({
+    status: 200,
+    body: "<!DOCTYPE html><html><head><title>Log in to Vercel</title></head></html>",
+    kind: "version",
+  });
   assert.deepEqual(read, { status: "rejected", reason: "sso" });
+});
+
+test("a transient fault is unknown, never a rejection", () => {
+  // Exit 1 means "the monitor was told it may not look". A plain-text 503, a
+  // truncated body or a 429 is the host failing; classifying those as
+  // `rejected` would turn every Vercel hiccup into a red run and teach the
+  // operator to ignore the alert.
+  assert.deepEqual(readEndpoint({ status: 503, body: "<html>Service Unavailable</html>", kind: "ready" }), {
+    status: "unknown",
+    reason: "unreachable",
+  });
+  assert.deepEqual(readEndpoint({ status: 503, body: "upstream timeout", kind: "version" }), {
+    status: "unknown",
+    reason: "unreachable",
+  });
+  assert.deepEqual(readEndpoint({ status: 429, body: "Too Many Requests", kind: "ready" }), {
+    status: "unknown",
+    reason: "unreachable",
+  });
+  assert.deepEqual(readEndpoint({ status: 200, body: '{"ok":tr', kind: "ready" }), {
+    status: "unknown",
+    reason: "malformed",
+  });
 });
 
 test("a 503 with a JSON body is a successful readiness read", () => {
@@ -492,6 +520,151 @@ test("the alertable set excludes every designed state", () => {
   for (const kind of ["stale-commit", "stale-migrations", "overdue-approval", "env-mismatch"] as const) {
     assert.equal(isAlertable(kind), true, `${kind} must be alertable`);
   }
+});
+
+/* ------------------------------------------------- M2/M3/M5 regressions */
+
+test("a missing commit is unknown, never exact", () => {
+  // A GitHub API blip leaves headCommit null. Falling through to `exact` would
+  // CLOSE a live drift issue during the outage.
+  const noHead = classifyDrift({ target: "staging", headCommit: null, read: okRead(), runs: [], now: NOW });
+  assert.equal(noHead.kind, "unknown");
+  assert.equal(decideAlert({ classification: noHead, issueOpen: true, previousObservation: null }), "none");
+  const noLive = classifyDrift({
+    target: "staging",
+    headCommit: "abc1234",
+    read: { status: "ok", version: { env: "staging" }, ready: { db: "ok", migrations: "exact" } },
+    runs: [],
+    now: NOW,
+  });
+  assert.equal(noLive.kind, "unknown");
+});
+
+test("the longest-waiting run wins over the newest run id", () => {
+  // run_id increases monotonically, so comparing ids hides an overdue run
+  // behind a freshly queued one.
+  const result = classify({
+    runs: [
+      { runId: 100, runAttempt: 1, state: "waiting", waitingForMs: 90 * MINUTE, waitingSince: minutesAgo(90) },
+      { runId: 101, runAttempt: 1, state: "waiting", waitingForMs: 2 * MINUTE, waitingSince: minutesAgo(2) },
+    ],
+  });
+  assert.equal(result.kind, "overdue-approval");
+  assert.equal(result.runId, 100, "the overdue run must be the one reported");
+});
+
+test("both approval states persist the wait start", () => {
+  const young = classify({ runs: [waiting(10)] });
+  assert.equal(young.kind, "awaiting-approval");
+  // Writing null here means the next tick has no clock to age and the horizon
+  // can never expire.
+  assert.notEqual(young.firstObserved, null, "a young wait must carry its start");
+  assert.equal(young.firstObserved, minutesAgo(10));
+  const overdue = classify({ runs: [waiting(90)] });
+  assert.equal(overdue.firstObserved, minutesAgo(90), "an overdue wait reports the real duration");
+});
+
+test("the approval fallback clock ages a wait across ticks", () => {
+  // D6 candidate 2: no deployment-status timestamp exists, so the persisted
+  // observation is the only clock. With it dead, every tick reported 0 ms.
+  const start = minutesAgo(65);
+  const run: InFlightRun = { runId: 7, runAttempt: 1, state: "waiting", waitingSince: start };
+  assert.equal(waitingFor(run, NOW, start), 65 * MINUTE);
+  const state: MonitorState = {
+    environment: "staging",
+    kind: "awaiting-approval",
+    liveCommit: null,
+    headCommit: null,
+    migrations: null,
+    runId: 7,
+    runAttempt: 1,
+    firstObserved: new Date(start).toISOString(),
+    alertedAt: null,
+  };
+  const fallback = approvalFallbackClock({ state, runId: 7, runAttempt: 1, now: NOW });
+  assert.equal(fallback, start);
+  const past = classify({ runs: [{ ...run, waitingForMs: waitingFor(run, NOW, fallback) }] });
+  assert.equal(past.kind, "overdue-approval", "a persisted clock past the horizon must alert");
+});
+
+test("an open issue from a previous subject does not freeze the new one", () => {
+  // Issue opened for sha0 at 04:00. A deploy lands: live=sha1, head=sha2.
+  // Taking the older clock unconditionally re-selects sha0's, clockApplies
+  // rejects it, the clock resets each tick, and sha1 never ages.
+  const issueState: MonitorState = {
+    environment: "staging",
+    kind: "stale-commit",
+    liveCommit: "sha0",
+    headCommit: "sha1",
+    migrations: "exact",
+    runId: null,
+    runAttempt: null,
+    firstObserved: "2026-11-23T04:00:00Z",
+    alertedAt: null,
+  };
+  const artifact: MonitorState = {
+    ...issueState,
+    liveCommit: "sha1",
+    headCommit: "sha2",
+    firstObserved: new Date(NOW - 25 * MINUTE).toISOString(),
+  };
+  const reconciled = reconcileState({ artifact, issue: issueState, liveCommit: "sha1", migrations: "exact" });
+  assert.equal(reconciled?.liveCommit, "sha1", "the clock must belong to the current subject");
+  assert.equal(Date.parse(reconciled?.firstObserved as string), NOW - 25 * MINUTE);
+  const result = classifyDrift({
+    target: "staging",
+    headCommit: "sha2",
+    read: okRead({ commit: "sha1" }),
+    runs: [],
+    firstObserved: Date.parse(reconciled?.firstObserved as string),
+    clockLiveCommit: reconciled?.liveCommit ?? undefined,
+    clockMigrations: reconciled?.migrations ?? undefined,
+    now: NOW,
+  });
+  assert.equal(result.kind, "stale-commit", "the new subject must be able to age past the horizon");
+});
+
+test("a migration transition does not reset an unchanged commit clock", () => {
+  const result = classify({
+    headCommit: "fff9999",
+    firstObserved: minutesAgo(25),
+    clockLiveCommit: "abc1234",
+    clockMigrations: "ahead",
+    read: okRead({}, { migrations: "exact" }),
+  });
+  assert.equal(result.kind, "stale-commit", "the deploy is no fresher because a migration ran");
+});
+
+test("a deploy does not reset a stuck-schema timer", () => {
+  const result = classify({
+    firstObserved: minutesAgo(25),
+    clockLiveCommit: "old9999",
+    clockMigrations: "ahead",
+    read: okRead({ commit: "abc1234" }, { migrations: "ahead" }),
+  });
+  assert.equal(result.kind, "stale-migrations", "the schema is no fresher because a deploy landed");
+});
+
+test("the alert body reports the current age and names the run", () => {
+  const body = renderAlertBody({
+    state: {
+      environment: "staging",
+      kind: "overdue-approval",
+      liveCommit: null,
+      headCommit: "abc1234",
+      migrations: "exact",
+      runId: 42,
+      runAttempt: 3,
+      firstObserved: new Date(NOW - 65 * MINUTE).toISOString(),
+      // A preserved alertedAt must not freeze the number.
+      alertedAt: new Date(NOW - 5 * MINUTE).toISOString(),
+    },
+    headline: null,
+    inFlight: "1",
+    now: NOW,
+  });
+  assert.match(body, /Diverged for: 65 minutes/);
+  assert.match(body, /run #42, attempt 3/);
 });
 
 test("the three constants are the documented cadence and horizons", () => {

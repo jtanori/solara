@@ -71,6 +71,15 @@ function parseBlockYaml(source: string): Record<string, unknown> {
           const value = nested[2];
           const childIndent = lines[index].indent;
           index += 1;
+          if (value === "|" || value === ">" || value === "|-" || value === ">-") {
+            const block: string[] = [];
+            while (index < lines.length && lines[index].indent > childIndent) {
+              block.push(lines[index].text);
+              index += 1;
+            }
+            item[key] = block.join("\n");
+            continue;
+          }
           item[key] = value === "" ? parseBlock(childIndent + 2) : scalar(value);
         }
         items.push(item);
@@ -88,6 +97,17 @@ function parseBlockYaml(source: string): Record<string, unknown> {
       const key = match[1].trim();
       const value = match[2];
       index += 1;
+      // `run: |` (and `>`) open a block scalar: the following more-indented
+      // lines are one string, not a nested mapping.
+      if (value === "|" || value === ">" || value === "|-" || value === ">-") {
+        const blockLines: string[] = [];
+        while (index < lines.length && lines[index].indent > indent) {
+          blockLines.push(lines[index].text);
+          index += 1;
+        }
+        object[key] = blockLines.join("\n");
+        continue;
+      }
       object[key] = value === "" ? parseBlock(indent + 2) : scalar(value);
     }
     return object;
@@ -181,6 +201,31 @@ test("the state artifact is retained for five days and is per target", () => {
 test("the state artifact survives a failing or degraded tick", () => {
   const upload = (WORKFLOW.jobs?.monitor.steps ?? []).find(step => String(step.uses ?? "").includes("upload-artifact"));
   assert.match(String(upload?.if ?? ""), /always\(\)/);
+});
+
+test("the pre-alert clock is restored from a previous run, not this one", () => {
+  // actions/download-artifact@v4 with only a name searches the CURRENT run,
+  // which has uploaded nothing yet — so that form fails on every tick and
+  // neither horizon could ever expire. The restore must walk completed runs.
+  const steps = WORKFLOW.jobs?.monitor.steps ?? [];
+  const restore = steps.find(step => String(step.name ?? "") === "Restore the pre-alert clock");
+  assert.ok(restore, "a restore step must exist");
+  const script = String(restore.run ?? "");
+  assert.ok(script.length > 0, "the restore must be a shell step, not a download-artifact call");
+  assert.equal(restore.uses, undefined, "no unscoped actions/download-artifact");
+  assert.match(script, /actions\/workflows\/drift-monitor\.yml\/runs/);
+  assert.match(script, /branch=main/, "only main's runs carry main's clock");
+  assert.match(script, /status=completed/);
+  assert.doesNotMatch(script, /conclusion/, "a failed leg must not hide the other leg's good artifact");
+  assert.match(script, /GITHUB_RUN_ID/, "the current run must be excluded");
+});
+
+test("no step downloads an artifact without an explicit run id", () => {
+  for (const step of WORKFLOW.jobs?.monitor.steps ?? []) {
+    if (!String(step.uses ?? "").includes("download-artifact")) continue;
+    const withBlock = (step.with ?? {}) as Record<string, unknown>;
+    assert.ok(withBlock["run-id"] !== undefined, "download-artifact must be scoped to a run");
+  }
 });
 
 test("the monitor can be dispatched with a dry run after promotion", () => {

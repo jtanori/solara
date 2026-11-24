@@ -148,6 +148,13 @@ export function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * The Vercel authentication challenge, as served when a deployment is protected
+ * and the bypass header is missing or stale. Deliberately narrow: matching any
+ * HTML would classify every transient 503 page as an auth failure.
+ */
+const VERCEL_SSO_PATTERN = /vercel\.com\/sso|_vercel_sso|<title>[^<]*(?:Log ?in|Sign ?in)[^<]*vercel/i;
+
 function stringField(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
   return typeof value === "string" ? value : undefined;
@@ -171,17 +178,26 @@ export function readEndpoint(input: {
   if (status === 403) return { status: "rejected", reason: "forbidden" };
   // Vercel answers an unbypassed deployment with a redirect to its SSO endpoint.
   if (status >= 300 && status < 400) return { status: "rejected", reason: "sso" };
-  // 503 is *the* readiness payload (§6) — it reports behind/diverged/db-error.
-  // It must not be swallowed by the generic 5xx rule below.
-  if (status >= 500 && status !== 503) return { status: "unknown", reason: "unreachable" };
+  // A 5xx is never "the monitor was told it may not look" — it is the host
+  // failing. `/api/version` has no 503 payload, so a 5xx there is unreachable
+  // outright; `/api/ready` uses 503 *with a JSON body* to report a schema
+  // verdict, which the parser below accepts.
+  if (status >= 500 && !(kind === "ready" && status === 503)) {
+    return { status: "unknown", reason: "unreachable" };
+  }
 
   const json = parseJsonObject(body);
   if (json === null) {
-    // A 200 carrying HTML is the SSO challenge on a host that answered without a
-    // redirect. It is an auth failure, not a schema verdict.
-    return { status: "rejected", reason: "sso" };
+    // A body that is not JSON is only an auth failure if it is *the* Vercel
+    // challenge. Anything else (a plain-text 503, a truncated body, a 429) is a
+    // transient fault: exit 1 there would turn every Vercel hiccup into a red
+    // run, and the operator would learn to ignore it.
+    if (VERCEL_SSO_PATTERN.test(body)) return { status: "rejected", reason: "sso" };
+    return { status: "unknown", reason: status >= 500 || status === 429 ? "unreachable" : "malformed" };
   }
-  if (status !== 200 && status !== 503) return { status: "unknown", reason: "unreachable" };
+  if (status !== 200 && !(kind === "ready" && status === 503)) {
+    return { status: "unknown", reason: "unreachable" };
+  }
 
   if (kind === "version") {
     const version: VersionBody = {
@@ -215,8 +231,8 @@ function clockApplies(input: {
   prior: number | null;
   clockLiveCommit?: string | null;
   clockMigrations?: MigrationState | null;
-  liveCommit: string | null;
-  migrations: MigrationState | null;
+  liveCommit?: string | null;
+  migrations?: MigrationState | null;
 }): number | null {
   const { prior, clockLiveCommit, clockMigrations, liveCommit, migrations } = input;
   if (prior === null) return null;
@@ -226,10 +242,23 @@ function clockApplies(input: {
   return prior;
 }
 
+/**
+ * The run that has been waiting longest.
+ *
+ * run_id increases monotonically, so comparing ids would pick the *newest* run
+ * and hide an already-overdue one behind it. Order by wait duration, and break
+ * ties on the smallest id so the choice is deterministic.
+ */
 function oldestWaitingRun(runs: InFlightRun[]): InFlightRun | null {
   let oldest: InFlightRun | null = null;
   for (const run of runs) {
-    if (oldest === null || run.runId > oldest.runId) oldest = run;
+    if (oldest === null) {
+      oldest = run;
+      continue;
+    }
+    const a = run.waitingForMs ?? -1;
+    const b = oldest.waitingForMs ?? -1;
+    if (a > b || (a === b && run.runId < oldest.runId)) oldest = run;
   }
   return oldest;
 }
@@ -269,6 +298,13 @@ export function classifyDrift(input: ClassifyInput): Classification {
     return keep("unknown", { liveCommit: null, migrations });
   }
 
+  // A missing commit on either side is "cannot tell", not health. Without this
+  // a GitHub API blip (headCommit null) falls through every clause to `exact`
+  // and CLOSES a live drift issue.
+  if (headCommit === null || liveCommit === null) {
+    return keep("unknown", { liveCommit, migrations });
+  }
+
   // (b) a probe failure reports migrations:"diverged" alongside db:"error".
   // Checking migrations first would page a database outage as schema drift.
   if (ready && ready.db === "error") {
@@ -302,9 +338,12 @@ export function classifyDrift(input: ClassifyInput): Classification {
     const run = oldestWaitingRun(waiting);
     const waited = run?.waitingForMs;
     const overdue = typeof waited === "number" && waited >= APPROVAL_HORIZON_MS;
+    // The wait start is persisted on BOTH states. Writing null while young
+    // means the next tick has no clock to age, so the horizon never expires.
+    const waitStart = run?.waitingSince ?? (typeof waited === "number" ? now - waited : now);
     return {
       kind: overdue ? "overdue-approval" : "awaiting-approval",
-      firstObserved: overdue ? startClock("overdue-approval", prior, now, { ...base, headCommit }).firstObserved : null,
+      firstObserved: waitStart,
       headCommit,
       ...base,
       runId: run?.runId ?? null,
@@ -314,10 +353,11 @@ export function classifyDrift(input: ClassifyInput): Classification {
 
   // (f) commit drift, with its own 20-minute clock, reset when live advances
   if (headCommit !== null && liveCommit !== null && headCommit !== liveCommit) {
+    // Commit drift ages against the live commit only. A schema transition must
+    // not reset a commit clock: the deploy is no fresher because a migration ran.
     const clock = clockApplies({
       prior,
       clockLiveCommit: input.clockLiveCommit,
-      clockMigrations: input.clockMigrations,
       liveCommit,
       migrations,
     });
@@ -338,9 +378,10 @@ export function classifyDrift(input: ClassifyInput): Classification {
     if (migrations !== "ahead") {
       return { kind: "stale-migrations", firstObserved: prior ?? now, headCommit, ...base, runId: null, runAttempt: null };
     }
+    // ...and the migration clock ages against the migration state only, so an
+    // unrelated deploy does not restart a stuck-schema timer.
     const clock = clockApplies({
       prior,
-      clockLiveCommit: input.clockLiveCommit,
       clockMigrations: input.clockMigrations,
       liveCommit,
       migrations,
@@ -393,6 +434,44 @@ export function sameObservation(a: ObservationKey | null, b: ObservationKey): bo
     a.runId === b.runId &&
     a.runAttempt === b.runAttempt
   );
+}
+
+/**
+ * Which stored clock applies to the *current* subject (M5).
+ *
+ * Comparing raw timestamps alone is not enough: an issue opened for `sha0` at
+ * 04:00 is older than an artifact written for `sha1` at 05:02, so "oldest wins"
+ * would keep re-selecting a clock that belongs to a subject the current tick
+ * does not have. `clockApplies` then rejects it, the clock resets to now, and
+ * the new subject can never age past the horizon — the issue freezes forever.
+ *
+ * So: prefer a store whose recorded subject matches this tick, and only then
+ * take the older of the matching candidates.
+ */
+export function reconcileState(input: {
+  artifact: MonitorState | null;
+  issue: MonitorState | null;
+  liveCommit: string | null;
+  migrations: MigrationState | null;
+}): MonitorState | null {
+  const { artifact, issue, liveCommit, migrations } = input;
+  const matches = (state: MonitorState | null): boolean => {
+    if (state === null) return false;
+    if (state.firstObserved === null) return false;
+    if (state.liveCommit !== null && liveCommit !== null && state.liveCommit !== liveCommit) return false;
+    if (state.migrations !== null && migrations !== null && state.migrations !== migrations) return false;
+    return true;
+  };
+
+  const subjectMatched = [artifact, issue].filter(matches) as MonitorState[];
+  const pool = subjectMatched.length > 0 ? subjectMatched : ([artifact, issue].filter(Boolean) as MonitorState[]);
+  if (pool.length === 0) return null;
+
+  return pool.reduce((oldest, candidate) => {
+    const oldestAt = Date.parse(oldest.firstObserved as string);
+    const candidateAt = Date.parse(candidate.firstObserved as string);
+    return candidateAt < oldestAt ? candidate : oldest;
+  });
 }
 
 export type AlertAction = "none" | "open" | "update" | "close";
@@ -603,8 +682,10 @@ export type AlertRenderInput = {
 export function renderAlertBody(input: AlertRenderInput): string {
   const { state, headline, inFlight, now } = input;
   const first = state.firstObserved === null ? null : Date.parse(state.firstObserved);
-  const alerted = state.alertedAt === null ? null : Date.parse(state.alertedAt);
-  const age = first === null ? null : Math.max(0, Math.round(((alerted ?? now) - first) / 60_000));
+  // Age is measured against the current tick. Using `alertedAt` freezes the
+  // number the moment the issue is first written, so a wait that keeps growing
+  // reports the same duration forever.
+  const age = first === null ? null : Math.max(0, Math.round((now - first) / 60_000));
   const lines = [
     renderStateComment(state),
     "",
@@ -613,7 +694,7 @@ export function renderAlertBody(input: AlertRenderInput): string {
     state.headCommit === null ? "Branch head: unknown" : `Branch head: \`${state.headCommit.slice(0, 7)}\`${headline ? ` ${escapeCommitHeadline(headline)}` : ""}`,
     state.liveCommit === null ? "Live commit: unknown" : `Live commit: \`${state.liveCommit.slice(0, 7)}\`${state.headCommit && state.liveCommit !== state.headCommit ? " (behind head)" : ""}`,
     `Schema: \`${state.migrations ?? "unknown"}\``,
-    `In-flight runs: ${inFlight}`,
+    `In-flight runs: ${inFlight}${state.runId === null ? "" : ` (run #${state.runId}, attempt ${state.runAttempt ?? "?"})`}`,
     age === null
       ? "Diverged for: unknown"
       : `Diverged for: ${age} minutes (first observed ${new Date(first as number).toISOString()})`,
