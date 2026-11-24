@@ -15,6 +15,11 @@ These guides cover the current application in three separate environments. The c
 11. [Actions-owned deployments, approval gates and break-glass](11-actions-deploys.md)
 12. [Custom domains, DNS and transactional email](12-domains-and-email.md)
 
+Reference procedures that cut across the numbered guides:
+
+- [Setting up `VERCEL_AUTOMATION_BYPASS_SECRET`](bypass-secret-howto.md) — create it in Vercel, wire
+  it into the `monitoring`/`staging`/`production` environments, the Stripe endpoint, and verify.
+
 ## Recommended environment separation
 
 | | Local | Staging | Production |

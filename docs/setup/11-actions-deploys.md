@@ -49,6 +49,7 @@ preview database once #176 or its fallback lands.
 | `production` | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `VERCEL_AUTOMATION_BYPASS_SECRET` | branch `main` |
 | `production-migrations` | `DATABASE_URL` (direct, production), `DATABASE_URL_STAGING_READONLY` | branch `main`, required reviewer = operator, **Prevent self-review OFF** |
 | `production-diagnostics` | `DATABASE_URL_PRODUCTION_READONLY` | branch `main`, read-only role, no reviewer |
+| `monitoring` | `VERCEL_AUTOMATION_BYPASS_SECRET` **only** | no reviewer, no database credential; branch policy optional — see the note below |
 
 Notes:
 
@@ -57,7 +58,77 @@ Notes:
 - The read-only staging credential serves the production rehearsal gate and staging diagnostics; it is
   never used for a write.
 - `VERCEL_AUTOMATION_BYPASS_SECRET` is required when Deployment Protection is on; a 401/403 during
-  verification is a hard failure, never a skip.
+  verification is a hard failure, never a skip. See §2.1 for where it is issued, which copies exist
+  and how to rotate it. [`bypass-secret-howto.md`](bypass-secret-howto.md) is the step-by-step
+  setup, and [`operations/drift-monitor-setup-runbook.md`](../operations/drift-monitor-setup-runbook.md)
+  covers every remaining configuration step for the monitor, in order.
+### 2.1 `VERCEL_AUTOMATION_BYPASS_SECRET`: issuer, copies and rotation
+
+**Vercel issues it. Vercel never stores your copy.** The value is minted once per project under
+Vercel → Project → Settings → **Deployment Protection** →
+*Protection Bypass for Automation*, and every consumer below holds its own copy. No application code reads it: `grep -r` over `src/` returns
+nothing. It is a deploy/verification credential, not a runtime variable (see the "do not put it in
+Vercel env vars" note below).
+
+**What it authenticates.** A protected deployment answers an unbypassed request with `401`/`403` or
+a `302` to `vercel.com/sso-api`. Holders present the value as a header (preferred) or a query
+parameter:
+
+```text
+x-vercel-protection-bypass: <secret>                                    # header: scripts, workflows
+?x-vercel-protection-bypass=<secret>                                    # query: where no header field exists
+```
+
+**Where the copies live.** Each row is a separate scope, so each needs its own copy; they are not
+interchangeable and nothing in this repository syncs them.
+
+| Consumer | Location | Used for |
+| --- | --- | --- |
+| Drift monitor | GitHub Environment **`monitoring`** → secret `VERCEL_AUTOMATION_BYPASS_SECRET` | `GET /api/version` + `GET /api/ready` on both hosts, every 15 minutes |
+| `scripts/deploy.sh` | GitHub Environments **`staging`** and **`production`** → same secret name | `deploy_ready_curl` in `scripts/lib/vercel-rollback.sh` sends the header on: the pre-merge preview `/api/ready` probe (`lib/vercel-preview.sh`), the post-deploy `/api/ready` check, the rendered-page check on `/account` (added by #212 — `/api/ready` has its own pool and can be green while pages 500), and the rollback confirmation probe |
+| Stripe (staging only) | Stripe Dashboard → the staging webhook **endpoint URL** | lets Stripe's POST reach `/api/billing/webhook`; see `02-stripe.md` |
+| Manual retrieval / QA | local shell or `.env` (not committed) | the `curl` checks in `12-domains-and-email.md` |
+| Local scripts | `.env` is the only place; `secretweaver.yaml` classifies it under the `deploy` group with `optional: [local, staging, production]` and never generates it (`sensitive: true`) | — |
+
+The drift monitor sends it on **two requests per tick, per target** and nothing else — it never
+calls the Vercel deploy API and consumes no Vercel deployment. Production (`www.thanatos.mx`) is public
+today, but the header is sent unconditionally so that turning protection on cannot create a silently
+unauthenticated path.
+
+> **Do not add it to Vercel's environment variables.** Vercel env vars are injected into the running
+> app, and the app never reads this value. Storing it there puts an unused secret in the runtime
+> process with no benefit. Vercel env vars hold app-runtime values only (`DATABASE_URL`, `APP_URL`,
+> `MAIL_*`, `RESEND_API_KEY`, …).
+
+> **One project-level token is assumed to serve both hosts.** Vercel issues bypass secrets per
+> project. If staging and production are ever separate Vercel projects, the secret must split into
+> `VERCEL_AUTOMATION_BYPASS_SECRET_STAGING` / `_PRODUCTION` rather than being repository-scoped
+> (`docs/plan-drift-monitor-165.md` §5). Confirm which project owns each custom domain before
+> creating the `monitoring` environment.
+
+**Rotating it.** `02-stripe.md` step 3 says to rotate the bypass secret after staging QA. All four
+copies must be updated together or something breaks:
+
+1. Vercel — create a new bypass secret, delete the old one.
+2. GitHub Environments `staging`, `production` **and** `monitoring` — a stale value makes the
+   monitor exit `1` on every tick and `deploy.sh` hard-fail.
+3. Stripe — the staging endpoint URL still carries the old value, so deliveries return `401`.
+4. Your local `.env` — the `12-domains-and-email.md` checks fail until it is refreshed.
+
+There is no automation for this; treat rotation as a four-step checklist.
+
+- **`monitoring` branch policy is a choice, not a requirement.** A required branch policy here would
+  only affect `workflow_dispatch`, and dispatch is impossible before the workflow reaches the default
+  branch anyway (`HTTP 404` — the workflow is not registered with the Actions API until it is on
+  `main`). After promotion, *Selected → `main`* refuses a dispatch from any other ref; leaving it
+  unset allows one. The environment exists with no policy (all branches), which is functional. See
+  [`operations/drift-monitor-setup-runbook.md`](../operations/drift-monitor-setup-runbook.md) §1.
+- **The drift monitor binds to `monitoring`, not to `staging` or `production`.** A job carrying an
+  `environment:` key creates a GitHub Deployment (`task: deploy`). Two legs every 15 minutes would
+  fabricate ~192 `success` records a day against `main`'s SHA — including while a real production
+  deploy is waiting — which is exactly the record 8b and ADR 012 read. It would also collide with
+  `staging`'s branch policy, because scheduled workflows run on `main`. The monitor therefore reads
+  only its own bypass token, writes one issue per environment, and consumes no Vercel deployment.
 - The build job must not receive any database credential. Migration detection is a `curl` against
   `/api/version` plus `git diff`.
 - **Build-time database boundary.** The build needs `DATABASE_URL` to *exist* (`src/db/index.ts`
@@ -325,6 +396,26 @@ attempt's stale observation not suppressing a new one.
 
 - The stale-commit / stuck-`ahead` horizon is short (for example 20 minutes): nothing legitimate holds
   it that long.
+
+**Implemented thresholds** (`drift-monitor.yml`, `.github/workflows/` — the numbers below are the
+values in `src/lib/drift-monitor.ts`; change them there and here together):
+
+| Constant | Value | Applies to |
+| --- | --- | --- |
+| Poll cadence | **15 minutes** (`*/15 * * * *`) | every check below |
+| Stale horizon | **20 minutes** | commit drift, and `migrations: ahead` |
+| Approval horizon | **60 minutes** | a run sitting in `waiting` |
+| Bounded error | **cadence + horizon** (35 min / 75 min) | when the alert can first fire |
+
+Two exceptions to "after the horizon", both deliberate:
+
+- **`migrations: behind` and `diverged` alert immediately.** They already make `/api/ready` return
+  **503**, so the application is telling us it is not ready; waiting would delay a real alarm.
+  `ahead` is the state ADR 012 bounds by time, because a deploy legitimately passes through it.
+  Readiness treats `exact` and `ahead` as ready.
+- **A `db: "error"` probe is never schema drift.** The readiness catch path reports
+  `db: "error"` together with `migrations: "diverged"`; the monitor checks `db` first, so a database
+  outage is reported as `unknown` rather than as a diverged schema.
 - The **approval horizon is separate and longer**, because a release may legitimately wait for the
   operator. The naive "stay quiet while any run is waiting" rule would let a release wait forever
   without paging — the plan's DoD forbids that. Alert once when the approval wait is overdue, naming
