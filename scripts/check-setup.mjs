@@ -94,7 +94,7 @@ function shouldReportForFilter(msg, level) {
   if (!keysInFile) return true;
   // Always show DB/APP_URL and summary, even if not in file? But spec says "only for secrets set"
   // So we filter: if message mentions a specific env var, only show if that var is in file
-  const knownKeys = ["DATABASE_URL", "APP_URL", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID_MXN", "STRIPE_PRICE_ID_USD", "STRIPE_PREMIUM_PRICE_IDS", "OPEN_METEO_API_KEY", "NEXT_PUBLIC_MAP_TILE_URL", "NEXT_PUBLIC_MAP_ATTRIBUTION", "MAIL_TRANSPORT", "MAIL_FROM", "MAIL_REPLY_TO", "RESEND_API_KEY", "POSTMARK_SERVER_TOKEN", "CSP_MODE", "LOCAL_SEED_PASSWORD", "ALLOW_LOCAL_SEED"];
+  const knownKeys = ["DATABASE_URL", "APP_URL", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID_MXN", "STRIPE_PRICE_ID_USD", "STRIPE_PREMIUM_PRICE_IDS", "OPEN_METEO_API_KEY", "NEXT_PUBLIC_MAP_TILE_URL", "NEXT_PUBLIC_MAP_ATTRIBUTION", "MAIL_TRANSPORT", "MAIL_FROM", "MAIL_REPLY_TO", "RESEND_API_KEY", "POSTMARK_SERVER_TOKEN", "CSP_MODE", "LOCAL_SEED_PASSWORD", "ALLOW_LOCAL_SEED", "PROD_DB_ENDPOINT", "STAGING_DB_ENDPOINT", "APP_DEPLOY_ENV", "DB_POOL_MAX", "DB_COORDINATION_POOL_MAX"];
   for (const k of knownKeys) {
     if (msg.includes(k)) return keysInFile.has(k);
   }
@@ -185,6 +185,45 @@ if (mailTransport && mailTransport !== "outbox") {
 const cspMode = value("CSP_MODE").toLowerCase();
 if (cspMode && !["report-only", "enforce"].includes(cspMode)) report("ERROR", "CSP_MODE must be report-only or enforce.");
 else report("OK", `CSP_MODE is ${cspMode || "report-only (default)"}.`);
+
+// The database identity guard (#168, src/db/url-guard.ts). Its requirements were
+// declared in secretweaver.yaml but nothing ran that schema, so a missing endpoint
+// label could pass every gate and only surface as a boot-time throw on the first
+// production deploy. Mirrors the guard exactly: first hostname label, `-pooler` stripped.
+const ENDPOINT_VARS = {
+  production: "PROD_DB_ENDPOINT",
+  staging: "STAGING_DB_ENDPOINT",
+};
+function endpointOf(rawUrl) {
+  const first = new URL(rawUrl).hostname.toLowerCase().split(".")[0] || "";
+  return first.endsWith("-pooler") ? first.slice(0, -7) : first;
+}
+const endpointPattern = /^[a-z0-9-]{1,128}$/;
+const expectedEndpointName = ENDPOINT_VARS[profile];
+if (expectedEndpointName) {
+  const endpoint = value(expectedEndpointName).toLowerCase();
+  if (!endpoint) {
+    // Fails closed at boot with `database_url_endpoint_unset`, so the app would
+    // 500 on every route. This is an ERROR, not a warning.
+    report("ERROR", `${expectedEndpointName} is required for ${profile}; the database guard fails closed at boot without it.`);
+  } else if (!endpointPattern.test(endpoint)) {
+    report("ERROR", `${expectedEndpointName} must be a Neon endpoint label (lowercase letters, digits, hyphens).`);
+  } else if (database) {
+    let actual = null;
+    try { actual = endpointOf(database); } catch {}
+    if (actual === endpoint) report("OK", `${expectedEndpointName} matches the DATABASE_URL endpoint label.`);
+    else report("ERROR", `${expectedEndpointName} does not match the endpoint in DATABASE_URL; the guard refuses to boot.`);
+  } else {
+    report("OK", `${expectedEndpointName} has an endpoint-label format.`);
+  }
+}
+
+const poolMax = value("DB_POOL_MAX");
+if (poolMax && (!/^\d+$/.test(poolMax) || Number(poolMax) < 1)) report("ERROR", "DB_POOL_MAX must be a positive integer.");
+else if (poolMax) report("OK", `DB_POOL_MAX is ${poolMax}.`);
+const coordPoolMax = value("DB_COORDINATION_POOL_MAX");
+if (coordPoolMax && (!/^\d+$/.test(coordPoolMax) || Number(coordPoolMax) < 1)) report("ERROR", "DB_COORDINATION_POOL_MAX must be a positive integer.");
+else if (coordPoolMax) report("OK", `DB_COORDINATION_POOL_MAX is ${coordPoolMax}.`);
 
 console.log("This is a format check only: it does not connect to providers, verify licenses, or confirm webhook delivery.");
 if (errors || (strict && warnings)) process.exitCode = 1;
