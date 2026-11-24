@@ -35,6 +35,18 @@ test("post-merge readiness does not downgrade failures to a warning", () => {
   assert.match(script, /did not become ready/);
 });
 
+test("a promotion is accepted on content, not ancestry, because staging forbids merge commits", () => {
+  assert.match(script, /promotion-ancestry\.ts --head "\$HEAD_SHA" --base "\$BASE_SHA"/);
+  assert.match(script, /if \[\[ "\$BASE_BRANCH" == "main" && "\$VERDICT" == "conflict-free" \]\]/);
+  assert.match(script, /ANCESTRY_VERDICT" == "content-contained"/);
+  assert.match(script, /ALLOW_PROMOTION=1/);
+  assert.match(script, /if \[\[ "\$ALLOW_PROMOTION" -ne 1 \]\]/, "the refusal is the fallthrough, not the default");
+  // The old remedy is impossible under `required_linear_history`; leaving it would send the
+  // operator to a command that cannot land.
+  assert.doesNotMatch(script, /Only a merge into \$HEAD_REF makes that succeed/);
+  assert.match(script, /Re-land those changes on \$HEAD_REF/);
+});
+
 
 test("page-health failures share the rollback and deploy-record path", () => {
   // The gate sets a failure kind instead of exiting inside the success branch, so a

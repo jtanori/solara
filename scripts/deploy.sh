@@ -76,7 +76,7 @@ fi
 if [[ "$BASE" == "main" && "$ENV" != "production" ]]; then
   echo "ERROR: PR #$PR targets main but --env $ENV requested — use --env production" >&2; exit 1
 fi
-# (Production promotion no longer blocked — ADR 004: staging→main uses --merge to preserve ancestry)
+# (Production promotion ancestry is content-based, not commit-based — see the base-freshness gate and #240)
 
 # Canonical origin checked after the merge. Override with DEPLOY_APP_URL when a
 # custom domain is not yet resolving (e.g. during DNS cutover) — the check must
@@ -93,6 +93,11 @@ echo "== Gate: base freshness =="
 # Deliberately no override flag: the rulesets (strict required status checks, no bypass
 # actors) reject merging a BEHIND PR anyway, and a bypass here would only dispatch
 # migrations before a merge GitHub then refuses.
+#
+# Promotion exception (#240): after a merge-commit promotion, `main` always carries a commit
+# `staging` does not have, and `protect-staging` forbids the merge commit that used to fix
+# that. A main-based PR is therefore accepted when the trial merge proves it adds nothing to
+# the head (main's content is present under different SHAs); anything else still refuses.
 if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
   echo "ERROR: shallow clone — merge-base and the trial merge need full history; use a full clone or 'git fetch --unshallow' first" >&2
   exit 1
@@ -131,28 +136,34 @@ elif [[ "$ANC_RC" -eq 1 ]]; then
     printf '%s
 ' "$MERGE_OUT" | sed -n '2,11s/^/    /p'
   fi
-  echo "Recovery: git fetch origin && git switch $HEAD_REF && git merge origin/$BASE_BRANCH && git push"
-  echo "          then wait for the verify job on the new head and re-run this script."
-  if [[ "$BASE_BRANCH" == "main" ]]; then
-    # For a promotion this gate IS the ancestry check: the head must contain main's commits, and
-    # `--is-ancestor` is the only test that proves it. A back-merge does that; a squash does not,
-    # which is the trap in the runbooks (bootstrap §4.1a). Say so here, where it actually fails.
-    echo "" >&2
-    echo "       This is a staging→main promotion, so this gate is the ancestry check." >&2
-    echo "       A squash back-merge does NOT satisfy it: the content lands, main's SHAs do not." >&2
-    MAIN_GAP=$(git log --format=%H --cherry-pick --left-only origin/main..."$HEAD_SHA" 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "${MAIN_GAP:-1}" == "0" ]]; then
-      echo "       main's content is already on $HEAD_REF under different SHAs." >&2
-      echo "       Litmus: git merge-base --is-ancestor origin/main origin/$HEAD_REF" >&2
-      echo "       Only a merge into $HEAD_REF makes that succeed; see bootstrap §4.1a." >&2
-    else
-      echo "       main carries ${MAIN_GAP:-some} change(s) $HEAD_REF does not have — back-merge them." >&2
-      git log --oneline --cherry-pick --left-only origin/main..."$HEAD_SHA" 2>/dev/null | sed -n '1,10s/^/         /p' >&2
+  ALLOW_PROMOTION=0
+  if [[ "$BASE_BRANCH" == "main" && "$VERDICT" == "conflict-free" ]]; then
+    # A merge-commit back-merge cannot land on staging: protect-staging requires linear
+    # history and has no bypass actors (#240), so ancestry can never be restored after a
+    # promotion. Accept the promotion when the trial merge proves main adds nothing — every
+    # main change is already present in the head under a different SHA.
+    ANCESTRY_VERDICT=$(npx tsx scripts/promotion-ancestry.ts --head "$HEAD_SHA" --base "$BASE_SHA") || ANCESTRY_VERDICT=""
+    if [[ "$ANCESTRY_VERDICT" == "content-contained" ]]; then
+      echo "Base content-equivalent: $BASE_BRANCH@${BASE_SHA:0:7} adds nothing to $HEAD_REF — main's changes are already present under different SHAs."
+      echo "Proceeding without a back-merge; this head still needs its own green CI and preview."
+      ALLOW_PROMOTION=1
     fi
-    echo "" >&2
   fi
-  echo "ERROR: refusing to deploy a $VERDICT stale PR — update the branch first." >&2
-  exit 1
+  if [[ "$ALLOW_PROMOTION" -ne 1 ]]; then
+    if [[ "$BASE_BRANCH" == "main" ]]; then
+      echo "" >&2
+      echo "       This is a staging→main promotion, and main carries content $HEAD_REF does not have." >&2
+      echo "       A merge-commit back-merge cannot land on $HEAD_REF (required linear history, no bypass actors)." >&2
+      echo "       Re-land those changes on $HEAD_REF through a normal PR; the gate passes once the trial merge adds nothing." >&2
+      git log --oneline --no-decorate "$HEAD_SHA..$BASE_SHA" 2>/dev/null | sed -n '1,10s/^/         /p' >&2
+      echo "" >&2
+    else
+      echo "Recovery: git fetch origin && git switch $HEAD_REF && git merge origin/$BASE_BRANCH && git push"
+      echo "          then wait for the verify job on the new head and re-run this script."
+    fi
+    echo "ERROR: refusing to deploy a $VERDICT stale PR — update the branch first." >&2
+    exit 1
+  fi
 else
   echo "ERROR: git merge-base --is-ancestor failed (exit $ANC_RC) — are both refs valid commits? fetch full history and retry" >&2
   exit 1
