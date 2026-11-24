@@ -11,18 +11,22 @@ theory), [`bypass-secret-howto.md`](../setup/bypass-secret-howto.md) (the secret
 
 ## 0. Current state — what is actually configured today
 
+> **Status: configuration done, verification PENDING promotion.** The environment exists and the
+> secret is set by the operator, but nothing that requires the default branch can be exercised yet —
+> `workflow_dispatch` returns `HTTP 404` until the workflow is on `main`. The pending items and their
+> exit criteria are listed in §5e; the PR carries the same table.
+
 Checked live; do not assume any of this from memory.
 
 | Item | State | Evidence |
 | --- | --- | --- |
-| `monitoring` GitHub Environment | **MISSING** | `GET /repos/jtanori/solara/environments/monitoring` → `404` |
-| Ability of the automation token to create it | **NO — `403`** | `PUT /repos/jtanori/solara/environments/staging` → `Resource not accessible by integration` |
+| `monitoring` GitHub Environment | **EXISTS**, no reviewer, **no branch policy** | `200`; `protection_rules: 0`; `deployment_branch_policy: null` |
+| Ability of the automation token to read/write env secrets | **NO — `403`** | `GET .../environments/{monitoring,staging,production}/secrets` → `403`; set by the operator, unverified |
 | `staging` / `production` Environments | exist, **no** protection rules, **no** branch policy | `deployment_branch_policy: null`, `protection_rules: 0` |
-| `VERCEL_AUTOMATION_BYPASS_SECRET` in any environment | **unverified — cannot read** | environment *secrets* return `403` to this token |
 | Workflow on `main` | **absent** | `GET .../contents/.github/workflows/drift-monitor.yml?ref=main` → `404` |
 | Default branch | `main` ✓ | the restore step's `branch=main` query is correct |
-| `.github/workflows/drift-monitor.yml` on the PR branch | present, at `3d9c2e9` | — |
-| PR #222 | `MERGEABLE`, base `staging`, 5/5 checks green | `mergeStateStatus: CLEAN` |
+| `.github/workflows/drift-monitor.yml` on the PR branch | present | committed on the feature branch |
+| PR #222 | `MERGEABLE`, base `staging`, 5/5 checks green | `mergeStateStatus: CLEAN` at merge |
 | Repository issues | enabled, repo is **public** | — |
 | Open `drift-monitor` issue | none (`#165` is the tracking issue) | — |
 
@@ -241,6 +245,33 @@ gh run list --workflow=drift-monitor.yml -L 1 --json databaseId --jq '.[0].datab
 
 Expect: checkout, setup-node, `npm ci`, restore state, run monitor, write artifact, upload artifact.
 **No** `vercel` step, no `deploy.sh`, no `migrate.yml` dispatch.
+
+### 5e. Verification status at merge time
+
+Split by what is actually checkable. Do not mark an item verified from documentation alone.
+
+**Confirmed:**
+
+| Item | Evidence |
+| --- | --- |
+| `monitoring` environment exists, no reviewer gate | `gh api .../environments/monitoring` → `200`, `protection_rules: 0` |
+| `staging` / `production` environments exist | both present |
+| Default branch is `main` | the restore step's `branch=main` query is correct |
+| CI allow-list needs no change | the only actions used already run in `ci.yml` and `migrate.yml` |
+| Both domains belong to one Vercel project | operator-confirmed → one secret serves both legs |
+| Missing `issues: write` fails loudly | injected `403` on the alert write → exits `1` |
+| 97 targeted tests, tsc 0, eslint 0 | green at the merge commit |
+
+**Pending — requires the workflow on `main`:**
+
+| Item | Why blocked | Confirm with |
+| --- | --- | --- |
+| `workflow_dispatch` works | `HTTP 404` until the file is on the default branch | §5c |
+| Both legs report a real `kind` | needs a dispatch or the first tick | §5c |
+| The bypass secret resolves | environment secrets are unreadable via API (`403`); unproven until a run reads one | no `degraded: unauthorized`/`forbidden` in the log |
+| Authentication was needed at all | staging assumed SSO-protected, unconfirmed here | either way exit `0`; the header is ignored when protection is off |
+| The clock persists between ticks | needs two real runs ≥15 min apart | run 2 restores `drift-state-<target>` instead of re-initialising |
+| No Vercel deployment consumed | only a real run proves it | §5d |
 
 ---
 
