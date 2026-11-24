@@ -99,6 +99,13 @@ jobs:
           REHEARSAL_PR: ${{ inputs.rehearsal_pr }}
         run: |
           echo "Environment: $TARGET_ENV pr=$PR sha=$SHA mode=$MODE dry_run=$DRY_RUN rehearsal_pr=$REHEARSAL_PR"
+          # --ref selects the workflow file, -f sha selects the checkout; GitHub does not relate
+          # them (#236). Record both so a dispatch that executed a different file is visible.
+          echo "workflow_ref=${GITHUB_WORKFLOW_REF:-unknown}"
+          echo "executed_from=${GITHUB_SHA:-unknown} target=$SHA"
+          if [ -n "${GITHUB_SHA:-}" ] && [ "$GITHUB_SHA" != "$SHA" ]; then
+            echo "::warning::the workflow that is executing (${GITHUB_SHA:0:7}) is not the target commit (${SHA:0:7}) — only the checkout at \$sha is used, so this is safe solely if both migrate.yml blobs are identical (db-remote.ts enforces that)"
+          fi
           cat drizzle/meta/_journal.json
           ls -l drizzle/*.sql
 
@@ -270,6 +277,17 @@ jobs:
           if [ "$MODE" = "verify" ] || [ "$DRY_RUN" = "true" ]; then ALLOW="--allow-incomplete"; fi
           npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify --json $ALLOW > verify.json || true
           npx tsx scripts/db-run.ts --env "$TARGET_ENV" verify $ALLOW 2>&1 | tee verify.txt || true
+
+          # `ok:false` is drift — information in verify/dry-run mode, a failure after a real
+          # migrate. `errors[]`, a missing ok or unparsable JSON means the inspection failed,
+          # and a failed inspection must be red in every mode (#236): a guard or connection
+          # error reported as "out of sync" is a green run three steps from its cause.
+          VERDICT_RC=0
+          npx tsx scripts/schema-verdict.ts verify.json || VERDICT_RC=$?
+          if [ "$VERDICT_RC" -ne 0 ]; then
+            echo "::error::$TARGET_ENV could not be inspected — see verify.txt above; this is a failed inspection, not schema drift"
+            exit 1
+          fi
 
           IN_SYNC=$(node -e 'const j=require("./verify.json");process.stdout.write(String(j.ok))')
           if [ "$IN_SYNC" = "true" ]; then

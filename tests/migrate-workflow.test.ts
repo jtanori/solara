@@ -48,3 +48,26 @@ test("every db-run step receives the endpoint label the database guard requires"
   // And the guard step must reject a missing label before any connection attempt.
   assert.match(workflow, /EXPECTED_VAR is not set for environment/);
 });
+
+// #236: the step read only `ok`, so a guard/connection error that db-run reports through
+// errors[] looked exactly like schema drift — and in verify mode produced a green
+// "OUT OF SYNC". The classification is now a tested module and uninspectable is fatal.
+test("the schema verdict is classified, not inferred from ok alone", () => {
+  assert.match(workflow, /scripts\/schema-verdict\.ts verify\.json/);
+  assert.match(workflow, /if \[ "\$VERDICT_RC" -ne 0 \]/);
+  assert.match(workflow, /could not be inspected/);
+
+  const classifier = workflow.indexOf("scripts/schema-verdict.ts verify.json");
+  const readsOk = workflow.indexOf("String(j.ok)");
+  assert.ok(classifier !== -1 && readsOk !== -1, "both the classifier and the drift read must exist");
+  assert.ok(classifier < readsOk, "the verdict must be classified before ok is trusted");
+});
+
+// #236: --ref picks the workflow file and sha picks the checkout. Record both so a dispatch
+// that executed a different file is visible in the run, even though the file cannot police
+// its own staleness.
+test("the run records which workflow file executed", () => {
+  assert.match(workflow, /GITHUB_WORKFLOW_REF/);
+  assert.match(workflow, /executed_from=\$\{GITHUB_SHA/);
+  assert.match(workflow, /is not the target commit/);
+});

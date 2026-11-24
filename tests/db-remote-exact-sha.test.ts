@@ -16,8 +16,8 @@ function fakeGh() {
     path.join(bin, "gh"),
     `#!/usr/bin/env bash
 case "$*" in
-  *"/commits/${sha}"*) printf '%s\\n' "${sha}" ;;
-  *"/contents/.github/workflows/migrate.yml"*) printf '%s\\n' "${workflow}" ;;
+  *"/commits/"*) printf '%s\\n' "${sha}" ;;
+  *"/contents/.github/workflows/migrate.yml"*) printf '{"sha":"blob-%s","content":"%s"}\\n' "${sha}" "${workflow}" ;;
   *) printf '\\n' ;;
 esac
 `,

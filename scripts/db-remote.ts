@@ -221,21 +221,73 @@ function resolveTarget(o: Opts): Target {
 // and degrade to the legacy input set instead of failing opaquely.
 type Caps = { mode: boolean; dryRun: boolean };
 
-function workflowCaps(ref: string): Caps {
+type WorkflowMeta = { blobSha: string; body: string; mode: boolean; dryRun: boolean };
+
+function workflowMeta(ref: string): WorkflowMeta | null {
   try {
-    const b64 = gh(["api", `repos/${REPO}/contents/.github/workflows/${WORKFLOW}?ref=${ref}`, "--jq", ".content"]);
-    const body = Buffer.from(b64.replace(/\n/g, ""), "base64").toString("utf8");
-    return { mode: /^\s{6}mode:/m.test(body), dryRun: /^\s{6}dry_run:/m.test(body) };
+    const raw = gh(["api", `repos/${REPO}/contents/.github/workflows/${WORKFLOW}?ref=${encodeURIComponent(ref)}`]);
+    const parsed = JSON.parse(raw) as { sha?: unknown; content?: unknown };
+    if (typeof parsed.sha !== "string" || typeof parsed.content !== "string") return null;
+    if (parsed.sha === "" || parsed.content === "") return null;
+    const body = Buffer.from(parsed.content.replace(/\n/g, ""), "base64").toString("utf8");
+    return { blobSha: parsed.sha, body, mode: /^\s{6}mode:/m.test(body), dryRun: /^\s{6}dry_run:/m.test(body) };
   } catch {
-    // cannot read the file (permissions/offline) — assume modern and let dispatch speak
-    return { mode: true, dryRun: true };
+    return null;
+  }
+}
+
+function workflowCaps(ref: string): Caps {
+  const meta = workflowMeta(ref);
+  // cannot read the file (permissions/offline) — assume modern and let dispatch speak
+  return meta ? { mode: meta.mode, dryRun: meta.dryRun } : { mode: true, dryRun: true };
+}
+
+// ------------------------------------------------------------------ dispatch parity (#236)
+// `gh workflow run --ref X -f sha=Y` reads the workflow FILE from X but checks out Y, and
+// GitHub does not relate the two. A dispatch from a stale branch therefore executes an old
+// gate against new code: on 2026-11-24 a production migrate ran main's migrate.yml
+// (blob at 71d7c8d) against 74d5683 and failed on a missing PROD_DB_ENDPOINT that staging's
+// file already injected. The workflow cannot detect its own staleness (the check would not
+// exist on the stale ref), so the dispatch side has to refuse.
+type Parity = { refHeadSha: string; refBlob: string; targetBlob: string };
+
+function refHead(ref: string): string {
+  return fullSha(gh(["api", `repos/${REPO}/commits/${encodeURIComponent(ref)}`, "--jq", ".sha"]));
+}
+
+function assertWorkflowParity(ref: string, sha: string): Parity {
+  // Resolve the ref to an immutable commit first: comparing the branch name twice would race
+  // with a push between the two reads.
+  const refHeadSha = refHead(ref);
+  const atRef = workflowMeta(refHeadSha);
+  const atTarget = workflowMeta(sha);
+
+  if (!atRef || !atTarget) {
+    const unreadable = !atRef ? `${ref} (${refHeadSha.slice(0, 7)})` : sha.slice(0, 7);
+    throw new Error(`cannot read .github/workflows/${WORKFLOW} at ${unreadable} — refusing to dispatch:
+       the workflow that would execute cannot be proven to be the one under review (fail closed; check gh auth)`);
+  }
+  if (atRef.blobSha !== atTarget.blobSha) {
+    throw new Error(`refusing to dispatch: the ${WORKFLOW} on "${ref}" (blob ${atRef.blobSha.slice(0, 7)}) is not the file at ${sha.slice(0, 7)} (blob ${atTarget.blobSha.slice(0, 7)}).
+       GitHub reads the workflow from --ref but checks out -f sha, so this would run an un-reviewed gate against that commit.
+       Dispatch from a ref whose ${WORKFLOW} matches ${sha.slice(0, 7)} — normally the PR head, or the branch that contains it.`);
+  }
+  return { refHeadSha, refBlob: atRef.blobSha, targetBlob: atTarget.blobSha };
+}
+
+/** The ref can move between the parity read and the dispatch; discard a verdict from another file. */
+function assertRunHead(runId: string, parity: Parity, ref: string) {
+  const head = gh(["run", "view", runId, "--repo", REPO, "--json", "headSha", "--jq", ".headSha"]).trim();
+  if (head && head !== parity.refHeadSha) {
+    throw new Error(`"${ref}" moved during dispatch (${parity.refHeadSha.slice(0, 7)} → ${head.slice(0, 7)}):
+       the run executed a ${WORKFLOW} that was not the one verified, so its verdict is discarded. Re-run against the new head.`);
   }
 }
 
 // ------------------------------------------------------------------ dispatch + watch
-type Run = { databaseId: number; displayTitle: string; status: string; conclusion: string | null; createdAt: string; url: string };
+type Run = { databaseId: number; displayTitle: string; status: string; conclusion: string | null; createdAt: string; url: string; headSha?: string };
 
-async function dispatch(t: Target, o: Opts) {
+async function dispatch(t: Target, o: Opts, parity: Parity) {
   const before = new Date().toISOString();
   const args = [
     "workflow", "run", WORKFLOW, "--repo", REPO,
@@ -267,7 +319,9 @@ async function dispatch(t: Target, o: Opts) {
   }
 
   gh(args);
-  return { before, runId: await findRun(t, before) };
+  const runId = await findRun(t, before);
+  assertRunHead(runId, parity, t.ref);
+  return { before, runId };
 }
 
 async function findRun(t: Target, before: string): Promise<string> {
@@ -330,7 +384,7 @@ async function wait(runId: string, timeoutSec: number) {
   const deadline = Date.now() + timeoutSec * 1000;
   let last = "";
   while (Date.now() < deadline) {
-    const r = ghApiJson<Run>(["run", "view", runId, "--repo", REPO], "status,conclusion,url,displayTitle");
+    const r = ghApiJson<Run>(["run", "view", runId, "--repo", REPO], "status,conclusion,url,displayTitle,headSha");
     if (r.status !== last) { last = r.status; if (!process.stdout.isTTY) console.log(`  ${r.status}`); }
     if (r.status === "completed") return r;
     await new Promise(res => setTimeout(res, 5000));
@@ -343,6 +397,8 @@ async function main() {
   const o = parseArgs(process.argv.slice(2));
   const plan = localPlan();
   const t = resolveTarget(o);
+  // Bind the executing workflow to the commit under review before anything is dispatched (#236).
+  const parity = assertWorkflowParity(t.ref, t.sha);
 
   // The sha dispatched is the REF's head on GitHub; this process is whatever is on disk.
   // When they differ the tool that runs is not the tool that was committed — say so loudly,
@@ -362,7 +418,14 @@ async function main() {
     sha: t.sha,
     credential: "GitHub Environment secret DATABASE_URL (never read locally)",
     journalTags: plan.tags,
-    workflow: WORKFLOW,
+    workflow: {
+      file: WORKFLOW,
+      ref: t.ref,
+      refHeadSha: parity.refHeadSha,
+      refBlob: parity.refBlob,
+      targetBlob: parity.targetBlob,
+      parity: "match" as const,
+    },
     rehearsalPr: o.rehearsalPr || null,
     localHead: localHead || null,
     staleLocalCheckout: stale,
@@ -378,11 +441,12 @@ async function main() {
     console.log(`mode      ${o.check ? "verify only (no DDL)" : "migrate"}`);
     console.log(`environment ${t.env}   secret: Environment DATABASE_URL (not readable locally)`);
     console.log(`checkout  ${t.sha}  (${t.ref}${t.pr !== "0" ? `, PR #${t.pr}` : ""})`);
+    console.log(`workflow  ${WORKFLOW} blob ${parity.refBlob.slice(0, 7)} on ${t.ref} == blob ${parity.targetBlob.slice(0, 7)} at ${t.sha.slice(0, 7)}`);
     console.log(`journal   ${plan.tags.join(", ")}`);
     console.log("");
   }
 
-  const { before, runId } = await dispatch(t, o);
+  const { before, runId } = await dispatch(t, o, parity);
 
   if (o.dryRun) {
     if (o.json) console.log(JSON.stringify({ ...summary, dispatched: false }, null, 2));
