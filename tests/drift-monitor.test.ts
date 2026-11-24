@@ -633,7 +633,8 @@ test("an open issue from a previous subject does not freeze the new one", () => 
     headCommit: "sha2",
     firstObserved: new Date(NOW - 25 * MINUTE).toISOString(),
   };
-  const reconciled = reconcileState({ artifact, issue: issueState, liveCommit: "sha1", migrations: "exact" });
+  // `head` has moved past `live`: the commit check is the active family.
+  const reconciled = reconcileState({ artifact, issue: issueState, headCommit: "sha2", liveCommit: "sha1", migrations: "exact" });
   assert.equal(reconciled?.liveCommit, "sha1", "the clock must belong to the current subject");
   assert.equal(Date.parse(reconciled?.firstObserved as string), NOW - 25 * MINUTE);
   const result = classifyDrift({
@@ -746,6 +747,7 @@ test("a schema clock survives a deploy that moved", () => {
   const reconciled = reconcileState({
     artifact: null,
     issue,
+    headCommit: "sha9",
     liveCommit: "sha9",
     migrations: "ahead",
   });
@@ -779,8 +781,141 @@ test("reconcile ignores a clock with no timestamp instead of comparing NaN", () 
     alertedAt: null,
   };
   const real: MonitorState = { ...noClock, firstObserved: new Date(NOW - 5 * MINUTE).toISOString() };
-  assert.equal(reconcileState({ artifact: noClock, issue: real, liveCommit: "abc1234", migrations: "exact" })?.firstObserved, real.firstObserved);
-  assert.equal(reconcileState({ artifact: noClock, issue: null, liveCommit: "abc1234", migrations: "exact" }), null);
+  // A commit clock ages only while head is ahead of live.
+  assert.equal(
+    reconcileState({ artifact: noClock, issue: real, headCommit: "fed", liveCommit: "abc1234", migrations: "exact" })?.firstObserved,
+    real.firstObserved,
+  );
+  assert.equal(reconcileState({ artifact: noClock, issue: null, headCommit: "fed", liveCommit: "abc1234", migrations: "exact" }), null);
+});
+
+test("an open approval issue does not freeze the commit clock", () => {
+  // R3-1.1. The issue is older than the artifact, so "oldest wins" picked it,
+  // `classifyDrift` then rejected an approval clock for a commit check and reset
+  // the subject to `now` — every tick. `stale-commit` could never fire while the
+  // stale approval issue was open.
+  const approval: MonitorState = {
+    environment: "staging",
+    kind: "overdue-approval",
+    liveCommit: "sha1",
+    headCommit: "sha1",
+    migrations: "exact",
+    runId: 555,
+    runAttempt: 1,
+    firstObserved: new Date(NOW - 90 * MINUTE).toISOString(),
+    alertedAt: new Date(NOW - 30 * MINUTE).toISOString(),
+  };
+  const commit: MonitorState = {
+    ...approval,
+    kind: "observing-commit",
+    runId: null,
+    runAttempt: null,
+    firstObserved: new Date(NOW - 25 * MINUTE).toISOString(),
+  };
+  const reconciled = reconcileState({
+    artifact: commit,
+    issue: approval,
+    headCommit: "sha2",
+    liveCommit: "sha1",
+    migrations: "exact",
+  });
+  assert.equal(reconciled?.kind, "observing-commit", "an approval clock cannot be the commit clock");
+
+  const result = classifyDrift({
+    target: "staging",
+    headCommit: "sha2",
+    read: okRead({ commit: "sha1" }),
+    runs: [],
+    firstObserved: Date.parse(reconciled?.firstObserved as string),
+    clockKind: reconciled?.kind,
+    clockLiveCommit: reconciled?.liveCommit,
+    now: NOW,
+  });
+  assert.equal(result.kind, "stale-commit", "sha1 has been live 25 minutes while head moved");
+});
+
+test("an approval issue does not freeze the schema clock either", () => {
+  const approval: MonitorState = {
+    environment: "staging",
+    kind: "overdue-approval",
+    liveCommit: "sha1",
+    headCommit: "sha1",
+    migrations: "exact",
+    runId: 555,
+    runAttempt: 1,
+    firstObserved: new Date(NOW - 90 * MINUTE).toISOString(),
+    alertedAt: null,
+  };
+  const schema: MonitorState = {
+    ...approval,
+    kind: "observing-migrations",
+    migrations: "ahead",
+    runId: null,
+    runAttempt: null,
+    firstObserved: new Date(NOW - 25 * MINUTE).toISOString(),
+  };
+  const reconciled = reconcileState({
+    artifact: null,
+    issue: approval,
+    headCommit: "sha1",
+    liveCommit: "sha1",
+    migrations: "ahead",
+  });
+  assert.equal(reconciled, null, "an approval issue is not a schema clock, and no schema clock exists");
+  const fromBoth = reconcileState({ artifact: schema, issue: approval, headCommit: "sha1", liveCommit: "sha1", migrations: "ahead" });
+  assert.equal(fromBoth?.kind, "observing-migrations");
+});
+
+test("a clock outside the active family is never selected", () => {
+  const base: MonitorState = {
+    environment: "staging",
+    kind: "stale-commit",
+    liveCommit: "sha1",
+    headCommit: "sha1",
+    migrations: "exact",
+    runId: null,
+    runAttempt: null,
+    firstObserved: new Date(NOW - 60 * MINUTE).toISOString(),
+    alertedAt: null,
+  };
+  // head === live, so the commit check is not ageing; the stale-commit clock is
+  // for a subject that is no longer drifting and must not be reused.
+  assert.equal(
+    reconcileState({ artifact: base, issue: null, headCommit: "sha1", liveCommit: "sha1", migrations: "exact" }),
+    null,
+  );
+  // env-mismatch is its own family.
+  assert.equal(
+    reconcileState({ artifact: base, issue: null, headCommit: "sha2", liveCommit: "sha1", migrations: "exact", envMismatch: true }),
+    null,
+  );
+  const env: MonitorState = { ...base, kind: "env-mismatch" };
+  assert.equal(
+    reconcileState({ artifact: env, issue: null, headCommit: "sha2", liveCommit: "sha1", migrations: "exact", envMismatch: true })?.kind,
+    "env-mismatch",
+  );
+});
+
+test("an approval clock is not a schema clock even when the schema matches", () => {
+  // The family gate has to be explicit: an approval issue carries the migration
+  // state of its own tick, so matching on `migrations` alone would let it pose
+  // as a schema clock and freeze the schema horizon.
+  const approval: MonitorState = {
+    environment: "staging",
+    kind: "awaiting-approval",
+    liveCommit: "sha1",
+    headCommit: "sha1",
+    migrations: "ahead",
+    runId: 555,
+    runAttempt: 1,
+    firstObserved: new Date(NOW - 90 * MINUTE).toISOString(),
+    alertedAt: null,
+  };
+  assert.equal(
+    reconcileState({ artifact: null, issue: approval, headCommit: "sha1", liveCommit: "sha1", migrations: "ahead" }),
+    null,
+    "an approval clock must never be selected as the schema clock",
+  );
 });
 
 test("the three constants are the documented cadence and horizons", () => {

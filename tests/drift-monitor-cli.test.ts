@@ -462,3 +462,251 @@ test("a failure listing runs for a known workflow degrades the tick", async () =
   assert.match(logs, /run scan failed/, "the unreadable run list must be named");
   assert.equal(existsSync(join(state, "..", "next.json")), false);
 });
+
+test("the wait clock is chosen per run, not per store", async () => {
+  // R3-1.2. The artifact holds an older clock for a superseded run 100; the
+  // issue holds the real one for run 101, which is the run waiting now.
+  // Picking a store before the run id is known discarded run 101's clock.
+  const state = statePath();
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const base = {
+    environment: "staging",
+    kind: "awaiting-approval",
+    liveCommit: "abc1234",
+    headCommit: "abc1234",
+    migrations: "exact",
+    runAttempt: 1,
+    alertedAt: null,
+  };
+  writeFileSync(state, JSON.stringify({ ...base, runId: 100, firstObserved: minutesAgo(90) }));
+
+  let patched: Record<string, unknown> | null = null;
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "PATCH") {
+      patched = JSON.parse(String(init.body));
+      return new Response("{}", { status: 200 });
+    }
+    if (/\/api\/version/.test(url)) {
+      return new Response(JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }), { status: 200 });
+    }
+    if (/\/api\/ready/.test(url)) {
+      return new Response(JSON.stringify({ ok: true, db: "ok", migrations: "exact" }), { status: 200 });
+    }
+    if (/\/commits\/staging/.test(url)) {
+      return new Response(JSON.stringify({ sha: "abc1234", commit: { message: "x" } }), { status: 200 });
+    }
+    if (/\/actions\/workflows\?/.test(url)) {
+      return new Response(JSON.stringify({ workflows: [{ id: 1, path: ".github/workflows/migrate.yml" }] }), { status: 200 });
+    }
+    if (/\/actions\/workflows\/1\/runs/.test(url)) {
+      return new Response(
+        JSON.stringify({
+          workflow_runs: [
+            { id: 101, run_attempt: 1, status: "waiting", path: ".github/workflows/migrate.yml", head_sha: "abc1234" },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    if (/pending_deployments/.test(url)) {
+      return new Response(JSON.stringify([{ environment: { name: "staging-migrations" } }]), { status: 200 });
+    }
+    if (/\/deployments/.test(url)) return new Response("[]", { status: 200 });
+    if (/\/issues\?state=open/.test(url)) {
+      return new Response(
+        JSON.stringify([
+          {
+            number: 9,
+            title: "drift-monitor: staging",
+            user: { login: "github-actions[bot]", type: "Bot" },
+            author_association: "NONE",
+            body: `<!-- drift-monitor:${JSON.stringify({ ...base, runId: 101, firstObserved: minutesAgo(65) })} -->`,
+          },
+        ]),
+        { status: 200 },
+      );
+    }
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const { logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+    token: "configured",
+    fetchImpl: transport,
+  });
+  assert.match(logs, /kind=overdue-approval/, "run 101 is 65 minutes into its wait and must alert");
+  assert.ok(patched !== null, "the overdue approval must be written");
+});
+
+/** A transport for one waiting run, with the persisted clocks supplied by the caller. */
+function approvalScenario(options: { runId: number; issueRunId: number; issueMinutes: number }) {
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const base = {
+    environment: "staging",
+    kind: "awaiting-approval",
+    liveCommit: "abc1234",
+    headCommit: "abc1234",
+    migrations: "exact",
+    runAttempt: 1,
+    alertedAt: null,
+  };
+  let patched: Record<string, unknown> | null = null;
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "PATCH") {
+      patched = JSON.parse(String(init.body));
+      return new Response("{}", { status: 200 });
+    }
+    if (/\/api\/version/.test(url)) {
+      return new Response(JSON.stringify({ ok: true, commit: "abc1234", env: "staging" }), { status: 200 });
+    }
+    if (/\/api\/ready/.test(url)) {
+      return new Response(JSON.stringify({ ok: true, db: "ok", migrations: "exact" }), { status: 200 });
+    }
+    if (/\/commits\/staging/.test(url)) {
+      return new Response(JSON.stringify({ sha: "abc1234", commit: { message: "x" } }), { status: 200 });
+    }
+    if (/\/actions\/workflows\?/.test(url)) {
+      return new Response(JSON.stringify({ workflows: [{ id: 1, path: ".github/workflows/migrate.yml" }] }), { status: 200 });
+    }
+    if (/\/actions\/workflows\/1\/runs/.test(url)) {
+      return new Response(
+        JSON.stringify({
+          workflow_runs: [
+            { id: options.runId, run_attempt: 1, status: "waiting", path: ".github/workflows/migrate.yml", head_sha: "abc1234" },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    if (/pending_deployments/.test(url)) {
+      return new Response(JSON.stringify([{ environment: { name: "staging-migrations" } }]), { status: 200 });
+    }
+    if (/\/deployments/.test(url)) return new Response("[]", { status: 200 });
+    if (/\/issues\?state=open/.test(url)) {
+      return new Response(
+        JSON.stringify([
+          {
+            number: 9,
+            title: "drift-monitor: staging",
+            user: { login: "github-actions[bot]", type: "Bot" },
+            author_association: "NONE",
+            body: `<!-- drift-monitor:${JSON.stringify({
+              ...base,
+              runId: options.issueRunId,
+              firstObserved: minutesAgo(options.issueMinutes),
+            })} -->`,
+          },
+        ]),
+        { status: 200 },
+      );
+    }
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+  return { transport, minutesAgo, base };
+}
+
+test("the artifact's clock for the waiting run is used when the issue has another run", async () => {
+  // The mirror of the previous test: dropping the artifact store would lose the
+  // only clock that belongs to run 101.
+  const state = statePath();
+  const scenario = approvalScenario({ runId: 101, issueRunId: 100, issueMinutes: 5 });
+  writeFileSync(
+    state,
+    JSON.stringify({ ...scenario.base, runId: 101, firstObserved: scenario.minutesAgo(65) }),
+  );
+  const { logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+    token: "configured",
+    fetchImpl: scenario.transport,
+  });
+  assert.match(logs, /kind=overdue-approval/, "the artifact's 65-minute clock for run 101 must alert");
+});
+
+test("the older of two clocks for the same run wins", async () => {
+  // Both stores record run 101: the artifact ten minutes ago, the issue 65. The
+  // oldest is the second candidate, so "first one wins" silently under-reports a
+  // wait that has already crossed the horizon.
+  const state = statePath();
+  const scenario = approvalScenario({ runId: 101, issueRunId: 101, issueMinutes: 65 });
+  writeFileSync(
+    state,
+    JSON.stringify({ ...scenario.base, runId: 101, firstObserved: scenario.minutesAgo(10) }),
+  );
+  const { logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+    token: "configured",
+    fetchImpl: scenario.transport,
+  });
+  assert.match(logs, /kind=overdue-approval/, "65 minutes is past the horizon even though the artifact is fresh");
+});
+
+test("a clock from an earlier attempt does not age a retry", async () => {
+  // Attempt 1 of run 101 waited 65 minutes and was re-run. Attempt 2 is a new
+  // wait: inheriting attempt 1's clock would fire an alert immediately.
+  const state = statePath();
+  const scenario = approvalScenario({ runId: 101, issueRunId: 101, issueMinutes: 65 });
+  writeFileSync(
+    state,
+    JSON.stringify({ ...scenario.base, runId: 101, runAttempt: 1, firstObserved: scenario.minutesAgo(65) }),
+  );
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (/\/actions\/workflows\/1\/runs/.test(String(input))) {
+      return new Response(
+        JSON.stringify({
+          workflow_runs: [
+            { id: 101, run_attempt: 2, status: "waiting", path: ".github/workflows/migrate.yml", head_sha: "abc1234" },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    // The issue records attempt 2, so it matches; the artifact records attempt 1.
+    if (/\/issues\?state=open/.test(String(input))) {
+      return new Response(
+        JSON.stringify([
+          {
+            number: 9,
+            title: "drift-monitor: staging",
+            user: { login: "github-actions[bot]", type: "Bot" },
+            author_association: "NONE",
+            body: `<!-- drift-monitor:${JSON.stringify({
+              ...scenario.base,
+              runId: 101,
+              runAttempt: 2,
+              firstObserved: scenario.minutesAgo(5),
+            })} -->`,
+          },
+        ]),
+        { status: 200 },
+      );
+    }
+    return scenario.transport(input, init);
+  }) as unknown as typeof fetch;
+
+  const { logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+    token: "configured",
+    fetchImpl: transport,
+  });
+  assert.match(
+    logs,
+    /kind=awaiting-approval/,
+    "attempt 2 is 5 minutes old; attempt 1's 65-minute clock must not be reused",
+  );
+});
+
+test("a stale clock for a different run does not fire a false alert", async () => {
+  // Run 100 waited 65 minutes and finished; run 101 started waiting 5 minutes
+  // ago. Matching on the attempt alone would pick run 100's old clock and raise
+  // an overdue-approval alert on a wait that is five minutes old.
+  const state = statePath();
+  const scenario = approvalScenario({ runId: 101, issueRunId: 100, issueMinutes: 65 });
+  writeFileSync(
+    state,
+    JSON.stringify({ ...scenario.base, runId: 101, runAttempt: 1, firstObserved: scenario.minutesAgo(5) }),
+  );
+  const { logs } = await runWithLogs(["--env", "staging", "--staging-url", "https://staging.example", "--state", state], {
+    token: "configured",
+    fetchImpl: scenario.transport,
+  });
+  assert.match(logs, /kind=awaiting-approval/, "a five-minute wait is not overdue");
+  assert.doesNotMatch(logs, /kind=overdue-approval/, "run 100's clock must not be reused for run 101");
+});

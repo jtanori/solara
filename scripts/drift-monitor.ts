@@ -21,6 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  approvalClockForState,
   approvalFallbackClock,
   attributeRunToTarget,
   classifyDrift,
@@ -206,7 +207,7 @@ async function fetchInFlightRuns(
   ctx: Ctx,
   target: Target,
   now: number,
-  waitState: MonitorState | null,
+  waitStates: ReadonlyArray<MonitorState | null>,
 ): Promise<RunScan> {
   let workflows: Array<{ id: number; path: string }>;
   try {
@@ -308,12 +309,12 @@ async function fetchInFlightRuns(
         // D6 candidate 2: the persisted first observation, keyed by
         // (runId, runAttempt, environment). Without this the fallback was dead
         // code and every un-timestamped wait reported 0 ms forever.
-        const fallback = approvalFallbackClock({
-          state: waitState,
-          runId: record.id,
-          runAttempt: record.run_attempt,
+        // The oldest clock recorded for *this* run attempt, across every store.
+        const inFlightKey = { runId: record.id, runAttempt: record.run_attempt } as InFlightRun;
+        const fallback = olderWaitClock(
+          waitStates.map(state => approvalClockFor(state, inFlightKey, now)),
           now,
-        });
+        );
         inFlight.waitingSince = start ?? fallback;
         inFlight.waitingForMs = waitingFor(inFlight, now, fallback);
         if (start === null) {
@@ -486,17 +487,17 @@ async function runOnce(argv: string[], deps?: Partial<Ctx>): Promise<number> {
       }
       // Both stores are candidates: the oldest matching `(runId, runAttempt)`
       // clock wins, so a stub artifact cannot hide the issue's real clock.
-      const fallback = olderWaitClock(
+      const fallback = olderWaitClock([
         approvalClockFor(artifactState, run, now),
         approvalClockFor(issueState, run, now),
-      );
+      ]);
       return { ...run, waitingSince: fallback, waitingForMs: waitingFor(run, now, fallback) };
     });
   } else {
-    // Pick the wait clock per run, not per store: an artifact written by a
-    // cleared/unknown tick is non-null but carries no subject, and `??` would
-    // let it shadow an open issue's real approval clock.
-    const scan = await fetchInFlightRuns(ctx, target, now, pickWaitState(artifactState, issueState));
+    // Both stores, not one picked up front: the run id is not known until the
+    // scan returns, so a store chosen here is a guess that discards the other
+    // store's clock for a different run (R3-1.2).
+    const scan = await fetchInFlightRuns(ctx, target, now, [artifactState, issueState]);
     runs = scan.runs;
     runsDegraded = scan.degraded;
   }
@@ -504,8 +505,13 @@ async function runOnce(argv: string[], deps?: Partial<Ctx>): Promise<number> {
   const previous = reconcileState({
     artifact: artifactState,
     issue: issueState,
+    headCommit,
     liveCommit: read.status === "ok" ? (read.version.commit ?? null) : null,
     migrations: read.status === "ok" ? (isReadyMigration(read.ready) ? read.ready.migrations as MigrationState : null) : null,
+    // The same condition `classifyDrift` uses for (c), so the reconciliation
+    // and the classification cannot disagree about which family is active.
+    envMismatch:
+      read.status === "ok" && Boolean(read.version.env && read.version.env !== target),
   });
 
   const classification = classifyDrift({
@@ -670,35 +676,17 @@ export async function main(argv: string[], deps?: Partial<Ctx>): Promise<number>
   }
 }
 
-/**
- * Which store supplies the wait clock when the run ids are not yet known.
- *
- * `??` is wrong here: an artifact written by a cleared or unknown tick is
- * non-null but carries no subject, and would shadow an open issue's real clock.
- */
-function pickWaitState(artifact: MonitorState | null, issue: MonitorState | null): MonitorState | null {
-  const usable = (state: MonitorState | null): boolean =>
-    state !== null && state.firstObserved !== null && state.runId !== null;
-  if (usable(artifact) && usable(issue)) {
-    return Date.parse(artifact!.firstObserved as string) <= Date.parse(issue!.firstObserved as string) ? artifact : issue;
-  }
-  return usable(artifact) ? artifact : usable(issue) ? issue : null;
-}
-
 /** The persisted clock for exactly this run attempt, or null. */
 function approvalClockFor(state: MonitorState | null, run: InFlightRun, now: number): number | null {
-  if (state === null) return null;
-  const fallback = approvalFallbackClock({ state, runId: run.runId, runAttempt: run.runAttempt, now });
-  // approvalFallbackClock returns `now` when the state does not match, so a
-  // match is only real when the state actually carries this attempt's key.
-  const matches = state.runId === run.runId && state.runAttempt === run.runAttempt && state.firstObserved !== null;
-  return matches ? fallback : null;
+  // One definition, in the library: a second copy here is what let a
+  // `runAttempt` mismatch slip through unnoticed.
+  return approvalClockForState({ state, runId: run.runId, runAttempt: run.runAttempt, now });
 }
 
-/** The older of two candidate clocks, or `now` when neither applies. */
-function olderWaitClock(a: number | null, b: number | null, now = Date.now()): number {
-  const candidates = [a, b].filter((value): value is number => value !== null);
-  return candidates.length === 0 ? now : Math.min(...candidates);
+/** The oldest candidate clock, or `now` when none applies. */
+function olderWaitClock(candidates: ReadonlyArray<number | null>, now = Date.now()): number {
+  const times = candidates.filter((value): value is number => value !== null);
+  return times.length === 0 ? now : Math.min(...times);
 }
 
 /** The artifact the workflow uploads: a sibling of the restored file. */

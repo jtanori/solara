@@ -476,30 +476,37 @@ export function sameObservation(a: ObservationKey | null, b: ObservationKey): bo
 }
 
 /**
- * Which stored clock applies to the *current* subject (M5).
+ * Which stored clock applies to the *current* subject (M5, R3-1).
  *
  * Comparing raw timestamps alone is not enough: an issue opened for `sha0` at
  * 04:00 is older than an artifact written for `sha1` at 05:02, so "oldest wins"
- * would keep re-selecting a clock that belongs to a subject the current tick
- * does not have. `clockApplies` then rejects it, the clock resets to now, and
- * the new subject can never age past the horizon — the issue freezes forever.
+ * would keep re-selecting a clock the current tick cannot use. `clockApplies`
+ * then rejects it, the clock resets to now, and the new subject can never age
+ * past the horizon — the issue freezes forever.
  *
- * So: prefer a store whose recorded subject matches this tick, and only then
- * take the older of the matching candidates.
+ * The subtle version of that bug is a *family* mismatch. An open
+ * `overdue-approval` issue is older than the commit clock and matches by
+ * timestamp, but the commit check cannot use an approval clock: selecting it
+ * resets the commit subject to `now` on every tick and `stale-commit` never
+ * fires while the stale issue stays open.
+ *
+ * So a candidate is only eligible when its kind belongs to the **single family
+ * this tick is asking about**, and nothing else matches.
  */
 export function reconcileState(input: {
   artifact: MonitorState | null;
   issue: MonitorState | null;
+  headCommit: string | null;
   liveCommit: string | null;
   migrations: MigrationState | null;
+  envMismatch?: boolean;
 }): MonitorState | null {
-  const { artifact, issue, liveCommit, migrations } = input;
+  const { artifact, issue, headCommit, liveCommit, migrations, envMismatch = false } = input;
 
   /**
-   * Each candidate is matched by *its own* kind family, not by both fields. A
-   * schema clock must not be invalidated because a deploy moved, and a commit
-   * clock must not be invalidated because a migration ran — coupling them
-   * re-creates the cross-subject reset this function exists to prevent.
+   * One family is active per tick, and it is decided by the same conditions
+   * `classifyDrift` uses — in the same order. A clock outside that family is
+   * simply not a candidate.
    */
   const matches = (state: MonitorState | null): boolean => {
     if (state === null) return false;
@@ -508,16 +515,22 @@ export function reconcileState(input: {
     if (state.firstObserved === null) return false;
     if (Number.isNaN(Date.parse(state.firstObserved))) return false;
 
-    if (COMMIT_CLOCK_KINDS.includes(state.kind)) {
-      return state.liveCommit !== null && state.liveCommit === liveCommit;
+    if (envMismatch) return state.kind === "env-mismatch";
+
+    // Head ahead of live: the commit check is the one that ages here.
+    if (headCommit !== null && liveCommit !== null && headCommit !== liveCommit) {
+      return COMMIT_CLOCK_KINDS.includes(state.kind) && state.liveCommit !== null && state.liveCommit === liveCommit;
     }
-    if (MIGRATION_CLOCK_KINDS.includes(state.kind)) {
-      return state.migrations !== null && state.migrations === migrations;
+
+    // Otherwise schema drift is the active family, if there is any.
+    if (migrations !== null && migrations !== "exact") {
+      return MIGRATION_CLOCK_KINDS.includes(state.kind) && state.migrations !== null && state.migrations === migrations;
     }
-    if (state.kind === "env-mismatch") return true;
-    // Approval and transient clocks are not reconciled against a subject here;
-    // they are keyed by (runId, runAttempt) by the caller.
-    return true;
+
+    // Nothing is ageing: a commit clock matching head === live is a clock for a
+    // subject that is no longer drifting, and an approval or transient clock
+    // belongs to a run, not to this tick.
+    return false;
   };
 
   const candidates = [artifact, issue].filter(matches) as MonitorState[];
@@ -789,6 +802,24 @@ export function resolveApprovalWaitStart(input: {
   return null;
 }
 
+/**
+ * The clock a store holds for exactly this run attempt, or `null` when it holds
+ * none. A retried attempt is a new wait, so the attempt has to match too — an
+ * attempt-1 clock must not age attempt 2.
+ */
+export function approvalClockForState(input: {
+  state: MonitorState | null;
+  runId: number;
+  runAttempt: number;
+  now: number;
+}): number | null {
+  const { state, runId, runAttempt, now } = input;
+  if (state === null || state.firstObserved === null) return null;
+  if (state.runId !== runId || state.runAttempt !== runAttempt) return null;
+  const parsed = Date.parse(state.firstObserved);
+  return !Number.isNaN(parsed) && parsed <= now ? parsed : null;
+}
+
 /** The fallback clock for a waiting run, keyed by `(runId, runAttempt, environment)`. */
 export function approvalFallbackClock(input: {
   state: MonitorState | null;
@@ -796,12 +827,7 @@ export function approvalFallbackClock(input: {
   runAttempt: number;
   now: number;
 }): number {
-  const { state, runId, runAttempt, now } = input;
-  if (state !== null && state.runId === runId && state.runAttempt === runAttempt && state.firstObserved !== null) {
-    const parsed = Date.parse(state.firstObserved);
-    if (!Number.isNaN(parsed) && parsed <= now) return parsed;
-  }
-  return now;
+  return approvalClockForState(input) ?? input.now;
 }
 
 export function waitingFor(run: InFlightRun, now: number, fallback: number): number {
