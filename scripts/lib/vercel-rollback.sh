@@ -89,6 +89,24 @@ deploy_page_ok() {
   [[ "$code" == "200" && -s "$body" ]]
 }
 
+# Classify one page probe as ok | auth | page. A 401/403 is a protection/config
+# symptom, never evidence that the release is broken, so it must not reach the
+# rollback decision (#212 review). Classifying after the retry loop keeps a
+# late 401/403 — protection flipped mid-rollout — from being reported as a page
+# failure.
+deploy_page_class() {
+  local code="$1"
+  local body="$2"
+  if deploy_page_ok "$code" "$body"; then
+    printf 'ok'
+    return 0
+  fi
+  case "$code" in
+    401|403) printf 'auth' ;;
+    *) printf 'page' ;;
+  esac
+}
+
 # Instant Rollback. The endpoint path below is the only part of this file that has NOT been
 # exercised against the live Vercel API (it needs a real VERCEL_TOKEN); #76's acceptance requires
 # exercising it once live, which is what confirms it. Every failure path prints manual recovery

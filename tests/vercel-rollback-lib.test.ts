@@ -75,3 +75,25 @@ rm -f "$ok" "$empty"`);
     "401+body:fail",
   ]);
 });
+
+test("deploy_page_class separates a protection block from a broken release", () => {
+  // 401/403 must be "auth", never "page": only "page"/"readiness" reach the
+  // rollback decision, so a misclassification would move production for a
+  // configuration problem (#212 review).
+  const out = bash(`${SOURCE}
+ok=$(mktemp); printf '<html>app</html>' > "$ok"
+empty=$(mktemp)
+for code in 200 401 403 500 000; do
+  printf '%s:%s\\n' "$code" "$(deploy_page_class "$code" "$ok")"
+done
+printf '200-empty:%s\\n' "$(deploy_page_class 200 "$empty")"
+rm -f "$ok" "$empty"`);
+  assert.deepEqual(out.trim().split("\n"), [
+    "200:ok",
+    "401:auth",
+    "403:auth",
+    "500:page",
+    "000:page",
+    "200-empty:page",
+  ]);
+});

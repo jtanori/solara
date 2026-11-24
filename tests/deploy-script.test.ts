@@ -43,8 +43,22 @@ test("page-health failures share the rollback and deploy-record path", () => {
   assert.match(script, /DEPLOY_FAILURE="page"/);
   assert.match(script, /DEPLOY_FAILURE="auth"/);
   assert.match(script, /FAILED \$DEPLOY_FAILURE/);
-  assert.match(script, /deploy_page_ok/);
+  assert.match(script, /deploy_page_class/, "the page probe is classified, not just measured");
+  assert.match(script, /deploy_page_ok/, "rollback verification still uses the boolean check");
   assert.match(script, /record_deploy .* "FAILED \$DEPLOY_FAILURE"/);
   assert.match(script, /not executed \(auth\/config\)/, "auth failures record without an automatic rollback");
   assert.match(script, /rollback did not restore readiness and page rendering/);
+});
+
+test("the page probe is classified on every attempt and stops on auth", () => {
+  // Protection can be enabled mid-rollout. Classifying inside the loop and
+  // breaking on "auth" keeps a late 401/403 out of the rollback decision (#212).
+  const loop = script.slice(
+    script.indexOf('PAGE_STATE=""'),
+    script.indexOf('case "$PAGE_STATE" in'),
+  );
+  assert.match(loop, /for i in \{1\.\.12\}/);
+  assert.match(loop, /PAGE_STATE="\$\(deploy_page_class "\$PAGE_CODE" "\$PAGE_TMP"\)"/);
+  assert.match(loop, /\[\[ "\$PAGE_STATE" == "ok" \|\| "\$PAGE_STATE" == "auth" \]\] && break/);
+  assert.doesNotMatch(loop, /deploy_page_ok/, "the loop must not retry past an auth block");
 });

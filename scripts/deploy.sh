@@ -474,27 +474,27 @@ else
   PAGE_TMP="$(mktemp)"
   CLEANUP_FILES+=("$PAGE_TMP")
   page_curl() { deploy_ready_curl "$APP_URL/account" "$PAGE_TMP"; }
-  PAGE_CODE="$(page_curl || true)"
-  case "$PAGE_CODE" in
-    401|403)
+  # Classify every probe, not just the first: protection can turn on mid-rollout,
+  # and a late 401/403 must not be recorded as a broken release.
+  PAGE_STATE=""
+  for i in {1..12}; do
+    PAGE_CODE="$(page_curl || true)"
+    PAGE_STATE="$(deploy_page_class "$PAGE_CODE" "$PAGE_TMP")"
+    [[ "$PAGE_STATE" == "ok" || "$PAGE_STATE" == "auth" ]] && break
+    sleep 5
+  done
+  case "$PAGE_STATE" in
+    ok)
+      echo "✅ $APP_URL/account → 200" ;;
+    auth)
       DEPLOY_FAILURE="auth"
       FAILURE_DETAIL="HTTP $PAGE_CODE (Vercel Authentication)"
       echo "ERROR: $APP_URL/account is blocked by Vercel Authentication (HTTP $PAGE_CODE)." >&2
       echo "Set VERCEL_AUTOMATION_BYPASS_SECRET for this environment and re-run." >&2 ;;
     *)
-      PAGE_OK=false
-      for i in {1..12}; do
-        PAGE_CODE="$(page_curl || true)"
-        if deploy_page_ok "$PAGE_CODE" "$PAGE_TMP"; then PAGE_OK=true; break; fi
-        sleep 5
-      done
-      if [[ "$PAGE_OK" == true ]]; then
-        echo "✅ $APP_URL/account → 200"
-      else
-        DEPLOY_FAILURE="page"
-        FAILURE_DETAIL="last HTTP $PAGE_CODE"
-        echo "ERROR: $APP_URL/account did not render (last HTTP $PAGE_CODE); the deployment cannot boot its database module." >&2
-      fi ;;
+      DEPLOY_FAILURE="page"
+      FAILURE_DETAIL="last HTTP $PAGE_CODE"
+      echo "ERROR: $APP_URL/account did not render (last HTTP $PAGE_CODE); the deployment cannot boot its database module." >&2 ;;
   esac
 fi
 
