@@ -8,6 +8,7 @@ node_modules/
 !.env.example
 !.env.staging.example
 !.env.production.example
+!.env.pilot.example
 *.tsbuildinfo
 coverage/
 migrate.log
