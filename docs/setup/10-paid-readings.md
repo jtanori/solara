@@ -208,6 +208,9 @@ calculation fixture: baseline, DST-fold earlier/later, southern hemisphere,
 leap-day, and unavailable polar natal angles. Numerical fixtures are not prose
 quality approval and are not professional certification.
 
+Campaign sequencing, the Spanish-first split and the gates are tracked in
+[content qualification](../plan-content-qualification-109.md).
+
 Offline commands need no database, network, flags or credentials:
 
 ```bash

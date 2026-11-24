@@ -50,7 +50,7 @@ Decided by the operator on 2026-11-22 (recorded on #103 and #109):
 | Locale | `es` for the pilot; `--locale en` is allowed for a later authorized parity run |
 | Hard cap | 10 MXN per invocation; the pilot total is two explicit invocations (≤20 MXN) |
 | Coverage without spend | the full six-case corpus × both locales runs under fake transport in tests |
-| Editorial qualification | #109, separately authorized; amended sample is 3 es + 1 en parity per profile |
+| Editorial qualification | #109, separately authorized. Six complete reports per locale per profile; Spanish first. English sampling (stage B.2) is deferred to a post-production update — see [content qualification](plan-content-qualification-109.md). |
 
 The CLI hard cap is **per invocation**. The 20 MXN pilot total is the sum of the
 two explicitly authorized profile runs; a third invocation or a new pilot id is
@@ -294,6 +294,12 @@ Named mutations for the PR:
   fail.
 
 ## 11. Operator procedure
+
+The #109 qualification campaign is tracked in
+[content qualification](plan-content-qualification-109.md): Spanish core and rich,
+six corpus cases each, once the #105 disclosure is signed and the configuration is
+frozen. English sampling is deferred post-production. This document remains the
+sampler's design gate; the campaign document adds the reporting and review gates.
 
 1. Use an isolated shell, never Vercel, never production.
 2. Set the provider/processor/model/price variables for the intended profile.
