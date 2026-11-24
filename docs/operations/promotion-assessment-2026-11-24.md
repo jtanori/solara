@@ -184,7 +184,7 @@ merge-base --is-ancestor origin/main origin/staging  -> exit 1
 
 A **back-merge PR `main → staging`** must land before `deploy.sh` will consider a promotion. The
 November runbook's Step 1 covers this. It is a pure ancestry commit — `main` has nothing `staging`
-lacks except `BACKLOG.md`, whose removal is correct (ADR 009).
+lacks except one retired file whose removal is correct under ADR 009.
 
 ---
 
