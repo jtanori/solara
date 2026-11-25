@@ -101,6 +101,9 @@ test("a conflicting promotion is reported as conflicted, not as stale content", 
     const result = verdict(r.dir, head, main);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), "conflicted");
+    // #244: the CLI prints the conflicting paths on stderr so deploy.sh can show them without
+    // a second `git merge-tree` call.
+    assert.match(result.stderr, /a\.txt/);
   } finally {
     rmSync(r.dir, { recursive: true, force: true });
   }
