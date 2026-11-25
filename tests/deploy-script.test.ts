@@ -85,3 +85,15 @@ test("the page probe is classified on every attempt and stops on auth", () => {
   assert.match(loop, /\[\[ "\$PAGE_STATE" == "ok" \|\| "\$PAGE_STATE" == "auth" \]\] && break/);
   assert.doesNotMatch(loop, /deploy_page_ok/, "the loop must not retry past an auth block");
 });
+
+test("a promotion rehearses on staging before the production migration (#245)", () => {
+  // The production gate looks for a green `migrate staging pr-<n> <sha>` run for the promotion's
+  // head. The script must dispatch that rehearsal first, then production citing the same PR.
+  const staging = script.indexOf('dispatch_migrate staging "$PR" "$HEAD_SHA" ""');
+  const production = script.indexOf('dispatch_migrate production "$PR" "$HEAD_SHA" "$PR"');
+  assert.ok(staging > 0, "the staging rehearsal is dispatched");
+  assert.ok(production > staging, "production runs after the rehearsal");
+  assert.match(script, /if \[\[ "\$WORKFLOW_ENV" == "production" \]\]/);
+  assert.match(script, /dispatch_migrate "\$WORKFLOW_ENV" "\$PR" "\$HEAD_SHA" ""/, "a feature PR keeps its single staging dispatch");
+  assert.doesNotMatch(script, /gh workflow run migrate\.yml/, "the dispatch lives in the shared helper");
+});
