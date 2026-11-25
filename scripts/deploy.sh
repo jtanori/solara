@@ -29,6 +29,8 @@ source "$SCRIPT_DIR/lib/vercel-rollback.sh"
 source "$SCRIPT_DIR/lib/deploy-policy.sh"
 # shellcheck source=lib/vercel-preview.sh
 source "$SCRIPT_DIR/lib/vercel-preview.sh"
+# shellcheck source=lib/migrate-dispatch.sh
+source "$SCRIPT_DIR/lib/migrate-dispatch.sh"
 
 PR=""
 ENV=""
@@ -349,8 +351,7 @@ fi
 case "$(decide_skip_migrate "$NEEDS_MIGRATE" "$SKIP_MIGRATE" "$FORCE" "$ENV")" in
   refuse-production)
     echo "ERROR: --skip-migrate is refused for production." >&2
-    echo "       Run the migration through .github/workflows/migrate.yml with --rehearsal-pr first," >&2
-    echo "       then deploy without the flag." >&2
+    echo "       deploy.sh performs the staging rehearsal itself (#245); run it without --skip-migrate." >&2
     exit 1
     ;;
   refuse-force)
@@ -367,35 +368,31 @@ esac
 
 if [[ "$NEEDS_MIGRATE" == true ]]; then
   echo ""
-  echo ">> PR touches drizzle — will run .github/workflows/migrate.yml via GitHub Environment '$WORKFLOW_ENV' BEFORE merge."
+  echo ">> PR touches drizzle — will run .github/workflows/migrate.yml BEFORE merge."
   echo ">> Checkout SHA $HEAD_SHA (PR head, not base branch) so new drizzle/*.sql is included."
-  if [[ "$YES" != true ]]; then read -rp "Trigger migrate workflow for $WORKFLOW_ENV (pr #$PR, sha $HEAD_SHA)? [y/N] " ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
+  if [[ "$WORKFLOW_ENV" == "production" ]]; then
+    echo ">> A promotion rehearses on staging at this exact SHA first: the production gate requires it (#245)."
+    PROMPT="Trigger the staging rehearsal and the production migration for pr #$PR, sha $HEAD_SHA? [y/N] "
+  else
+    PROMPT="Trigger migrate workflow for $WORKFLOW_ENV (pr #$PR, sha $HEAD_SHA)? [y/N] "
+  fi
+  if [[ "$YES" != true ]]; then read -rp "$PROMPT" ans; if [[ "$ans" != "y" && "$ans" != "Y" ]]; then echo "Aborted."; exit 1; fi; fi
   if ! git cat-file -e "$HEAD_SHA:.github/workflows/migrate.yml" 2>/dev/null; then
     echo "ERROR: .github/workflows/migrate.yml not found on PR head $HEAD_SHA — push it first" >&2; exit 1
   fi
-  echo "Triggering workflow (ref=$HEAD_REF sha=$HEAD_SHA)..."
-  BEFORE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  gh workflow run migrate.yml --repo jtanori/solara --ref "$HEAD_REF" -f env="$WORKFLOW_ENV" -f pr="$PR" -f sha="$HEAD_SHA" || { echo "ERROR: could not trigger migrate.yml" >&2; exit 1; }
-  echo "Workflow dispatched. Waiting for run (run-name: migrate $WORKFLOW_ENV pr-$PR $HEAD_SHA)..."
-  sleep 5
-  # Poll for run with matching sha/env/pr and createdAt after dispatch — avoids picking stale run.
-  # Use shell interpolation into jq (gh's --jq does not support --arg); PR numeric and SHA hex are safe.
-  RUN_ID=""
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    RUN_ID=$(gh run list --workflow=migrate.yml --repo jtanori/solara --limit 20 --json databaseId,displayTitle,createdAt --jq "[.[] | select(.displayTitle | contains(\"$HEAD_SHA\") and contains(\"$WORKFLOW_ENV\") and contains(\"$PR\")) | select(.createdAt > \"$BEFORE\") | .databaseId] | first // empty")
-    if [[ -n "$RUN_ID" ]]; then break; fi
-    sleep 3
-  done
-  if [[ -z "$RUN_ID" ]]; then
-    RUN_ID=$(gh run list --workflow=migrate.yml --repo jtanori/solara --limit 10 --json databaseId,displayTitle --jq "[.[] | select(.displayTitle | contains(\"$HEAD_SHA\")) | .databaseId] | first // empty")
+
+  if [[ "$WORKFLOW_ENV" == "production" ]]; then
+    # #245: the production gate looks for a green `migrate staging pr-<n> <sha>` run whose SHA is
+    # this promotion's head. Rehearse here instead of asking the operator to dispatch it by hand.
+    # It is a real migrate at the exact SHA: usually a no-op, but it also repairs a missed staging
+    # apply before production sees the schema.
+    dispatch_migrate staging "$PR" "$HEAD_SHA" "" || exit 1
+    dispatch_migrate production "$PR" "$HEAD_SHA" "$PR" || exit 1
+    MIGRATIONS_RECORD="applied (production; rehearsed on staging)"
+  else
+    dispatch_migrate "$WORKFLOW_ENV" "$PR" "$HEAD_SHA" "" || exit 1
+    MIGRATIONS_RECORD="applied ($WORKFLOW_ENV)"
   fi
-  if [[ -z "$RUN_ID" ]]; then echo "ERROR: no migrate run found for sha $HEAD_SHA" >&2; exit 1; fi
-  echo "Watching run $RUN_ID..."
-  gh run watch "$RUN_ID" --repo jtanori/solara 2>&1 | tail -30
-  CONCLUSION=$(gh run view "$RUN_ID" --repo jtanori/solara --json conclusion --jq .conclusion)
-  if [[ "$CONCLUSION" != "success" ]]; then echo "ERROR: migrate workflow $RUN_ID $CONCLUSION — gh run view $RUN_ID --log" >&2; exit 1; fi
-  echo "✅ Migrations complete for $WORKFLOW_ENV (run $RUN_ID, sha $HEAD_SHA)"
-  MIGRATIONS_RECORD="applied ($WORKFLOW_ENV)"
 else
   echo "Skipping remote migrate step."
   MIGRATIONS_RECORD="skipped"

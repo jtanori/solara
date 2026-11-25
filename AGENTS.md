@@ -158,7 +158,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 
 **Deploy record:** every merge to `main` is recorded by `.github/workflows/deploy-record.yml` — one release (`deploy/production/<sha7>`) and one PR comment — after it verifies `/api/version` reports the merge commit and `/api/ready` is green. `docs/deploys.md` is frozen; never record a deploy by hand.
 
-**Deploy gate:** `scripts/deploy.sh` runs a read-only hosted `db-remote --check --env <env> --branch <reviewed-ref> --sha <reviewed-sha>` before merge, then merges with `--match-head-commit` on that SHA, waits for Vercel's status on the merge SHA, and requires `/api/ready`. Protected Vercel environments need `VERCEL_AUTOMATION_BYPASS_SECRET`; missing or 401/403 is a hard failure. `db:check` is local drift; `db:check:remote` is the hosted dispatch.
+**Deploy gate:** `scripts/deploy.sh` runs a read-only hosted `db-remote --check --env <env> --branch <reviewed-ref> --sha <reviewed-sha>` before merge, then merges with `--match-head-commit` on that SHA, waits for Vercel's status on the merge SHA, and requires `/api/ready`. Protected Vercel environments need `VERCEL_AUTOMATION_BYPASS_SECRET`; missing or 401/403 is a hard failure. `db:check` is local drift; `db:check:remote` is the hosted dispatch. A promotion that changes `drizzle/` rehearses the promotion SHA on staging first, then dispatches production with `rehearsal_pr`; there is no manual second dispatch (#245).
 
 ---
 
