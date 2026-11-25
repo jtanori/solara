@@ -40,6 +40,10 @@ export function renderHeader() {
 }
 
 function main() {
+  if (process.argv[2] === "--header") {
+    process.stdout.write(renderHeader() + "\n");
+    return;
+  }
   let record;
   try {
     record = JSON.parse(process.argv[2] ?? "{}");
