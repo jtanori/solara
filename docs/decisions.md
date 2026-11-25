@@ -4,6 +4,20 @@ This document records durable product and process decisions as Architecture Deci
 
 ---
 
+> **Operating model in force (2026-11-24).** Read this before any ADR below: several records
+> describe a target state that is not implemented yet.
+>
+> | Question | Answer today |
+> | --- | --- |
+> | What deploys `staging` / `main`? | Vercel's Git integration on merge. `scripts/deploy.sh` is the documented gate but optional; M5 (ADR 013) is **not started**. |
+> | Promotion gate | `scripts/promotion-ancestry.ts` content verdict + the required `promotion-guard` check (ADR 014). No back-merge exists. |
+> | Merge methods | `staging`: squash only. `main`: merge commit only. Enforced by `allowed_merge_methods` in the rulesets, not by repo-level toggles. |
+> | Strict required checks | `staging`: on. `main`: off — a promotion merge commit always leaves `main` ahead; `promotion-guard` supplies the real guarantee. |
+> | Reviews | COMMENT-only, 0 approvals, conversation resolution required. No approval counts (PR_WORKFLOW §0). |
+> | Environments | `staging`, `production`, `monitoring`, with **no** protection rules. `production-migrations` does not exist (M5). |
+
+---
+
 ## ADR 001 — Branching model: `feature → staging → main`
 
 **Date:** 2026-11-07  
@@ -27,6 +41,13 @@ We need environment isolation for a prototype that will handle personal data and
 - **Branch protection — `main` (applied 2026-11-07 as `protect-main`):**
   - Same as `staging` except **no linear history** (merge commits allowed for promotions), plus required approvals deferred to `1` once a second maintainer exists (per #1 spec). Today `0` — self-merge is allowed; `gh pr review --approve` from author is blocked by GitHub (expected).
 - **Documentation:** `docs/setup/01-foundation-and-deployment.md` is kept aligned with the above.
+
+> **Amended 2026-11-24 (#244).** The "Merge settings" bullet above conflated repository toggles
+> with per-branch policy; a toggle never enforced anything per branch. Merge methods are enforced by
+> `allowed_merge_methods` in the rulesets: squash-only on `staging`, merge-commit-only on `main`. The
+> "approvals deferred to 1" clause is superseded by PR_WORKFLOW §0: this repository requires no
+> approval counts while one human and multiple agents share an identity. The `166539f` anchor is
+> historical and no longer describes the branch relationship.
 
 ### Consequences
 - Every change is reviewed, CI-gated, and promoted through staging before production.
@@ -86,8 +107,17 @@ With a single collaborator, requiring approving reviews blocks progress, but unr
 - Branch protection requires **conversation resolution** — open review comments must be resolved before merge (enforced via `protect-staging`/`protect-main` Rulesets).
 - Merge method is **squash for `feature → staging`** (one commit per feature), **merge commit for `staging → main`** (preserves ancestry so `staging` remains ancestor of `main` and future promotions diff only new work). Repo `allow_squash_merge:true` + `allow_merge_commit:true` + `delete_branch_on_merge:true` (verify via `gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` → `{true,true,false,true}`). See PR #23 review for rationale.
 
+> **Amended 2026-11-24 (#244).** Two corrections. (1) The ancestry rationale was backwards: a
+> merge-commit promotion is created on `main`, so it always leaves `main` one commit ahead of
+> `staging`; containment is not preserved and was never the protection. The reasons for a merge
+> commit are the promotion record and the second parent. (2) `mergeStateStatus: CLEAN` is a mutable
+> UI computation — #243 reported `BEHIND` and then `CLEAN` with no history change — so the gate
+> requires green required checks plus `promotion-guard` and treats the UI state as advisory. The
+> cited PR #23 was itself a squash promotion and is not evidence for the merge-commit rule.
+
 ### Consequences
-- Human-readable review history is kept in PR comments; `mergeStateStatus` must be `CLEAN` and `verify` green.
+- Human-readable review history is kept in PR comments; `mergeStateStatus` is advisory and `verify` must be green.
+
 
 ---
 
@@ -524,6 +554,63 @@ require a PR and the `verify` check, so merges are audited — but audit is not 
   re-land through a normal PR.
 - A database that could not be inspected is a failed run, never schema drift (#236). Verify and
   dry-run may legitimately report `drift`; a guard or connection error is fatal in every mode.
+
+> **Amended 2026-11-24 (#244).** Status correction: "GitHub Actions is the only deployer" and "both
+> production environments are `main`-only" are **not in force**. Vercel deploys on merge, and the
+> `production` environment has no branch policy or reviewer. The #236/#238/#240 paragraphs above are
+> implementation notes; the invariant is ADR 014. The premise that `protect-main`'s strict check
+> refuses a `BEHIND` promotion is unverified — #49 and #51 merged while behind under that ruleset,
+> and #243 reported `CLEAN` while `compare` said `diverged`. The hotfix clause is superseded by ADR
+> 014: every change reaches `main` through `staging`.
+
+---
+
+## ADR 014 — A promotion is gated on content by a required guard, not on ancestry
+
+**Date:** 2026-11-24
+**Status:** Accepted
+**Issue:** #244
+
+### Context
+`feature → staging → main` (ADR 001) uses a merge-commit promotion (ADR 004). That commit is created
+on `main`, so it always leaves `main` one commit ahead of `staging`: content-identical, but not an
+ancestor. `protect-main` required an up-to-date head, and `protect-staging` forbids the merge commit
+that used to restore containment (`required_linear_history`, no bypass actors). Each promotion
+therefore re-created the condition that blocked the next one.
+
+The recorded remedies did not survive contact: `deploy.sh` called `git merge-tree --write-tree`,
+which needs git 2.38 (the operator's machine had 2.37.1), and its final check still demanded
+`mergeStateStatus: CLEAN` after the content gate had allowed the promotion. Nothing enforced the
+merge method either: the ruleset permitted squash, which is how #23/#38/#42 destroyed ancestry in
+the first place.
+
+### Decision
+- **`main`**: `strict_required_status_checks_policy: false`, `allowed_merge_methods: ["merge"]`,
+  required checks `verify` and `promotion-guard`.
+- **`staging`**: strict checks on, `allowed_merge_methods: ["squash"]`, `required_linear_history`.
+- **`promotion-guard`** runs on every PR into `main`. It refuses a fork, refuses any head other than
+  `staging`, and accepts only `ancestor` or `content-contained` from
+  `scripts/promotion-ancestry.ts`. It uses no GitHub API, so an outage cannot block a merge.
+- **`deploy.sh`** makes the same call for its base-freshness gate: one implementation, git-2.37
+  compatible, no override flag.
+- **Hotfixes** use `hotfix/* → staging → promotion`. There is no label escape.
+- **Governance:** a ruleset change requires an amendment here and a
+  `scripts/check-branch-policy.ts` read-back in the PR that requests it.
+
+### Consequences
+- The promotion loop ends: no back-merge, no rule toggling, no dependency on bypass actors (which a
+  user-owned repository cannot have).
+- A squash promotion is impossible. A main-only change blocks the next promotion until it is
+  re-landed on `staging` — the intended forward-port.
+- The guarantee is narrower than strict in one place: the guard runs at PR time, so a commit landing
+  on `main` *between* the guard and the merge is not re-checked. Promotions come only from
+  `staging`, so the ordinary case is content already on `staging`; a merge queue on `main` is the
+  follow-up that closes the race.
+- Migration-bearing promotions remain blocked by the rehearsal model, which assumes a PR-shaped
+  deploy (#245); this ADR does not change that.
+- `staging` keeps strict checks, where a stale PR is cheap to update and a squash result is not
+  provably identical to the tested head.
+
 - `scripts/deploy.sh` is retired once Deployments-aware monitoring exists; `scripts/promote.sh`
   only opens the promotion PR and watches the resulting run.
 - `migrate.yml` becomes break-glass: verify plus an emergency forward-fix, with an operator dispatch

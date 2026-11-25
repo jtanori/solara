@@ -4,6 +4,10 @@
 > gitignored snapshot — see **ADR 009** and #132. References to it below describe the state at the
 > time of writing.
 
+> **Superseded in part (2026-11-24, #244).** The back-merge steps below no longer exist:
+> promotions are gated on content (ADR 014). This file is kept as the record of the first
+> production promotion; follow `production-deploy-checklist.md` for a current one.
+
 > **Superseded in part (2026-11-10, later):** the operator confirmed production has **no accounts**
 > ("everything is new"), the mail provider is **Resend**, and `deploy.sh` can be run with Vercel
 > access. HAZARD A in §1 is therefore a **no-op on an empty database**, and the mitigation below is
@@ -19,16 +23,11 @@ Authority: `docs/operations/production-migration-gate.md`, ADR 004, ADR 008.
 
 This is not a routine promotion. Three facts change the sequence:
 
-1. **`main` is not an ancestor of `staging`,** so `scripts/deploy.sh` **refuses this PR before
-   merging**. Replayed against the real refs:
-   ```
-   merge-base --is-ancestor origin/main origin/staging -> exit 1
-   BEHIND=5
-   trial merge-tree -> exit 0 (conflict-free)
-   => ERROR: refusing to deploy a conflict-free stale PR — update the branch first.
-   ```
-   The new base-freshness gate (#124) has no override by design. A **back-merge PR
-   `main → staging` must land first.**
+1. **`main` was not an ancestor of `staging`,** so the old base-freshness gate refused the PR.
+   Since #244 the gate decides on **content**, not ancestry (ADR 014):
+   `npx tsx scripts/promotion-ancestry.ts --head <staging> --base <main>`. `content-contained`
+   proceeds; `needs-back-merge` means re-land the missing change on `staging`. No back-merge PR
+   exists in this model.
 2. **Production has never been migrated.** All 11 `migrate` runs in repository history are staging.
    The last production provisioning attempt was the #52 incident, which closed by provisioning
    *staging only*; #52's own resolution says production is still unprovisioned. So the first
@@ -39,9 +38,9 @@ This is not a routine promotion. Three facts change the sequence:
 
 ### The good news, verified
 
-- The back-merge is a **pure ancestry commit, zero file changes.** Main has nothing staging lacks:
-  `git diff origin/staging...origin/main` is empty, and the trial merge tree is byte-identical to
-  `origin/staging`'s tree (`703022d`). So the back-merge is free and reviewable in a minute.
+- **The promotion is content-contained.** `main` carries nothing `staging` lacks, so the content
+  verdict proceeds without a back-merge. That is the property the gate checks on every promotion;
+  since 2026-11-24 it replaced the ancestry proof (#244).
 - **Only additive DDL.** `0001` creates `rate_limits` (+1 index); `0002` creates `email_tokens`
   (+1 index), adds nullable `users.email_verified_at`; `0003` creates `generation_cache` and
   `reading_documents` (+1 unique index). No table, column or index is dropped anywhere in the diff
@@ -132,47 +131,25 @@ Run the repo's own check: `node scripts/check-setup.mjs production --strict`.
 
 ## 3. The sequence
 
-### Step 1 — back-merge `main → staging`
+### Step 1 — verify the content verdict (no back-merge)
 
-Branch: `chore/promote-sync-main`, base `staging`, **merge commit** (`--merge`, not squash; ADR 004).
+Promotions are gated on content, not ancestry (#244, ADR 014).
 
 ```bash
 git fetch origin main staging
-git switch -c chore/promote-sync-main origin/staging
-git merge --no-ff origin/main -m "chore: back-merge main into staging (promotion prerequisite)"
-git push origin chore/promote-sync-main
-gh pr create --base staging --head chore/promote-sync-main \
-  --title "chore: back-merge main into staging (promotion prerequisite)" \
-  --body-file <(cat <<'EOF'
-## Summary
-`main` is not an ancestor of `staging`, so `scripts/deploy.sh`'s base-freshness gate (#124)
-refuses the promotion PR. This back-merge restores ancestry so the promotion can be gated.
-
-**Zero file changes, verified:** `git diff origin/staging...origin/main` is empty and the trial
-merge tree `703022d` is identical to `origin/staging^{tree}`. The five commits brought in are
-merge commits already represented on staging.
-
-Closes nothing. Prerequisite for the `staging → main` promotion.
-
-## Evidence
-- [x] `git diff --stat origin/staging...origin/main` → empty
-- [x] `git merge-tree --write-tree origin/staging origin/main` → tree identical to staging
-- [x] CI `verify` on the new head
-EOF
-)
+npx tsx scripts/promotion-ancestry.ts \
+  --head "$(git rev-parse origin/staging)" \
+  --base "$(git rev-parse origin/main)"
 ```
 
-Wait for `verify` green and `mergeStateStatus: CLEAN`, then **`--merge`**.
+`ancestor` or `content-contained` → proceed. `needs-back-merge` → re-land the missing change on
+`staging` through a normal PR and re-run. `conflicted` → resolve it on `staging`.
 
-If the ruleset rejects the merge commit (`protect-staging` requires linear history), a squash does
-**not** restore ancestry: the content lands, the `main` SHAs do not, and the promotion is refused —
-by GitHub (`strict_required_status_checks_policy` keeps the PR `BEHIND`) and by `deploy.sh`'s
-base-freshness gate, which has no override. The one supported route is in
-`production-bootstrap-2026-11-10.md` §4.1a: lift `required_linear_history`, merge with `--merge`,
-restore the rule.
+Do not merge `main` into `staging`: `protect-staging` requires linear history and has no bypass
+actors. The required `promotion-guard` check runs the same verdict on the promotion PR.
 
-> Alternatively use the repo's own script: `./scripts/deploy.sh --pr <n> --env staging`, which
-> enforces every gate for you. It requires a full clone (not shallow).
+> The old Step 1 required a merge-commit back-merge plus a temporary ruleset change. Both are
+> retired as of 2026-11-24; the procedure remains in git history and must not be followed.
 
 ### Step 2 — open the promotion PR
 
@@ -268,9 +245,9 @@ Do not proceed past step 3 if:
 File these; they are real gaps, not wishes:
 
 1. **#77 before the second production deploy.** First deploy has zero error tracking.
-2. **`protect-main` sets `strict_required_status_checks_policy=true`.** Every staging merge makes a
-   promotion PR stale, requiring another back-merge. That is the structural cause of this runbook
-   existing; consider a scheduled `main → staging` sync or dropping strict for promotions only.
+2. **Promotion staleness is answered (#244, ADR 014).** `protect-main` no longer requires an
+   up-to-date head; the required `promotion-guard` check proves the base adds no content. A
+   scheduled sync is not needed.
 3. **A dry-run rehearsal path for the first migration of a brand-new database.** The gate assumes
    "staging already ran it", which is true per-migration but does not describe a first-ever apply.
 4. **#128 + #129** (readings accounting) — cheap, and they are open against code shipping here.
