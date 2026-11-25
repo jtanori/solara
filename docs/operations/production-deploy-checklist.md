@@ -89,10 +89,11 @@ Expected: 3 rows listed with target `Production`.
 
 ## Step 2 — Prove the promotion carries main's content
 
-`staging` requires linear history and its ruleset has no bypass actors, so a merge-commit
-back-merge cannot land (#240). The gate no longer asks for ancestry — after a merge-commit
-promotion `main` always carries a commit `staging` does not have. It asks whether merging
-`main` into the promotion head would change anything:
+Promotions are gated on content, not ancestry (ADR 014). `staging` requires linear history and its
+ruleset has no bypass actors, so a merge-commit back-merge cannot land. After a merge-commit
+promotion `main` always carries a commit `staging` does not have — so the gate asks whether merging
+`main` into the promotion head would change anything. The required `promotion-guard` check runs the
+same verdict:
 
 ```bash
 git fetch origin main staging

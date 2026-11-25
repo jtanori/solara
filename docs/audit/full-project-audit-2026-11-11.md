@@ -259,6 +259,12 @@ Three of those six were *documentation* defects, and all three had passed the te
 
 **Promotion strategy, actual state:** zero promotions. `main` sits 18 commits behind `staging`. The promotion runbook (`docs/operations/promotion-2026-11-10.md`, `production-bootstrap-2026-11-10.md` §4.1a) was rewritten several times during #133 and now correctly states the one supported route: a back-merge that is **not** a squash (a squash lands content but not ancestry, so `protect-main`'s strict check still refuses it), with `required_linear_history` lifted on `protect-staging` only for the merge, then restored.
 
+> **Correction (2026-11-24, #244).** This route is retired. Promotions are gated on content by
+> `scripts/promotion-ancestry.ts` and the required `promotion-guard` check (ADR 014); there is no
+> back-merge and no ruleset toggle. The "unrelated histories" framing of the 2026-11-07 incident is
+> also wrong: `git merge-base 039d9b6 7c73a11` returns `e779bec` (#36), so the conflict was add/add
+> from squash promotions, not a missing merge base.
+
 **Review mechanics that work:** COMMENT verdicts per SHA, every finding answered with the fix commit and re-run evidence, mutations checked in both directions, and unverified claims explicitly labelled unverified. **Review mechanics that failed:** treating a doc fix as done without reading the file back (a Python patch aborted mid-way and reported success), and trusting a test's title over what it asserted.
 
 ---

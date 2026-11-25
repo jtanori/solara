@@ -137,11 +137,14 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - **Flow:** `feature` (squash PR) → `staging` (QA on `staging.thanatos.mx`) → promotion `staging → main` (merge commit, **not** squash — ADR 004) → Vercel production. Deploy via `scripts/deploy.sh` (handles `drizzle/` migrations **before** merge via `migrate.yml`).
 - **Naming examples:** `docs/3-agents-guide`, `chore/6-dependabot`, `feat/10-stripe-lifecycle`.
 
-**Protection (applied 2026-11-07):**
-- Require PR, status check `verify`, conversation resolution, block force-push/deletion.
-- `staging`: linear history required. `main`: linear history **not** required (merge commits allowed for promotions).
-- Approvals: `0` on both while single collaborator (bump `main` to `1` when 2nd maintainer joins).
-- Repo settings: **squash + merge commit** for promotions, **auto-delete head branches** (`gh api repos/jtanori/solara --jq '{allow_squash_merge,allow_merge_commit,allow_rebase_merge,delete_branch_on_merge}'` → `{true,true,false,true}` — squash for features, merge for promotions).
+**Protection (applied 2026-11-07; promotion policy amended 2026-11-24 — ADR 014):**
+- Require PR, conversation resolution, block force-push/deletion.
+- Required checks: `verify` on both branches; `promotion-guard` on `main`.
+- `staging`: linear history required, **strict** up-to-date checks, `allowed_merge_methods: ["squash"]`.
+- `main`: no linear-history requirement (promotions are merge commits), **strict off**, `allowed_merge_methods: ["merge"]`. A merge-commit promotion always leaves `main` ahead, so "up to date" cannot apply; `promotion-guard` proves the base adds no content instead.
+- Approvals: `0` on both, permanently. PR_WORKFLOW §0 forbids approval counts while one human and multiple agents share an identity.
+- **Governance:** a ruleset change requires an ADR amendment in `docs/decisions.md` and a `npx tsx scripts/check-branch-policy.ts` read-back in the PR requesting it.
+- Repo settings: **squash + merge commit** enabled, **auto-delete head branches**, `allow_update_branch: true`.
 
 **Environments (target, see `docs/setup/00-manual-setup-ui.md` for UI clicks):**
 - **Staging:** Neon project `solara-staging` (pooled `DATABASE_URL` for Vercel Preview → `staging` branch; direct for `db-run` migrations), Vercel Preview env (`APP_URL=https://staging...`, Stripe **test** keys), isolated previews.
@@ -150,6 +153,8 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - Migrations: generate with `npx drizzle-kit generate --name=...` (review SQL + meta), run `npm run db:manifest`, test on fresh DB + staging, and apply through `db-run`/`migrate.yml` before code deploy (`push` forbidden on prod). See ADR 008. When a PR preview needs new schema before `deploy.sh` checks preview readiness, preflight the preview DB with `npx tsx scripts/db-remote.ts --pr <n> --env staging` against the PR head. After a migration that old code does not know (`0005`), rollback is forward-fix/restore; do not promote a pre-migration deployment and expect `/api/ready` to pass.
 
 **Verify:** `node scripts/check-setup.mjs staging|production --strict` + `GET /api/health` (liveness) + `GET /api/ready` (DB/schema/migrations/auth) + `RUN_BILLING_INTEGRATION_TESTS=1 npx tsx --test tests/*.test.ts`.
+
+**Promotion gate:** a `staging → main` PR must come from `staging` and pass `promotion-guard` (`ancestor` or `content-contained` from `scripts/promotion-ancestry.ts`). Never back-merge `main` into `staging`: a `needs-back-merge` verdict means re-landing the missing change on `staging` through a normal PR. `deploy.sh` runs the same verdict and works on git 2.37.
 
 **Deploy gate:** `scripts/deploy.sh` runs a read-only hosted `db-remote --check --env <env> --branch <reviewed-ref> --sha <reviewed-sha>` before merge, then merges with `--match-head-commit` on that SHA, waits for Vercel's status on the merge SHA, and requires `/api/ready`. Protected Vercel environments need `VERCEL_AUTOMATION_BYPASS_SECRET`; missing or 401/403 is a hard failure. `db:check` is local drift; `db:check:remote` is the hosted dispatch.
 
@@ -160,7 +165,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
 - **Reviews:** COMMENT-only until 2nd maintainer (author cannot approve own PR — GitHub blocks it). Protection requires `0` approvals but **conversation resolution** — all review comments must be resolved.
 - **A review exists only if it is on the PR** — a `COMMENT`-event review via `POST /pulls/<n>/reviews`, anchored inline comments, and the reviewed SHA in the body. A review pasted into chat, held in another workspace, or applied as uncommitted fixes is **not a review**: it cannot be resolved, audited or enforced. Fixes land as commits on the PR branch so CI runs on them. Mechanics, checklist (SEC-01…SEC-07), severity levels and suggestion-block format: [`docs/CODE_REVIEW.md`](docs/CODE_REVIEW.md).
 - **Test quality (SEC-07):** for any test that claims to guard a defect, break the code deliberately and watch it fail. A test that passes under mutation is decoration — this is the failure mode that produced #97 and #112.
-- **Merge:** **squash** for `feature → staging` (one commit per feature, `Closes #X` on its own line each — GitHub only closes the first if comma-separated). Promotions `staging → main` are **merge commit** (preserves `staging` ancestor — see ADR 004).
+- **Merge:** **squash** for `feature → staging` (one commit per feature, `Closes #X` on its own line each — GitHub only closes the first if comma-separated). Promotions `staging → main` are **merge commit** — it records the promotion and its second parent; it does **not** make `main` an ancestor of `staging` (ADR 014).
 - **Commits:** Conventional style, no secrets, `DATABASE_URL` never in message. Example:
   ```
   docs: add AGENTS.md operating guide (#3)
@@ -168,7 +173,7 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db APP_URL=http:/
   Closes #3
   ```
 - **Template:** use `.github/pull_request_template.md` (Summary, Linked issues, Evidence `tsc`/`eslint`/`tests`/`build`/smoke, Risk, Rollout/Rollback).
-- **CI gate:** `mergeStateStatus` must be `CLEAN`, `verify` green (1m15s-1m38s) + GitGuardian pass. Vercel and GitGuardian are **advisory** — only `verify` is a required status check, so a failing preview does not block a merge.
+- **CI gate:** required checks green (`verify`, plus `promotion-guard` on `main`); `mergeable` must be `MERGEABLE`. `mergeStateStatus` is advisory — it flipped `BEHIND → CLEAN` on #243 with no history change. Vercel and GitGuardian are advisory.
 - **Evidence, not adjectives:** the PR body's Evidence section takes command output or a CI link. **Never claim a check passed that was not run**; a check that could not run is reported as unrunnable, not omitted.
 - **Four-phase PR lifecycle:** pre-PR quality gate → filing → review → post-merge, including deploy classification labels (`deploy:required`/`deploy:skip`), the freshness/parallel-work procedure, the 403 escalation path, and the operator's no-merge-without-verdict rule: [`docs/PR_WORKFLOW.md`](docs/PR_WORKFLOW.md).
 
@@ -207,11 +212,12 @@ Full text: [`docs/decisions.md`](docs/decisions.md). Review mechanics: [`docs/CO
 - [ ] No secrets in diff, `.env` not committed, `ALLOW_LOCAL_SEED*` not in Vercel.
 - [ ] No backlog file to update (ADR 009); regenerate the snapshot only if you need it offline.
 - [ ] PR body: `Closes #X` per line, Evidence, Risk, Rollout/Rollback.
-- [ ] CI green (`verify` + GitGuardian) and `mergeStateStatus: CLEAN`.
+- [ ] CI green (`verify`; `promotion-guard` on a promotion) and `mergeable: MERGEABLE`.
 - [ ] Any review is **posted to the PR** (`COMMENT` event, inline findings, reviewed SHA named) — not pasted into chat.
 - [ ] For each test guarding a defect: mutation run, and the result recorded in the PR body.
 - [ ] Freshness: `git fetch origin staging`; if behind, merge the base in (never force-push a pushed branch) and re-run the full gates on the merged tree; open PRs checked for file overlap.
 - [ ] Before concluding a pushed commit is missing: compare `git rev-parse HEAD` with `git ls-remote origin <branch>`. In agent sandboxes the checkout can return to an earlier snapshot while the working tree keeps uncommitted edits, which looks like lost work and is not. Recover by copying the edits aside, `git reset --hard` to the pushed head, and re-applying them — never force-push to "restore" history. Confirm the old head is still an ancestor (`git merge-base --is-ancestor <old> <new>`) before reporting the recovery.
+- [ ] For a promotion: `promotion-guard` green, `promotion-ancestry` printed `ancestor`/`content-contained`, and `check-branch-policy` reported no drift.
 - [ ] Deploy classification label applied (`deploy:required`/`deploy:skip`) and the PR body carries the attestation, deviations, and mutations sections from the template.
 
 *Keep this file current — it is the contract for the next agent.*
