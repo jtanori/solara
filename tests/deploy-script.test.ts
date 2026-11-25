@@ -35,16 +35,27 @@ test("post-merge readiness does not downgrade failures to a warning", () => {
   assert.match(script, /did not become ready/);
 });
 
-test("a promotion is accepted on content, not ancestry, because staging forbids merge commits", () => {
-  assert.match(script, /promotion-ancestry\.ts --head "\$HEAD_SHA" --base "\$BASE_SHA"/);
-  assert.match(script, /if \[\[ "\$BASE_BRANCH" == "main" && "\$VERDICT" == "conflict-free" \]\]/);
-  assert.match(script, /ANCESTRY_VERDICT" == "content-contained"/);
+test("a promotion is decided by the content verdict on every git version", () => {
+  // #244: the gate used `git merge-tree --write-tree`, which needs git 2.38; the operator's
+  // machine has 2.37, so the gate exited 129 and the script refused every stale PR. The verdict
+  // now comes from the git-2.37 helper that `promotion-guard` also runs.
+  assert.match(script, /promotion-ancestry\.ts" --head "\$HEAD_SHA" --base "\$BASE_SHA"/);
+  assert.doesNotMatch(script, /git merge-tree/, "the git-2.38 trial merge must not come back");
+  assert.match(script, /content-contained/);
   assert.match(script, /ALLOW_PROMOTION=1/);
+  assert.match(script, /do not attempt a back-merge/);
   assert.match(script, /if \[\[ "\$ALLOW_PROMOTION" -ne 1 \]\]/, "the refusal is the fallthrough, not the default");
-  // The old remedy is impossible under `required_linear_history`; leaving it would send the
-  // operator to a command that cannot land.
   assert.doesNotMatch(script, /Only a merge into \$HEAD_REF makes that succeed/);
   assert.match(script, /Re-land those changes on \$HEAD_REF/);
+});
+
+test("a BEHIND promotion is accepted only when the content gate allowed it", () => {
+  // mergeStateStatus flipped BEHIND -> CLEAN on #243 with no history change, so it cannot be the
+  // decision. The content verdict is; BEHIND is then tolerated, nothing else.
+  assert.match(script, /MSTS_STATE="\$\{MSTS%% \*\}"/);
+  assert.match(script, /MSTS_MERGEABLE="\$\{MSTS##\* \}"/);
+  assert.match(script, /if \[\[ "\$MSTS_STATE" == "BEHIND" && "\$ALLOW_PROMOTION" -eq 1 \]\]/);
+  assert.doesNotMatch(script, /if \[\[ "\$MSTS" != \*"CLEAN"\* \]\]/, "the old unconditional CLEAN check defeated the gate");
 });
 
 
