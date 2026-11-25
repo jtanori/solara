@@ -85,19 +85,20 @@ if [[ "$ENV" == "staging" ]]; then WORKFLOW_ENV="staging"; BASE_BRANCH="staging"
 else WORKFLOW_ENV="production"; BASE_BRANCH="main"; APP_URL="${DEPLOY_APP_URL:-https://www.thanatos.mx}"; fi
 
 echo "== Gate: base freshness =="
-# The PR head must contain the current base tip. A moved base means the merge is either
-# conflicted (obvious) or clean-but-untested (insidious: CI verified each side, never the
-# combination — GitHub signals this as mergeStateStatus BEHIND, and it must not ride to a
-# squash unreviewed). Trial-merge in memory with `git merge-tree --write-tree`: nothing
-# touches the working tree or index; exit 0 = clean, 1 = conflicts, >1 = fatal git error.
-# Deliberately no override flag: the rulesets (strict required status checks, no bypass
-# actors) reject merging a BEHIND PR anyway, and a bypass here would only dispatch
-# migrations before a merge GitHub then refuses.
+# The PR head must either contain the current base tip or, for a promotion, be content-equivalent
+# to it. A moved base means the merge is either conflicted (obvious) or clean-but-untested
+# (insidious: CI verified each side, never the combination). The verdict comes from
+# `scripts/promotion-ancestry.ts`, the same helper the required `promotion-guard` check runs:
+# it merges into a throwaway index, so nothing touches the working tree or the index, and it
+# works on git 2.37 (`merge-tree --write-tree` needs 2.38 — the old call made this gate
+# unrunnable on the operator's machine).
+# Deliberately no override flag: a bypass here would only dispatch migrations before a merge
+# GitHub then refuses.
 #
-# Promotion exception (#240): after a merge-commit promotion, `main` always carries a commit
-# `staging` does not have, and `protect-staging` forbids the merge commit that used to fix
-# that. A main-based PR is therefore accepted when the trial merge proves it adds nothing to
-# the head (main's content is present under different SHAs); anything else still refuses.
+# Promotion exception (#240/#244): after a merge-commit promotion, `main` always carries a commit
+# `staging` does not have, and `protect-staging` forbids the merge commit that used to fix that.
+# A main-based PR is therefore accepted when the verdict is `content-contained` (main's content is
+# present under different SHAs); anything else still refuses.
 if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
   echo "ERROR: shallow clone — merge-base and the trial merge need full history; use a full clone or 'git fetch --unshallow' first" >&2
   exit 1
@@ -110,6 +111,7 @@ if ! git cat-file -e "$HEAD_SHA" 2>/dev/null; then
   echo "ERROR: PR head $HEAD_SHA not found after fetching refs/pull/$PR/head — is the branch pushed?" >&2; exit 1
 fi
 BASE_SHA=$(git rev-parse "origin/$BASE_BRANCH")
+ALLOW_PROMOTION=0
 ANC_RC=0
 git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" || ANC_RC=$?
 if [[ "$ANC_RC" -eq 0 ]]; then
@@ -119,42 +121,49 @@ elif [[ "$ANC_RC" -eq 1 ]]; then
   echo "WARN: $BASE_BRANCH moved $BEHIND commit(s) since $HEAD_REF last merged it in:"
   git log -n 5 --oneline --no-decorate "$HEAD_SHA..$BASE_SHA" | sed 's/^/    /'
   if [[ "$BEHIND" -gt 5 ]]; then echo "    ... and $((BEHIND - 5)) more"; fi
-  MERGE_RC=0
-  MERGE_OUT=$(git merge-tree --write-tree --name-only --no-messages "$HEAD_SHA" "$BASE_SHA" 2>&1) || MERGE_RC=$?
-  if [[ "$MERGE_RC" -eq 0 ]]; then
-    VERDICT="conflict-free"
-    DETAIL="the combined tree has NOT been tested by CI (each side was)"
-  elif [[ "$MERGE_RC" -eq 1 ]]; then
-    VERDICT="CONFLICTED"
-    DETAIL="merging would conflict in these files:"
-  else
-    echo "ERROR: trial merge failed (git merge-tree exit $MERGE_RC): $MERGE_OUT" >&2
+
+  ANCESTRY_ERR="$(mktemp)"
+  ANCESTRY_RC=0
+  VERDICT_RAW="$(npx tsx "$SCRIPT_DIR/promotion-ancestry.ts" --head "$HEAD_SHA" --base "$BASE_SHA" 2>"$ANCESTRY_ERR")" || ANCESTRY_RC=$?
+  if [[ "$ANCESTRY_RC" -ne 0 ]]; then
+    echo "ERROR: content check failed (promotion-ancestry exit $ANCESTRY_RC):" >&2
+    cat "$ANCESTRY_ERR" >&2
+    rm -f "$ANCESTRY_ERR"
     exit 1
   fi
-  echo "Trial merge (in memory, nothing touched): $VERDICT — $DETAIL"
-  if [[ "$VERDICT" == "CONFLICTED" ]]; then
-    printf '%s
-' "$MERGE_OUT" | sed -n '2,11s/^/    /p'
-  fi
-  ALLOW_PROMOTION=0
-  if [[ "$BASE_BRANCH" == "main" && "$VERDICT" == "conflict-free" ]]; then
-    # A merge-commit back-merge cannot land on staging: protect-staging requires linear
-    # history and has no bypass actors (#240), so ancestry can never be restored after a
-    # promotion. Accept the promotion when the trial merge proves main adds nothing — every
-    # main change is already present in the head under a different SHA.
-    ANCESTRY_VERDICT=$(npx tsx scripts/promotion-ancestry.ts --head "$HEAD_SHA" --base "$BASE_SHA") || ANCESTRY_VERDICT=""
-    if [[ "$ANCESTRY_VERDICT" == "content-contained" ]]; then
-      echo "Base content-equivalent: $BASE_BRANCH@${BASE_SHA:0:7} adds nothing to $HEAD_REF — main's changes are already present under different SHAs."
-      echo "Proceeding without a back-merge; this head still needs its own green CI and preview."
-      ALLOW_PROMOTION=1
-    fi
-  fi
+
+  case "$VERDICT_RAW" in
+    content-contained)
+      if [[ "$BASE_BRANCH" == "main" ]]; then
+        echo "Base content-equivalent: $BASE_BRANCH@${BASE_SHA:0:7} adds nothing to $HEAD_REF — main's changes are already present under different SHAs."
+        echo "Proceeding without a back-merge; this head still needs its own green CI and preview."
+        ALLOW_PROMOTION=1
+      else
+        echo "Trial merge (in memory, nothing touched): $BASE_BRANCH adds no content, but $BASE_BRANCH requires an up-to-date head."
+      fi ;;
+    conflicted)
+      echo "Trial merge (in memory, nothing touched): CONFLICTED — merging would conflict in:" >&2
+      sed -n '1,10s/^/    /p' "$ANCESTRY_ERR" >&2 ;;
+    needs-back-merge)
+      echo "Trial merge (in memory, nothing touched): $BASE_BRANCH carries content $HEAD_REF does not have." >&2 ;;
+    ancestor)
+      # Defensive: --is-ancestor above already said no, so this is only reachable if the refs moved.
+      echo "Base fresh: $BASE_BRANCH@${BASE_SHA:0:7} is an ancestor of $HEAD_REF"
+      ALLOW_PROMOTION=1 ;;
+    *)
+      echo "ERROR: unexpected promotion verdict '$VERDICT_RAW'" >&2
+      rm -f "$ANCESTRY_ERR"
+      exit 1 ;;
+  esac
+  rm -f "$ANCESTRY_ERR"
+  VERDICT="$VERDICT_RAW"
+
   if [[ "$ALLOW_PROMOTION" -ne 1 ]]; then
     if [[ "$BASE_BRANCH" == "main" ]]; then
       echo "" >&2
       echo "       This is a staging→main promotion, and main carries content $HEAD_REF does not have." >&2
       echo "       A merge-commit back-merge cannot land on $HEAD_REF (required linear history, no bypass actors)." >&2
-      echo "       Re-land those changes on $HEAD_REF through a normal PR; the gate passes once the trial merge adds nothing." >&2
+      echo "       Re-land those changes on $HEAD_REF through a normal PR; do not attempt a back-merge." >&2
       git log --oneline --no-decorate "$HEAD_SHA..$BASE_SHA" 2>/dev/null | sed -n '1,10s/^/         /p' >&2
       echo "" >&2
     else
@@ -208,10 +217,22 @@ echo "Preview ready: $PREVIEW_BASE/api/ready -> ok"
 echo "== Gate: CI checks =="
 gh pr checks "$PR" --repo jtanori/solara --watch 2>&1 | tail -20 || true
 MSTS=$(gh pr view "$PR" --repo jtanori/solara --json mergeStateStatus,mergeable --jq '"\(.mergeStateStatus) \(.mergeable)"')
-echo "Post-check: $MSTS"
-if [[ "$MSTS" != *"CLEAN"* ]]; then
-  echo "ERROR: PR #$PR is $MSTS, not CLEAN — fix CI first" >&2; exit 1
+MSTS_STATE="${MSTS%% *}"
+MSTS_MERGEABLE="${MSTS##* }"
+echo "Post-check: $MSTS_STATE (mergeable: $MSTS_MERGEABLE)"
+if [[ "$MSTS_MERGEABLE" != "MERGEABLE" ]]; then
+  echo "ERROR: PR #$PR is not mergeable ($MSTS) — fix the conflicts or CI first" >&2; exit 1
 fi
+# mergeStateStatus is GitHub's UI computation, not the merge rule: #243 reported BEHIND and then
+# CLEAN with no history change. A promotion accepted by the content gate above is content-identical
+# to its own tested head, so BEHIND is allowed only in that case. Every other state must be CLEAN.
+MSTS_ACCEPT=0
+if [[ "$MSTS_STATE" == "CLEAN" ]]; then MSTS_ACCEPT=1; fi
+if [[ "$MSTS_STATE" == "BEHIND" && "$ALLOW_PROMOTION" -eq 1 ]]; then MSTS_ACCEPT=1; fi
+if [[ "$MSTS_ACCEPT" -ne 1 ]]; then
+  echo "ERROR: PR #$PR is $MSTS_STATE, not CLEAN — fix CI first" >&2; exit 1
+fi
+echo "Post-check ok: $MSTS_STATE"
 
 # #76 release tracking: every deploy leaves one row in DEPLOY_LOG so "what is in production?" is
 # answerable without guessing. A failed write is a warning, not a deploy failure — the deploy itself

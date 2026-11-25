@@ -103,8 +103,9 @@ test("the runbooks do not describe behaviour deploy.sh does not have", () => {
     }
   }
 
-  // 2. No documented "squash is allowed" route: the base-freshness gate exits unconditionally, and
-  //    the staging ruleset's strict required checks keep the PR BEHIND regardless.
+  // 2. No documented "squash is allowed" route. Since #244 the gate decides on the content
+  //    verdict (`promotion-ancestry`), and a documented squash route would still destroy the
+  //    merge commit ADR 014 keeps for the audit trail.
   for (const doc of [bootstrap, checklist, promotion]) {
     assert.ok(
       !/squash/i.test(doc) || !/(ancestry is satisfied|allows? (the|this) promotion|allowed, with a warning)/i.test(doc),
