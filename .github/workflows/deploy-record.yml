@@ -1,0 +1,50 @@
+name: Deploy record
+
+# #249: every merge to main gets a durable record without anyone running a local script.
+#
+# The event is `push`, because it is the only one that fires for both `gh pr merge` and a GitHub UI
+# merge, and `github.sha` is the merge commit. `workflow_dispatch` exists for a backfill (an older
+# merge, or one recorded before this workflow existed).
+#
+# This is bookkeeping, not a gate: it is not a required status check, it never touches a database,
+# and a failure here must never be read as a failed deploy. The workflow verifies that production
+# is actually serving the commit; if it cannot prove that, it records "unverified" instead of "ok".
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to record (backfill). Leave empty for the dispatched ref."
+        required: false
+        default: ""
+
+permissions:
+  contents: write        # create the release marker
+  pull-requests: write   # write the record comment
+  actions: read          # read run metadata if a future step links the migrate run
+
+concurrency:
+  group: deploy-record-${{ github.event.inputs.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # The current default branch, deliberately: the recorded SHA is data, and a backfill may
+      # predate this script. The tooling must be the reviewed version, not the old commit's.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Verify and record the production deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.inputs.sha || github.sha }}
+          REPO: ${{ github.repository }}
+          APP_URL: https://www.thanatos.mx
+        run: npx tsx scripts/deploy-record.ts --sha "$SHA" --repo "$REPO" --app-url "$APP_URL"
