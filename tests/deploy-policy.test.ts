@@ -180,48 +180,42 @@ test("a runbook asserting JSON formatting is not reversed", () => {
   }
 });
 
-test("the runbook attributes each blocking rule to the ruleset that actually has it — once", () => {
-  // Two failures this catches, both seen in review:
-  //   1. crediting protect-staging with blocking a promotion (it targets refs/heads/staging);
-  //   2. leaving the wrong table in place while adding a corrected one — a presence-only check
-  //      passes with both present, and the operator reads whichever they hit first.
-  const bootstrap = readFileSync("docs/operations/production-bootstrap-2026-11-10.md", "utf8");
-  const section = bootstrap.slice(bootstrap.indexOf("#### 4.1a"), bootstrap.indexOf("### 4.2"));
+test("the operating model attributes each rule to the branch that has it — once", () => {
+  // The old §4.1a table misattributed protect-staging's strict check to the promotion block, and a
+  // corrected table was added beside the wrong one. That section is retired (#244); the same
+  // failure is now checked where the policy lives: exactly one table, correct attribution, and no
+  // claim that protect-staging blocks a promotion.
+  const decisions = readFileSync("docs/decisions.md", "utf8");
+  const start = decisions.indexOf("> **Operating model in force");
+  assert.ok(start > 0, "the operating-model block exists");
+  const end = decisions.indexOf("\n---", start);
+  const model = decisions.slice(start, end);
 
-  // Exactly one TABLE in the section, whatever its header says. Counting only `| ruleset |` headers
-  // is not enough: the contradictory version had a different header ("| rule | effect here |"), so a
-  // second table slipped past a header-specific check.
-  const tableSeparators = [...section.matchAll(/^\|[-: |]+\|\s*$/gm)];
-  assert.equal(
-    tableSeparators.length,
-    1,
-    `§4.1a must contain exactly one table, found ${tableSeparators.length}`,
-  );
-  const tableRows = section.split("\n").filter(line => line.startsWith("| "));
-  assert.equal(
-    tableRows[0],
-    "| ruleset | targets | what it does here |",
-    "the single table must be the per-ruleset one",
-  );
+  const tableSeparators = [...model.matchAll(/^> \|[-: |]+\|\s*$/gm)];
+  assert.equal(tableSeparators.length, 1, `the model must contain exactly one table, found ${tableSeparators.length}`);
 
-  // Every row must name a ruleset the repo actually has, and the two live ones must both appear.
-  const rows = section.split("\n").filter(line => line.startsWith("| `protect-"));
-  assert.equal(rows.length, 2, `expected one row per ruleset, found ${rows.length}`);
-  for (const id of ["26759336", "26759381"]) {
-    assert.ok(rows.some(row => row.includes(id)), `ruleset ${id} documented`);
-  }
+  const rows = model.split("\n").filter(line => line.startsWith("> | "));
+  assert.match(rows[0], /\| Question \| Answer today \|/, "the single table is the operating model");
 
-  // The claim must not survive anywhere in the section: a strict check attributed to
-  // protect-staging as the thing that blocks a promotion PR.
+  const strictRow = rows.find(row => row.includes("Strict required checks"));
+  assert.ok(strictRow, "the strict-checks row exists");
+  assert.match(strictRow!, /`staging`: on/, "staging keeps strict checks");
+  assert.match(strictRow!, /`main`: off/, "main does not, because a promotion always leaves it ahead");
+
+  const mergeRow = rows.find(row => row.includes("Merge methods"));
+  assert.ok(mergeRow, "the merge-methods row exists");
+  assert.match(mergeRow!, /`staging`: squash only/, "staging is squash-only");
+  assert.match(mergeRow!, /`main`: merge commit only/, "main is merge-only");
+
   assert.ok(
-    !/protect-staging`?\s*\(?26759336\)?.{0,200}strict[^\n]{0,200}(promotion|targeting main)/i.test(section),
-    "protect-staging must not be credited with blocking the promotion",
+    !/protect-staging/.test(model),
+    "the model must not credit protect-staging with blocking a promotion",
   );
-  // ...and protect-main must carry it.
-  const mainRow = rows.find(row => row.includes("26759381"));
-  assert.ok(mainRow, "protect-main row exists");
-  assert.match(mainRow!, /promotion|ancestor/i, "protect-main row explains what it blocks");
-  assert.match(mainRow!, /strict/i, "protect-main row names the rule responsible");
+
+  // ADR 014 carries the same two assignments, so the block and the decision cannot drift apart.
+  const adr14 = decisions.slice(decisions.indexOf("## ADR 014"));
+  assert.match(adr14, /\*\*`main`\*\*: `strict_required_status_checks_policy: false`/);
+  assert.match(adr14, /\*\*`staging`\*\*: strict checks on/);
 });
 
 test("the rollback target is captured before the merge, and the record after readiness", () => {
