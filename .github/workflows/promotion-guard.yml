@@ -1,0 +1,50 @@
+name: Promotion guard
+
+# #244: a promotion into main must come from `staging` and must not import content that main
+# carries and staging lacks. This is the required check `promotion-guard`; it replaces
+# "require branches to be up to date", which a merge-commit promotion can never satisfy.
+#
+# The workflow runs on `pull_request`, so GitHub loads it from the head commit (the same-repo
+# staging branch). A fork cannot provide it, which is fine: the guard refuses forks anyway.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: promotion-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  promotion-guard:
+    runs-on: ubuntu-latest
+    steps:
+      # The head commit, not GitHub's merge ref: the guard has to see main and staging as they
+      # are, not the combination it is deciding about.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Fetch the base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BASE_SHA" 2>/dev/null || git fetch --no-tags origin "$BASE_SHA"
+          git cat-file -e "$BASE_SHA"
+      - name: Guard the promotion
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: npx tsx scripts/promotion-guard.ts
