@@ -138,19 +138,19 @@ if [[ "$CURRENT_REF" != "$PROMO_REF" || "$CURRENT_SHA" != "$PROMO_SHA" ]]; then
   exit 1
 fi
 
-# 4. rehearse that promotion PR on staging with the updated workflow.
-#    db-remote.ts --pr <promotion-pr> infers production, so dispatch the staging run manually.
-gh workflow run migrate.yml --repo jtanori/solara \
-  --ref "$PROMO_REF" \
-  -f env=staging -f pr="$PROMO_PR" -f sha="$PROMO_SHA" \
-  -f mode=migrate -f dry_run=false
-
-#    Verify the run name is:
-#    migrate staging pr-<promotion-pr> <PROMO_SHA> mode=migrate dry=false
-#    and the schema-verdict artifact contains migration-applied.json for that env/SHA/mode.
-
-# 5. production, citing the same promotion PR as the rehearsal
-npx tsx scripts/db-remote.ts --pr "$PROMO_PR" --env production --rehearsal-pr "$PROMO_PR"
+# 4-5. deploy.sh performs the rehearsal and the production migration (#245).
+#      For a promotion that touches drizzle/ it dispatches
+#        migrate staging pr-<promotion-pr> <PROMO_SHA> mode=migrate dry=false
+#      waits for that run, then dispatches production with rehearsal_pr=<promotion-pr>.
+#      The staging run writes migration-applied.json for the exact SHA, which is what the
+#      production gate looks for. Nothing manual is required.
+#
+#      Break-glass only (a hand-run promotion): the same pair, by hand.
+# gh workflow run migrate.yml --repo jtanori/solara \
+#   --ref "$PROMO_REF" \
+#   -f env=staging -f pr="$PROMO_PR" -f sha="$PROMO_SHA" \
+#   -f mode=migrate -f dry_run=false
+# npx tsx scripts/db-remote.ts --pr "$PROMO_PR" --env production --rehearsal-pr "$PROMO_PR"
 
 # 6. confirm the production schema and journal
 npx tsx scripts/db-remote.ts --check --env production --branch "$PROMO_REF" --sha "$PROMO_SHA"
