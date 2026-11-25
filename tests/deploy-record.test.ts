@@ -83,11 +83,18 @@ test("a staging record is published to the PR as a shared comment, with no relea
 
 test("a production record creates the release marker #76 requires, tagged per env and SHA", () => {
   const { stdout, calls } = harness({}, row("production"));
-  assert.match(stdout, /Release marker created: deploy\/production\/\d{8}-\d{4}-abcdef0/);
+  assert.match(stdout, /Release marker created: deploy\/production\/abcdef0/);
   const release = calls.find(call => call.includes("-X POST") && call.includes("/releases"));
   assert.ok(release, "a release is created");
-  assert.match(release!, /tag_name=deploy\/production\/\d{8}-\d{4}-abcdef0/, "the tag encodes env, time and short SHA");
+  assert.match(release!, /tag_name=deploy\/production\/abcdef0/, "the tag is deterministic per commit (#249)");
   assert.match(release!, /target_commitish=abcdef0123456789/, "the release points at the deployed SHA");
+});
+
+test("a scripted deploy no longer appends to the frozen ledger by default", () => {
+  // #249 froze docs/deploys.md; the workflow is the record. A local file is written only when
+  // DEPLOY_LOG is set explicitly.
+  const script = readFileSync("scripts/deploy.sh", "utf8");
+  assert.match(script, /DEPLOY_LOG="\$\{DEPLOY_LOG:--\}"/);
 });
 
 test("a retried deploy rewrites the existing comment instead of stacking a second row", () => {

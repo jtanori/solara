@@ -490,6 +490,15 @@ table names, consistent with the detail budget already enforced in `src/app/api/
 - Splitting the four states is a policy change, not a bug fix. Reverting it requires a superseding
   ADR.
 
+> **Amended 2026-11-25 (#249).** The deployment record moved out of a local script.
+> `docs/deploys.md` is frozen: every merge to `main` is recorded by
+> `.github/workflows/deploy-record.yml` as one release (`deploy/production/<sha7>`) and one PR
+> comment, after the workflow verifies that `/api/version` reports the merge commit and
+> `/api/ready` is green. An unverifiable deployment is recorded as `FAILED unverified`, never `ok`.
+> `scripts/deploy.sh` keeps its comment/release for a scripted deploy but defaults to no local
+> append. Workflows still never commit to `main`, so the file remains a historical ledger rather
+> than a second writer.
+
 ---
 
 ## ADR 013 — GitHub Actions is the only deployer; merging is the deploy

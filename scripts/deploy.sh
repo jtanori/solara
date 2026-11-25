@@ -239,7 +239,10 @@ echo "Post-check ok: $MSTS_STATE"
 # #76 release tracking: every deploy leaves one row in DEPLOY_LOG so "what is in production?" is
 # answerable without guessing. A failed write is a warning, not a deploy failure — the deploy itself
 # already succeeded or failed on its own gates.
-DEPLOY_LOG="${DEPLOY_LOG:-docs/deploys.md}"
+# #249: docs/deploys.md is frozen. The deploy-record workflow writes the authoritative record for
+# every merge; a scripted deploy still comments and creates the release, but only writes a local
+# ledger when DEPLOY_LOG is set explicitly.
+DEPLOY_LOG="${DEPLOY_LOG:--}"
 DEPLOY_LOG_HEADER='| when | env | sha | pr | migrations | result | rollback |
 | --- | --- | --- | --- | --- | --- | --- |'
 
@@ -309,7 +312,9 @@ record_deploy() {
   # no release, so the release list stays a list of what reached production.
   if [[ "$env" == "production" ]]; then
     local tag
-    tag="deploy/production/$(date -u +%Y%m%d-%H%M)-${sha:0:7}"
+    # Deterministic (#249): the workflow checks this same tag, so a scripted deploy and the
+    # workflow can never create two releases for one commit, and a retry updates instead of stacking.
+    tag="deploy/production/${sha:0:7}"
     if gh api -X POST "repos/jtanori/solara/releases" \
         -f tag_name="$tag" -f target_commitish="$sha" -f name="$tag" \
         -f body="Production deploy of \`${sha:0:7}\` (PR #$pr, $timestamp). Migrations: $migrations. Verification: $result." \
