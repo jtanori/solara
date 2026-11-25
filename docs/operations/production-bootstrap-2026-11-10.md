@@ -120,96 +120,34 @@ control, and confirm it arrives *from* the verified domain. Do this before invit
 Steps 3 and 4 are **[HUMAN]** and must run from a shell with Vercel access; nothing here can be
 executed by an agent, and the production `DATABASE_URL` is correctly Environment-scoped.
 
-### 4.1 Back-merge `main → staging` (restores ancestry so the freshness gate passes)
+### 4.1 Verify the content verdict (no back-merge)
+
+Promotions are gated on content, not ancestry (**ADR 014**, #244). After a merge-commit promotion
+`main` always carries a commit `staging` does not have, so `main` will never be an ancestor of
+`staging` again — and it does not need to be.
 
 ```bash
 git fetch origin main staging
-git switch -c chore/promote-sync-main origin/staging
-git merge --no-ff origin/main -m "chore: back-merge main into staging (promotion prerequisite)"
-git push origin chore/promote-sync-main
-gh pr create --base staging --head chore/promote-sync-main \
-  --title "chore: back-merge main into staging (promotion prerequisite)" \
-  --body "main is not an ancestor of staging, so deploy.sh's base-freshness gate refuses the promotion. Zero file changes: \`git diff origin/staging...origin/main\` is empty and the trial-merge tree is identical to origin/staging^{tree}. Prerequisite for the staging → main promotion."
+npx tsx scripts/promotion-ancestry.ts \
+  --head "$(git rev-parse origin/staging)" \
+  --base "$(git rev-parse origin/main)"
 ```
 
-Merge it with `--merge` once `verify` is green.
+| Verdict | Meaning | Action |
+|---|---|---|
+| `ancestor` | `main` is already contained | proceed |
+| `content-contained` | every `main` change is on `staging` under a different SHA | proceed |
+| `needs-back-merge` | `main` carries content `staging` lacks | re-land it on `staging` through a normal PR, re-run |
+| `conflicted` | the merge conflicts | resolve it on `staging`, re-run |
 
-> **This merge commit will be rejected while `required_linear_history` is on** — that is expected.
-> Do not fall back to squash: a squash keeps the content and drops the SHAs, so `main` still is not
-> an ancestor, the promotion stays `BEHIND`, and both GitHub and `deploy.sh` refuse it. §4.1a has the
-> one supported route (lift the rule, merge, restore it).
+Never merge `main` into `staging`, and never temporarily remove `required_linear_history`:
+`protect-staging` requires a linear history and the ruleset has no bypass actors. The required
+`promotion-guard` check enforces the same verdict on the PR, and `scripts/check-branch-policy.ts`
+verifies the rulesets themselves.
 
-#### 4.1a If the merge commit is refused
-
-Two rules in two *different* rulesets both forbid the obvious workarounds (verified via
-`gh api repos/jtanori/solara/rulesets`):
-
-| ruleset | targets | what it does here |
-| --- | --- | --- |
-| `protect-staging` (26759336) | `refs/heads/staging` | `required_linear_history` + strict checks: a **merge commit into staging** is rejected, and any PR into staging must contain staging's tip |
-| `protect-main` (26759381) | `~DEFAULT_BRANCH` (main) | strict checks: a **promotion PR targeting main** must contain main's tip, i.e. `main` must already be an ancestor of the head |
-
-The second row is the one that blocks a promotion whose back-merge was squashed. The first row is
-why you cannot fix it with a merge commit. Both refuse; only lifting the rule on `staging` lets the
-back-merge commit exist in the first place.
-
-So there is exactly **one** supported route, and a squash is not it:
-
-- A squash back-merge keeps the content and drops the SHAs. `main` still is not an ancestor of
-  `staging`, the promotion PR stays `BEHIND`, and both GitHub *and* `scripts/deploy.sh`'s
-  base-freshness gate refuse it. There is no override flag, by design.
-- Nothing committed *into* staging can fix this either. An empty commit adds no ancestry: a commit
-  has one parent, so `merge-base --is-ancestor main staging` still fails. (I claimed otherwise in an
-  earlier revision of this section; it is wrong and has been retracted.)
-
-**Supported route — lift linear history for this one back-merge, then restore it.**
-
-There is no supported one-liner for this. A ruleset PATCH replaces the whole rules array, so a
-partial body silently drops the other four rules (`deletion`, `non_fast_forward`,
-`required_status_checks`, `pull_request`) — the safe way to toggle one rule is the UI:
-
-1. **Settings → Rules → `protect-staging`** → uncheck **Require linear history** → **Save**
-2. Merge the back-merge PR — this one command is real and needs no substitution beyond the PR
-   number:
-
-   ```bash
-   gh pr merge <back-merge-pr> --merge
-   ```
-
-3. **Settings → Rules → `protect-staging`** → check **Require linear history** → **Save**
-
-Read the staged ruleset back afterwards and confirm all five rules are present and only the one you
-meant changed:
-
-```bash
-gh api repos/jtanori/solara/rulesets/26759336 --jq '[.rules[].type]'
-```
-
-The output is one JSON array on a single line — `--jq` prints compact JSON regardless of whether it
-is writing to a terminal or a pipe, so do not expect it to expand:
-
-```json
-["deletion", "non_fast_forward", "required_linear_history", "required_status_checks", "pull_request"]
-```
-
-Do not paste that array back into a shell: an unquoted `[...]` is a glob pattern, and zsh aborts with
-`no matches found` instead of running anything.
-
-If you want the rules one per line, ask for that explicitly:
-
-```bash
-gh api repos/jtanori/solara/rulesets/26759336 --template '{{range .rules}}{{.type}}{{"\n"}}{{end}}'
-```
-
-If the per-id call fails, read the id from the repo-level list instead (needs only repository read),
-then confirm both rulesets by eye in **Settings → Rules**:
-
-```bash
-gh api repos/jtanori/solara/rulesets --jq '.[] | select(.name=="protect-staging") | .id'
-```
-
-Do **not** proceed on the assumption that the toggle worked. The next promotion depends on this rule,
-and the UI is the authoritative check.
+> **Superseded 2026-11-24 (#244).** This section used to prescribe a merge-commit back-merge plus a
+> temporary ruleset change. Both are retired; the old procedure remains in git history and must not
+> be followed.
 
 ### 4.2 Open the promotion PR
 

@@ -1,5 +1,8 @@
 # Production deployment readiness audit — 2026-11-10
 
+> **Historical (2026-11-10).** The promotion and back-merge options below are superseded by
+> ADR 014 (#244): a promotion is gated on content by `promotion-guard`, and no back-merge exists.
+
 Scope: what must be true before `staging → main` can be promoted, what is verified vs. inferred, and
 whether the LLM/readings feature is a blocker.
 

@@ -121,17 +121,17 @@ Recorded so the reasoning is not lost, and so the gate is explicit when it opens
 | Item | Deferred by | Unblocks when | Why it cannot be skipped later |
 |---|---|---|---|
 | **QA run** (checklist Steps 3–4: run it, record result on #159) | operator, 2026-11-19 | QA gate, when staging is frozen for verification | Two of the three review defects on #154 were invisible to every automated gate until the page was rendered. Tests encode the cases we thought of. |
-| **Back-merge PR** (`main` → `staging`, then `--merge`) | operator, 2026-11-19 | promotion preparation | `main` is **5 commits ahead** of `staging` (`039d9b63`, `9553ceb8`, `03467bd9`, `ade651e9`, `4490ced9`), not merely an ancestry gap. `deploy.sh --env production` refuses until `main` is an ancestor. |
+| **Content verdict** (`promotion-ancestry.ts`) | operator, 2026-11-19 | promotion preparation | Since #244 the promotion is gated on content, not ancestry (ADR 014). `needs-back-merge` means re-land the change on `staging`; there is no back-merge PR to file. |
 | **Promotion** (`deploy.sh --env production`) | operator, 2026-11-19 | after staging satisfies QA | Touches production and spends real money; production migration rehearsal required (`0009`), and `--skip-migrate` is refused for production by design. |
 
 The full command text for both deferred items is preserved in git history at commit `843fc56`:
 `git show 843fc56:docs/operations/NEXT-STEPS-operator.md`.
 
-**One trap worth remembering when the promotion gate opens:** the back-merge must be a **merge**, not a
-squash. A squash lands the content but not `main`'s SHAs, and `deploy.sh`'s production gate tests
-`git merge-base --is-ancestor origin/main HEAD` — so it would still refuse. It is documented in
-`docs/operations/production-bootstrap-2026-11-10.md` §4.1a. Recorded now because it is exactly the
-kind of detail that gets lost between gates.
+**One trap worth remembering when the promotion gate opens:** since #244 the gate asks whether
+merging `main` into the promotion head changes anything, not whether `main` is an ancestor. Do not
+reach for a back-merge: `protect-staging` requires linear history and has no bypass actors. A
+`needs-back-merge` verdict means the missing change must be re-landed on `staging` through a normal
+PR. See ADR 014 and `docs/operations/production-deploy-checklist.md` step 2.
 
 ---
 
