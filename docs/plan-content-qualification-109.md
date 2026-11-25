@@ -77,6 +77,20 @@ Before the rich run, edit `.env.pilot`: `READINGS_PAID_PROFILE=paid-rich-v1`.
 `dotenv` override loads the file after the shell, so an exported value does not
 win, and a mismatch is refused as `sampling_profile_mismatch`.
 
+The six free-path documents come from the journey harness (#226). Fixture mode is free and
+local; the real-provider mode is the same command with the pilot's provider variables exported
+and two explicit flags. The harness refuses a non-loopback database, Vercel, production
+`NODE_ENV`, and real mode without a cap at or above `6 × 5 MXN`:
+
+```bash
+# fixture: deterministic fake transport behind the real adapter, disposable loopback DB
+npm run readings:free-path -- --locales es --out .venv/free-path/es.json
+
+# real provider: export the pilot's READINGS_* variables first (the script does not read .env)
+npm run readings:free-path -- --locales es --real-provider --authorize-real \
+  --max-spend-mxn 30 --out .venv/free-path/es-real.json
+```
+
 Then evaluate, review twelve samples (six per profile) with every rubric criterion
 at 2, record two local approvals, and qualify six free-path documents. Measured
 pilot rates suggest roughly 8 MXN total; the authorized ceiling is 20.
