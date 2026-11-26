@@ -15,6 +15,7 @@ scripts/check-migration-safety.ts
 # CI-only: the drift monitor (#165) reads public endpoints; it must not ship.
 scripts/drift-monitor.ts
 scripts/lib/paid-evaluation-corpus.ts
+scripts/gen-annual-facts-fixtures.py
 # Pilot evidence/rendering tools: local-only, depend on tests/helpers and a disposable DB.
 scripts/pilot-evidence.ts
 scripts/pilot-seed.ts
@@ -22,7 +23,6 @@ scripts/render-pilot.ts
 scripts/lib/pilot-evidence.ts
 scripts/lib/pilot-render.ts
 scripts/run-225-sequence.sh
-scripts/gen-annual-facts-fixtures.py
 tests
 drizzle/meta
 .mail-outbox

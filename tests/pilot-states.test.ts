@@ -40,7 +40,7 @@ const states = JSON.parse(readFileSync("tests/fixtures/readings/pilot-states-v1.
 async function assertPartialState(profile: PaidProfile, locale: "en" | "es", input: ChartInput, results: SectionResult[], failedSection: string) {
   const owner = await syntheticReadingAccount(locale, "none", { input });
   try {
-    const edition = await syntheticPaidEdition(owner, locale, true, profile, { results, allowAnySyntheticInput: true });
+    const edition = await syntheticPaidEdition(owner, locale, true, profile, { results, expectedInput: input });
     const selector = { kind: "paid" as const, id: edition.document.id };
     const before = await readingLedgerSnapshot(owner.viewer.id);
 

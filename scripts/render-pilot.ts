@@ -36,6 +36,7 @@ if (uiText && uiText !== "en" && uiText !== "es") fail("--ui-locale must be en o
 const outDir = value("--out").trim() || ".venv/pilot-render";
 const keep = argv.includes("--keep");
 const pdfDeadlineMs = Number(value("--pdf-timeout-ms") || 60_000);
+if (!Number.isSafeInteger(pdfDeadlineMs) || pdfDeadlineMs <= 0) fail("--pdf-timeout-ms must be a positive integer", 2);
 
 async function main(): Promise<void> {
   const guard = fixtureGuard(process.env);

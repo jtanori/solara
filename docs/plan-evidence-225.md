@@ -37,7 +37,10 @@ partial/failure states and cost/latency work.
   HTML and PDF locally; committed `tests/fixtures/readings/pilot-structures-v1.json` with block kinds
   and character counts only.
 - **A2b** `scripts/pilot-seed.ts`: import a report into a disposable local database as a free/paid
-  edition, so later end-to-end work needs no provider call. Dumps live under `.venv/fixtures/`.
+  edition, so later end-to-end work needs no provider call. It is idempotent, replaces only the
+  fixture it wrote, and writes the matching month allowance; `--period` defaults to a past month.
+  `scripts/run-225-sequence.sh` step 8 dumps the result to `.venv/fixtures/` with a sidecar naming
+  the head SHA, the migration count and the dump's SHA-256.
 - **A3** partial/failure states: the 10/11 report and synthetic failed/indeterminate states render
   honest notices; no regeneration, canonical promotion or allowance reset.
 - **A4** `docs/operations/pilot-evidence-2026-11.md`: aggregate cost/latency baseline from the

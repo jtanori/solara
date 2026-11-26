@@ -54,7 +54,10 @@ export type RenderEditionOptions = {
   pdfDeadlineMs?: number;
 };
 
-/** The report's sections as the document builder expects them. Failed sections keep their status. */
+/**
+ * The report's sections as the document builder expects them. Failed sections keep their status.
+ * Cost, usage and latency are zeroed: the document is for layout, and its metrics are not evidence.
+ */
 export function reportSectionResults(report: PaidEvaluationReport, sample: EvaluationSample): SectionResult[] {
   return sample.sections.map(section => {
     if (section.status === "failed") {
@@ -82,7 +85,7 @@ export async function renderEdition(options: RenderEditionOptions): Promise<Rend
     const edition = await syntheticPaidEdition(owner, options.locale, false, options.profile, {
       results: options.results,
       contentVersion: options.contentVersion,
-      allowAnySyntheticInput: true,
+      expectedInput: options.input,
     });
     const selector = { kind: "paid" as const, id: edition.document.id };
     const view = await loadReadingPresentation(owner.viewer, owner.chart.id, options.uiLocale, selector);

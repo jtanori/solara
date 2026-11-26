@@ -5,6 +5,8 @@ import { paidReadingRuns, paidReadingEditions } from "../../src/db/schema";
 import { calculatePaidSnapshot, paidSnapshotHash, paidDigest } from "../../src/readings/paid-chart";
 import { PAID_PROFILE, paidSections, PAID_ALLOWANCE_POLICY, type PaidProfile } from "../../src/readings/paid-contract";
 import { buildReadingDocument, type SectionResult } from "../../src/readings/document";
+import { canonicalHash } from "../../src/readings/policy";
+import type { ChartInput } from "../../src/lib/types";
 import { syntheticReadingAccount } from "./reading-account";
 import type { Locale } from "../../src/lib/i18n";
 
@@ -14,10 +16,14 @@ export async function syntheticPaidEdition(
   locale: Locale,
   partial = false,
   profile: PaidProfile = PAID_PROFILE,
-  options: { results?: SectionResult[]; contentVersion?: string; allowAnySyntheticInput?: boolean } = {},
+  options: { results?: SectionResult[]; contentVersion?: string; expectedInput?: ChartInput } = {},
 ) {
   assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(new URL(process.env.DATABASE_URL!).hostname), "render fixtures require a disposable loopback DB");
-  if (!options.allowAnySyntheticInput) {
+  if (options.expectedInput) {
+    // Rendering a real corpus input is allowed, but only the one the caller named: a mismatch
+    // would silently attach one case's prose to another case's chart.
+    assert.equal(canonicalHash(owner.chart.input), canonicalHash(options.expectedInput), "the edition must belong to the expected chart input");
+  } else {
     assert.equal(owner.chart.input.name, "Synthetic Reading", "only the synthetic account helper's data is allowed");
   }
   const snapshot = calculatePaidSnapshot(owner.chart.id, owner.chart.input, profile); const snapshotHash = paidSnapshotHash(snapshot);

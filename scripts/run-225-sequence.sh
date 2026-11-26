@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # run-225-sequence.sh — the #225 execution runbook.
 #
-# Every step prints what it will do and waits for confirmation. A failing step stops the run and
-# prints the log tail. Nothing is merged or deployed here; the script only verifies the local
-# evidence path and the PR gates.
+# Each step prints its title and the next step, waits for confirmation, and stops the run on the
+# first failure with the log tail. It never commits, merges or deploys: the last step writes a local
+# database dump for reuse; opening the PR is the operator's action.
 #
 #   ./scripts/run-225-sequence.sh                 # interactive
 #   ./scripts/run-225-sequence.sh --yes           # unattended, still stops on failure
-#   ./scripts/run-225-sequence.sh --from 4        # resume from step 4
+#   ./scripts/run-225-sequence.sh --from 4        # resume from step 4 (0-8)
 #   ./scripts/run-225-sequence.sh --only 2        # one step
 #   ./scripts/run-225-sequence.sh --dry-run       # print the plan
 #   ./scripts/run-225-sequence.sh --email user@solara.local   # include the local seed step
 #
-# Requires: loopback DATABASE_URL for the gated steps, node_modules, the three useful pilots under
-# .venv/genuine-sampling/.
+# Requires: loopback DATABASE_URL for the gated steps, node_modules, psql/pg_dump for step 8, and
+# the three useful pilots under .venv/genuine-sampling/.
 
 set -euo pipefail
 
@@ -21,44 +21,69 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 LOG_DIR=".venv/225-sequence"
-mkdir -p "$LOG_DIR"
+FIXTURE="tests/fixtures/readings/pilot-structures-v1.json"
 
 FROM=0
 ONLY=""
 ASSUME_YES=0
 EMAIL=""
+BRANCH="chore/225-pilot-evidence"
 DRY=0
+
+usage() { sed -n '2,18p' "$0"; exit "${1:-0}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --from) FROM="${2:?}"; shift 2 ;;
-    --only) ONLY="${2:?}"; shift 2 ;;
-    --email) EMAIL="${2:?}"; shift 2 ;;
+    --from) FROM="${2:?--from needs a step number}"; shift 2 ;;
+    --only) ONLY="${2:?--only needs a step number}"; shift 2 ;;
+    --email) EMAIL="${2:?--email needs an address}"; shift 2 ;;
+    --branch) BRANCH="${2:?--branch needs a name}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '1,30p' "$0"; exit 0 ;;
+    -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
+is_step() { [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= 8 )); }
+
+for value in "$FROM" "$ONLY"; do
+  [[ -z "$value" ]] && continue
+  if ! is_step "$value"; then
+    echo "step must be an integer between 0 and 8 (got '$value')" >&2
+    exit 2
+  fi
+done
+
+STEP_TITLES=(
+  "Preflight"
+  "A1 unit tests"
+  "Inventory and structures"
+  "A7 pilot configuration"
+  "A2 render structures"
+  "A3 partial/failure states"
+  "Gates"
+  "Optional local seed"
+  "Local database dump"
+)
+STEP_FUNCS=(step0 step1 step2 step3 step4 step5 step6 step7 step8)
+
 should_run() {
   local n="$1"
   if [[ -n "$ONLY" && "$ONLY" != "$n" ]]; then return 1; fi
-  if [[ "$n" -lt "$FROM" ]]; then return 1; fi
+  if (( 10#$n < 10#$FROM )); then return 1; fi
   return 0
 }
 
 confirm() {
-  local prompt="$1"
-  if [[ "$DRY" -eq 1 ]]; then return 0; fi
-  if [[ "$ASSUME_YES" -eq 1 ]]; then return 0; fi
+  if [[ "$DRY" -eq 1 || "$ASSUME_YES" -eq 1 ]]; then return 0; fi
   local answer=""
-  read -r -p "$prompt [y/N] " answer
+  read -r -p "Continue? [y/N] " answer || true
   [[ "$answer" == "y" || "$answer" == "Y" ]]
 }
 
 run_step() {
-  local n="$1" title="$2" next="$3" fn="$4"
+  local n="$1" title="${STEP_TITLES[$1]}" fn="${STEP_FUNCS[$1]}" next="${STEP_TITLES[$(( $1 + 1 ))]:-end of sequence}"
   should_run "$n" || return 0
   printf '\n== Step %s — %s ==\n' "$n" "$title"
   printf '   Next: %s\n' "$next"
@@ -66,7 +91,7 @@ run_step() {
     printf '   (dry run — not executed)\n'
     return 0
   fi
-  if ! confirm "Continue?"; then
+  if ! confirm; then
     echo "Stopped before step $n."
     exit 0
   fi
@@ -82,13 +107,24 @@ run_step() {
   fi
 }
 
+require_loopback() {
+  if [[ -z "${DATABASE_URL:-}" ]]; then echo "DATABASE_URL is not set"; return 1; fi
+  node -e 'const host = new URL(process.env.DATABASE_URL).hostname;
+    if (!["localhost","127.0.0.1","::1","[::1]"].includes(host)) { console.error(`DATABASE_URL is not loopback (${host})`); process.exit(1); }
+    console.log("database: loopback");'
+}
+
 step0() {
-  echo "branch: $(git rev-parse --abbrev-ref HEAD)"
+  local current
+  current="$(git rev-parse --abbrev-ref HEAD)"
+  echo "branch: $current"
+  if [[ "$current" != "$BRANCH" ]]; then echo "expected branch $BRANCH"; return 1; fi
   test -d node_modules
-  test -f .venv/genuine-sampling/pilot-2026-11-core-es-go2/report.json
-  test -f .venv/genuine-sampling/pilot-2026-11-rich-es-go3/report.json
-  test -f .venv/genuine-sampling/pilot-2026-11-rich-es-go2/report.json
-  node -e 'const h=new URL(process.env.DATABASE_URL||"").hostname; if(!["localhost","127.0.0.1","::1","[::1]"].includes(h)) { console.error("DATABASE_URL is not loopback"); process.exit(1); } console.log("database: loopback");'
+  test -f "$FIXTURE"
+  for pilot in pilot-2026-11-core-es-go2 pilot-2026-11-rich-es-go3 pilot-2026-11-rich-es-go2; do
+    test -f ".venv/genuine-sampling/$pilot/report.json" || { echo "missing pilot $pilot"; return 1; }
+  done
+  require_loopback
 }
 
 step1() {
@@ -96,7 +132,12 @@ step1() {
 }
 
 step2() {
-  npx tsx scripts/pilot-evidence.ts --root .venv/genuine-sampling --structures tests/fixtures/readings/pilot-structures-v1.json
+  npx tsx scripts/pilot-evidence.ts --root .venv/genuine-sampling --structures "$FIXTURE"
+  if ! git diff --quiet -- "$FIXTURE"; then
+    echo "the committed structural fixture changed; review it and commit before continuing"
+    git diff --stat -- "$FIXTURE"
+    return 1
+  fi
 }
 
 step3() {
@@ -112,9 +153,19 @@ step5() {
 }
 
 step6() {
+  local before
+  before="$(git status --porcelain -- next-env.d.ts)"
   npx tsc --noEmit
   npm run lint
   npm run build
+  npm run db:manifest:check
+  npm run db:check
+  # next build rewrites a generated file; restore it only if this step is what dirtied it.
+  if [[ -z "$before" ]] && [[ -n "$(git status --porcelain -- next-env.d.ts)" ]]; then
+    git checkout -- next-env.d.ts
+    echo "restored next-env.d.ts"
+  fi
+  test -z "$(git status --porcelain)"
 }
 
 step7() {
@@ -122,13 +173,32 @@ step7() {
   npx tsx scripts/pilot-seed.ts --report .venv/genuine-sampling/pilot-2026-11-core-es-go2/report.json --email "$EMAIL" --mode both
 }
 
-run_step 0 "Preflight" "A1 evidence tool unit tests" step0
-run_step 1 "A1 unit tests" "inventory the pilots and regenerate the structural fixture" step1
-run_step 2 "Inventory + structures" "verify the pilot configuration" step2
-run_step 3 "A7 pilot configuration" "render the core, rich and partial structures" step3
-run_step 4 "A2 render structures" "verify the partial/failure state" step4
-run_step 5 "A3 partial/failure states" "run typecheck, lint and build" step5
-run_step 6 "Gates" "optionally seed a local user for reuse" step6
-run_step 7 "Optional local seed" "commit and open the PR" step7
+step8() {
+  command -v pg_dump >/dev/null || { echo "pg_dump is not installed"; return 1; }
+  command -v psql >/dev/null || { echo "psql is not installed"; return 1; }
+  require_loopback
+  local stamp file sidecar count last sha
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p .venv/fixtures
+  file=".venv/fixtures/pilot-seed-$stamp.sql"
+  sidecar=".venv/fixtures/pilot-seed-$stamp.json"
+  pg_dump "$DATABASE_URL" --no-owner --no-privileges > "$file"
+  count="$(psql "$DATABASE_URL" -tAc "select count(*) from drizzle.__drizzle_migrations")"
+  last="$(psql "$DATABASE_URL" -tAc "select coalesce(max(created_at)::text, '') from drizzle.__drizzle_migrations")"
+  sha="$(node -e 'const c=require("node:crypto"),f=require("node:fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$file")"
+  node -e '
+    const [dump, count, last, sha, branch, head, sidecar] = process.argv.slice(1);
+    require("node:fs").writeFileSync(sidecar, JSON.stringify({
+      createdAt: new Date().toISOString(), branch, head, dump, sha256: sha,
+      migrations: { count: Number(count), lastCreatedAt: last || null },
+    }, null, 2) + "\n");
+  ' "$(basename "$file")" "$count" "$last" "$sha" "$(git rev-parse --abbrev-ref HEAD)" "$(git rev-parse HEAD)" "$sidecar"
+  echo "dump: $file"
+  echo "sidecar: $sidecar"
+}
+
+for n in $(seq 0 8); do
+  run_step "$n"
+done
 
 printf '\nSequence complete. Logs: %s\n' "$LOG_DIR"

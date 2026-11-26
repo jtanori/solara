@@ -119,6 +119,10 @@ function main(): void {
   }
 
   if (scan.errors.length > 0) process.exitCode = 1;
+  if (scan.pilots.length === 0 && scan.errors.length === 0) {
+    console.error(`ERROR no report.json found under ${options.root}`);
+    process.exitCode = 1;
+  }
 }
 
 main();

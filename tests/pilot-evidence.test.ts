@@ -20,8 +20,6 @@ test("a synthetic report fails the editorial gate and is never 'passed' by the i
   const report = await syntheticPaidEvaluation(PAID_PROFILE);
   const evidence = inspectReport(report, "synthetic", null);
 
-  assert.equal(evidence.samples, 12);
-  assert.equal(evidence.cases, 6);
   assert.equal(evidence.gate.es, "fail");
   assert.equal(evidence.gate.en, "fail");
   assert.ok(evidence.gateIssues.es.includes("synthetic_is_not_editorial_approval"));

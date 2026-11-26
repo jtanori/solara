@@ -13,7 +13,6 @@ import type { PaidGenerationConfig } from "../../src/readings/paid-policy";
 import { canonicalHash } from "../../src/readings/policy";
 import { computeContentVersion } from "../../src/readings/content-version";
 import { blockText } from "../../src/readings/presentation";
-import { loadChartCorpus } from "./chart-corpus";
 import { loadPaidEvaluationCorpus } from "./paid-evaluation-corpus";
 
 /**
@@ -37,7 +36,6 @@ export type PilotEvidence = {
   sectionsGenerated: number;
   sectionsTotal: number;
   measuredMicros: number;
-  reservedMicros: number;
   uncertainMicros: number;
   repairs: number;
   failedAttempts: number;
@@ -121,6 +119,7 @@ export type PilotStructure = {
   }[];
 };
 
+/** Report-wide (all attempts, all locales). The report's own `attemptLatencyP95Ms` is per locale. */
 function p95(values: number[]): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -134,7 +133,7 @@ function reasonsFor(report: PaidEvaluationReport, blockers: PilotBlockers, curre
     reasons.add("synthetic_source");
   }
   const cases = new Set(report.samples.map(sample => sample.caseId));
-  if (report.samples.length < PAID_EDITORIAL_MINIMUM || cases.size < 6) reasons.add("fewer_than_six_cases");
+  if (report.samples.length < PAID_EDITORIAL_MINIMUM || cases.size < PAID_EDITORIAL_MINIMUM) reasons.add("fewer_than_six_cases");
   // A difference is reported as a difference: the version also hashes the resolved environment,
   // so a mismatch alone does not prove that the code changed.
   if (currentContentVersion === null) reasons.add("content_version_unknown");
@@ -206,7 +205,6 @@ export function inspectReport(report: PaidEvaluationReport, pilot: string, curre
     sectionsGenerated: report.samples.flatMap(sample => sample.sections).filter(section => section.status === "generated").length,
     sectionsTotal: report.samples.flatMap(sample => sample.sections).length,
     measuredMicros: locales.reduce((sum, row) => sum + row.measuredMicros, 0),
-    reservedMicros: attempts.filter(attempt => attempt.state === "reserved").reduce((sum, attempt) => sum + attempt.reservedMicros, 0),
     uncertainMicros: locales.reduce((sum, row) => sum + row.uncertainMicros, 0),
     repairs: locales.reduce((sum, row) => sum + row.repairs, 0),
     failedAttempts: locales.reduce((sum, row) => sum + row.failedAttempts, 0),
@@ -298,9 +296,4 @@ export function readReports(root: string): { pilot: string; report: PaidEvaluati
 export function writeStructures(file: string, structure: PilotStructure): void {
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(structure, null, 2) + "\n");
-}
-
-/** The corpus assertions the approvability verdict relies on. */
-export function corpusCaseIds(): string[] {
-  return loadChartCorpus().map(entry => entry.id);
 }
