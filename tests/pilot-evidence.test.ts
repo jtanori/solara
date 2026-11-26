@@ -5,8 +5,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { PAID_PROFILE } from "../src/readings/paid-contract";
+import { SECTION_MODEL_TIER } from "../src/readings/config";
 import { syntheticPaidEvaluation } from "./helpers/paid-evaluation";
-import { buildStructures, inspectReport, scanPilots } from "../scripts/lib/pilot-evidence";
+import { buildStructures, gateIssuesByLocale, gateVerdicts, inspectReport, scanPilots } from "../scripts/lib/pilot-evidence";
 
 const TSX = path.resolve("node_modules/.bin/tsx");
 const CLI = path.resolve("scripts/pilot-evidence.ts");
@@ -15,40 +16,74 @@ function temp(): string {
   return mkdtempSync(path.join(os.tmpdir(), "pilot-evidence-"));
 }
 
-test("a synthetic report is inventoried and never approvable", async () => {
+test("a synthetic report fails the editorial gate and is never 'passed' by the inventory", async () => {
   const report = await syntheticPaidEvaluation(PAID_PROFILE);
   const evidence = inspectReport(report, "synthetic", null);
 
   assert.equal(evidence.samples, 12);
   assert.equal(evidence.cases, 6);
-  assert.equal(evidence.approvable, false);
+  assert.equal(evidence.gate.es, "fail");
+  assert.equal(evidence.gate.en, "fail");
+  assert.ok(evidence.gateIssues.es.includes("synthetic_is_not_editorial_approval"));
   assert.ok(evidence.reasons.includes("synthetic_source"));
-  assert.ok(evidence.reasons.includes("current_content_version_unavailable"));
   assert.ok(evidence.reportHash.length === 64);
 });
 
-test("a synthetic source is refused even when the models are not fixture-named", async () => {
+test("without the pilot environment the gate is 'unknown', never 'pass'", async () => {
   const report = await syntheticPaidEvaluation(PAID_PROFILE);
-  const evidence = inspectReport(
-    { ...report, source: "synthetic", processor: "Real-looking processor", models: { cheap: "model-x", strong: "model-y" } },
-    "pilot",
-    report.contentVersion,
-  );
-  assert.ok(evidence.reasons.includes("synthetic_source"));
+  // Every report-side check passes here; only the environment is missing, so the verdict must not
+  // become "pass" just because nothing objected.
+  const models = { cheap: "deepseek-v4.1-flash", strong: "deepseek-v4-pro" };
+  const clean = {
+    ...report,
+    source: "provider" as const,
+    processor: "opencode-console",
+    models,
+    samples: report.samples.map(sample => ({
+      ...sample,
+      attempts: sample.attempts.map(attempt => ({
+        ...attempt,
+        model: models[SECTION_MODEL_TIER[attempt.section]],
+        reportedModel: models[SECTION_MODEL_TIER[attempt.section]],
+      })),
+    })),
+  };
+  assert.deepEqual(gateIssuesByLocale(clean, null), { es: [], en: [] });
+  assert.deepEqual(gateVerdicts(clean, null), { es: "unknown", en: "unknown" });
 });
 
-test("a provider report with a different content version is stale, not approvable", async () => {
+test("the inventory delegates to the gate: a corpus mismatch fails without any environment", async () => {
   const report = await syntheticPaidEvaluation(PAID_PROFILE);
-  const evidence = inspectReport({ ...report, source: "provider", processor: "Synthetic Test Provider" }, "pilot", "0".repeat(16));
-  assert.equal(evidence.approvable, false);
-  assert.ok(evidence.reasons.includes("content_version_stale"));
+  const baseline = report.facts.baseline;
+  const foreign = { ...report, facts: { ...report.facts, baseline: { ...baseline, sun: { ...baseline.sun, degree: (baseline.sun.degree + 1) % 30 } } } };
+  const issues = gateIssuesByLocale(foreign, null);
+  assert.ok(issues.es.includes("approval_binding_changed"), issues.es.join(","));
+  assert.equal(gateVerdicts(foreign, null).es, "fail");
 });
 
-test("a report with fewer than six cases is refused by case count", async () => {
+test("coverage is judged per locale, not per report", async () => {
+  const report = await syntheticPaidEvaluation(PAID_PROFILE);
+  const spanish = { ...report, samples: report.samples.filter(sample => sample.locale === "es") };
+  const gate = gateVerdicts(spanish, null);
+  const issues = gateIssuesByLocale(spanish, null);
+  assert.equal(gate.en, "fail", "the English half has no cases");
+  assert.ok(issues.en.includes("approval_corpus_incomplete"));
+  assert.ok(!issues.es.includes("approval_corpus_incomplete"), "the Spanish half is complete");
+});
+
+test("a report with a different content version is reported as different, not as stale", async () => {
+  const report = await syntheticPaidEvaluation(PAID_PROFILE);
+  const evidence = inspectReport(report, "pilot", "0".repeat(16));
+  assert.ok(evidence.reasons.includes("content_version_differs"));
+  assert.ok(!evidence.reasons.includes("content_version_stale"));
+});
+
+test("a report with fewer than six cases is refused by the gate", async () => {
   const report = await syntheticPaidEvaluation(PAID_PROFILE);
   const evidence = inspectReport({ ...report, samples: report.samples.slice(0, 1) }, "pilot", report.contentVersion);
-  assert.equal(evidence.approvable, false);
+  assert.equal(evidence.gate.es, "fail");
   assert.ok(evidence.reasons.includes("fewer_than_six_cases"));
+  assert.ok(evidence.gateIssues.es.includes("approval_corpus_incomplete"));
 });
 
 test("structures keep kinds and lengths, never prose", async () => {

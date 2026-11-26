@@ -2,22 +2,26 @@ import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import {
   PAID_EDITORIAL_MINIMUM,
+  approvalIssues,
   evaluationHash,
   evaluationMetrics,
   evaluationSampleChecks,
   paidEvaluationSchema,
   type PaidEvaluationReport,
 } from "../../src/readings/evaluation";
+import type { PaidGenerationConfig } from "../../src/readings/paid-policy";
 import { blockText } from "../../src/readings/presentation";
 import { loadChartCorpus } from "./chart-corpus";
+import { loadPaidEvaluationCorpus } from "./paid-evaluation-corpus";
 
 /**
  * #225 — read-only evidence inventory for the pilot reports on disk.
  *
  * Nothing here calls a provider or a database. It validates each report, recomputes its hash and
  * metrics, derives the mechanical blockers, and decides whether the report could be approved now.
- * The verdict is deliberately conservative: a synthetic source, a case count below six, a stale
- * content version or any mechanical blocker makes it non-approvable.
+ * The verdict delegates to the same `approvalIssues` the editorial gate uses, per locale, so the
+ * two cannot disagree. Without the pilot environment the tool can only judge the parts that do not
+ * need it; the rest is reported as `unknown`, never as `pass`.
  */
 
 export type PilotBlockers = Record<string, string[]>;
@@ -41,10 +45,14 @@ export type PilotEvidence = {
   configHash: string;
   processor: string;
   models: PaidEvaluationReport["models"];
-  approvable: boolean;
+  /** Same predicate as the editorial gate, per locale. `unknown` means the pilot env was absent. */
+  gate: Record<"en" | "es", GateVerdict>;
+  gateIssues: Record<"en" | "es", string[]>;
   reasons: string[];
   blockers: PilotBlockers;
 };
+
+export type GateVerdict = "pass" | "fail" | "unknown";
 
 export type PilotScan = {
   currentContentVersion: string | null;
@@ -83,16 +91,54 @@ function reasonsFor(report: PaidEvaluationReport, blockers: PilotBlockers, curre
   }
   const cases = new Set(report.samples.map(sample => sample.caseId));
   if (report.samples.length < PAID_EDITORIAL_MINIMUM || cases.size < 6) reasons.add("fewer_than_six_cases");
-  if (currentContentVersion === null) reasons.add("current_content_version_unavailable");
-  else if (report.contentVersion !== currentContentVersion) reasons.add("content_version_stale");
+  // A difference is reported as a difference: the version also hashes the resolved environment,
+  // so a mismatch alone does not prove that the code changed.
+  if (currentContentVersion !== null && report.contentVersion !== currentContentVersion) reasons.add("content_version_differs");
   for (const [caseId, issues] of Object.entries(blockers)) {
     if (issues.length > 0) reasons.add(`blockers:${caseId}`);
   }
   return [...reasons].sort();
 }
 
-/** Pure decision over an already-parsed report; exported so the tests can exercise each reason. */
-export function inspectReport(report: PaidEvaluationReport, pilot: string, currentContentVersion: string | null): PilotEvidence {
+/**
+ * The editorial gate, per locale, with the context this tool can actually see. Optional fields are
+ * filled from the pilot environment when present; a missing environment can only produce `unknown`.
+ */
+function gateContext(report: PaidEvaluationReport, config: PaidGenerationConfig | null) {
+  const corpus = loadPaidEvaluationCorpus(report.profile);
+  return {
+    profile: config?.editionProfile ?? report.profile,
+    facts: corpus.facts,
+    corpusHash: corpus.corpusHash,
+    schemaHash: corpus.schemaHash,
+    promptHashes: corpus.promptHashes,
+    ...(config === null ? {} : {
+      contentVersion: config.contentVersion,
+      configHash: config.fingerprint,
+      models: config.settings.models,
+      processor: config.profile.name,
+      settings: config.settings,
+      inputTokenLimits: config.profile.inputTokenLimits,
+      servedModels: config.profile.servedModels,
+    }),
+  };
+}
+
+export function gateIssuesByLocale(report: PaidEvaluationReport, config: PaidGenerationConfig | null): Record<"en" | "es", string[]> {
+  const context = gateContext(report, config);
+  return Object.fromEntries((["en", "es"] as const).map(locale => [locale, approvalIssues(report, { ...context, locale })])) as Record<"en" | "es", string[]>;
+}
+
+/** Same predicate as the editorial gate, per locale; `unknown` when the environment is missing. */
+export function gateVerdicts(report: PaidEvaluationReport, config: PaidGenerationConfig | null): Record<"en" | "es", GateVerdict> {
+  const issues = gateIssuesByLocale(report, config);
+  return Object.fromEntries((["en", "es"] as const).map(locale => [
+    locale,
+    issues[locale].length > 0 ? "fail" : config === null ? "unknown" : "pass",
+  ])) as Record<"en" | "es", GateVerdict>;
+}
+
+export function inspectReport(report: PaidEvaluationReport, pilot: string, currentContentVersion: string | null, config: PaidGenerationConfig | null = null): PilotEvidence {
   const blockers: PilotBlockers = {};
   for (const sample of report.samples) {
     const facts = report.facts[sample.caseId];
@@ -125,19 +171,20 @@ export function inspectReport(report: PaidEvaluationReport, pilot: string, curre
     configHash: report.configHash,
     processor: report.processor,
     models: report.models,
-    approvable: reasons.length === 0,
+    gate: gateVerdicts(report, config),
+    gateIssues: gateIssuesByLocale(report, config),
     reasons,
     blockers,
   };
 }
 
-export function inspectPilotFile(reportPath: string, pilot: string, currentContentVersion: string | null): PilotEvidence {
+export function inspectPilotFile(reportPath: string, pilot: string, currentContentVersion: string | null, config: PaidGenerationConfig | null = null): PilotEvidence {
   const value = JSON.parse(readFileSync(reportPath, "utf8")) as unknown;
   const report = paidEvaluationSchema.parse(value);
-  return inspectReport(report, pilot, currentContentVersion);
+  return inspectReport(report, pilot, currentContentVersion, config);
 }
 
-export function scanPilots(root: string, currentContentVersion: string | null): PilotScan {
+export function scanPilots(root: string, currentContentVersion: string | null, config: PaidGenerationConfig | null = null): PilotScan {
   const pilots: PilotEvidence[] = [];
   const errors: { pilot: string; reason: string }[] = [];
   let entries: string[] = [];
@@ -149,7 +196,7 @@ export function scanPilots(root: string, currentContentVersion: string | null): 
   for (const pilot of entries) {
     const file = path.join(root, pilot, "report.json");
     try {
-      pilots.push(inspectPilotFile(file, pilot, currentContentVersion));
+      pilots.push(inspectPilotFile(file, pilot, currentContentVersion, config));
     } catch (error) {
       const reason = error instanceof SyntaxError ? "invalid_json" : error instanceof Error ? error.message.split("\n")[0] : "invalid_report";
       errors.push({ pilot, reason });

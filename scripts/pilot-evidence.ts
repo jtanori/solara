@@ -14,6 +14,7 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { computeContentVersion } from "../src/readings/content-version";
+import { paidGenerationConfig, type PaidGenerationConfig } from "../src/readings/paid-policy";
 import { buildStructures, readReports, scanPilots, writeStructures, type PilotEvidence } from "./lib/pilot-evidence";
 
 type Options = {
@@ -59,12 +60,20 @@ function currentVersion(explicit: string | null): string | null {
   }
 }
 
+function pilotConfig(): PaidGenerationConfig | null {
+  try {
+    return paidGenerationConfig();
+  } catch {
+    return null;
+  }
+}
+
 function mxn(micros: number): string {
   return (micros / 1_000_000).toFixed(6);
 }
 
 function printTable(rows: PilotEvidence[]): void {
-  const header = ["pilot", "profile", "loc", "cases", "sections", "measured", "uncertain", "rep", "fail", "p95ms", "hash", "cv", "ok", "reasons"];
+  const header = ["pilot", "profile", "loc", "cases", "sections", "measured", "uncertain", "rep", "fail", "p95ms", "hash", "cv", "gate", "reasons"];
   const lines = [header.join("\t")];
   for (const row of rows) {
     lines.push([
@@ -80,7 +89,7 @@ function printTable(rows: PilotEvidence[]): void {
       row.p95LatencyMs === null ? "—" : `${row.p95LatencyMs}`,
       row.reportHash.slice(0, 12),
       row.contentVersion,
-      row.approvable ? "yes" : "no",
+      `es:${row.gate.es} en:${row.gate.en}`,
       row.reasons.join(","),
     ].join("\t"));
   }
@@ -95,7 +104,8 @@ function main(): void {
   }
 
   const current = currentVersion(options.contentVersion);
-  const scan = scanPilots(options.root, current);
+  const config = pilotConfig();
+  const scan = scanPilots(options.root, current, config);
 
   if (options.structures) {
     const structure = buildStructures(readReports(options.root));
