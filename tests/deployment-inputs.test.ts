@@ -28,7 +28,7 @@ test("deployment input keeps PDF build/runtime assets but no local reading fixtu
   assert.ok(!files.some(path => /^\.env(?:\.|$)/.test(path) && path !== ".env.example"), "environment files must stay out of deployment input");
 });
 
-test("strict typecheck resolves every module after Vercel deployment exclusions", { timeout: 120_000 }, () => {
+test("strict typecheck resolves every module after Vercel deployment exclusions", { timeout: 300_000 }, () => {
   const fixture = createDeploymentInputFixture();
   try {
     assert.ok(!existsSync(join(fixture.directory, "tests")));
@@ -36,7 +36,9 @@ test("strict typecheck resolves every module after Vercel deployment exclusions"
     assert.equal(config.compilerOptions.strict, true);
     assert.ok(config.include.includes("**/*.ts"));
     const result = spawnSync(process.execPath, [join(process.cwd(), "node_modules/typescript/bin/tsc"), "--noEmit", "--incremental", "false"], {
-      cwd: fixture.directory, encoding: "utf8", timeout: 110_000,
+      // The typecheck alone measures ~108 s on a developer machine; a 110 s bound failed here as
+      // soon as it ran alongside the two-minute pilot seed test. CI runs every file concurrently.
+      cwd: fixture.directory, encoding: "utf8", timeout: 240_000,
     });
     assert.equal(result.error, undefined, result.error?.message);
     assert.equal(result.status, 0, `deployment-input typecheck failed:\n${result.stdout}\n${result.stderr}`);

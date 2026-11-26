@@ -30,7 +30,8 @@ EMAIL=""
 BRANCH="chore/225-pilot-evidence"
 DRY=0
 
-usage() { sed -n '2,18p' "$0"; exit "${1:-0}"; }
+# Print the header comment block only: everything from line 2 up to the first blank line.
+usage() { awk 'NR > 1 { if ($0 ~ /^$/) exit; print }' "$0"; exit "${1:-0}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +55,11 @@ for value in "$FROM" "$ONLY"; do
     exit 2
   fi
 done
+# --only names one step; a resume point after it would run nothing and still report success.
+if [[ -n "$ONLY" ]] && (( 10#$ONLY < 10#$FROM )); then
+  echo "--only $ONLY is before --from $FROM; nothing would run" >&2
+  exit 2
+fi
 
 STEP_TITLES=(
   "Preflight"
@@ -165,7 +171,11 @@ step6() {
     git checkout -- next-env.d.ts
     echo "restored next-env.d.ts"
   fi
-  test -z "$(git status --porcelain)"
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "working tree is dirty; commit or stash before this step:"
+    git status --short
+    return 1
+  fi
 }
 
 step7() {

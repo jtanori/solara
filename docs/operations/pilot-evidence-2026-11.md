@@ -51,7 +51,7 @@ slower provider day turns the tail into timeouts, which are recorded as uncertai
 
   | Environment | `contentVersion` |
   |---|---|
-  | plain shell (provider/model vars unset) | `b59e08eaddd45de0` |
+  | `computeContentVersion()` in a plain shell (provider/model vars unset; the tool now reports `unknown` here) | `b59e08eaddd45de0` |
   | `.env.pilot.example` applied | `8b77c215d686edc3` |
   | the eight reports | five distinct values (`6c63bc38…`, `17833559…`, `17eeb58f…`, `2c922287…`, `a1a61b45…`) |
 

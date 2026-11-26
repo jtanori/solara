@@ -212,6 +212,7 @@ export function validateEditorialApproval(reportValue: unknown, reviewValue: unk
   const report = paidEvaluationSchema.parse(reportValue); const review = editorialReviewSchema.parse(reviewValue);
   const issues = approvalIssues(report, { ...current, locale: review.locale, review });
   if (issues.length > 0) throw new Error(issues[0]);
+  // One sample per case per locale is enforced above, so this is also the reviewed sample count.
   return { profile: report.profile, contentVersion: report.contentVersion, locale: review.locale, configHash: report.configHash,
     sampleCount: Object.keys(current.facts).length, reviewer: review.reviewer, evidence: `report-sha256:${evaluationHash(report)}\n${review.evidence}` };
 }
