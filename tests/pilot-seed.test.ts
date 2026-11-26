@@ -18,6 +18,7 @@ import type { ReadingViewer } from "../src/readings/reading-view";
 import { loadReadingPresentation } from "../src/readings/reading-view";
 import { PAID_PROFILE } from "../src/readings/paid-contract";
 import { syntheticPaidEvaluation } from "./helpers/paid-evaluation";
+import { loadChartCorpus } from "../scripts/lib/chart-corpus";
 
 /*
  * #225 / A2b: the seed is the fixture the next phase reuses, so it has to be re-runnable and it
@@ -33,13 +34,22 @@ const CLI = path.resolve("scripts/pilot-seed.ts");
 const OUT = ".venv/pilot-seed-test";
 
 after(async () => {
+  rmSync(OUT, { recursive: true, force: true });
   if (enabled) await Promise.all([pool.end(), coordinationPool.end()]);
 });
 
 type Fixture = { reportPath: string; caseA: string; caseB: string };
 
+let cached: Promise<Fixture> | null = null;
+/** Built once per file: the synthetic report is the expensive part of both cases. */
+function fixture(): Promise<Fixture> {
+  cached ??= writeReport();
+  return cached;
+}
+
 async function writeReport(): Promise<Fixture> {
-  const report = await syntheticPaidEvaluation(PAID_PROFILE);
+  const caseIds = loadChartCorpus().map(entry => entry.id).slice(0, 2);
+  const report = await syntheticPaidEvaluation(PAID_PROFILE, caseIds);
   const generated = report.samples.filter(sample => sample.sections.length > 0 && sample.sections.every(section => section.status === "generated"));
   const caseA = generated[0]?.caseId;
   const caseB = generated.find(sample => sample.caseId !== caseA)?.caseId;
@@ -66,12 +76,12 @@ function seed(fixture: Fixture, email: string, args: string[]): { status: number
 }
 
 test("the seed is re-runnable and leaves one ledger-consistent fixture", gated, async () => {
-  const fixture = await writeReport();
+  const data = await fixture();
   const user = await makeUser();
   try {
-    const first = seed(fixture, user.email, ["--mode", "both", "--case", fixture.caseA, "--period", "2026-01"]);
+    const first = seed(data, user.email, ["--mode", "both", "--case", data.caseA, "--period", "2026-01"]);
     assert.equal(first.status, 0, first.stderr);
-    const second = seed(fixture, user.email, ["--mode", "both", "--case", fixture.caseA, "--period", "2026-01"]);
+    const second = seed(data, user.email, ["--mode", "both", "--case", data.caseA, "--period", "2026-01"]);
     assert.equal(second.status, 0, `second run must not collide: ${second.stderr}`);
 
     const documents = await db.select().from(readingDocuments).where(eq(readingDocuments.tier, "free"));
@@ -107,29 +117,27 @@ test("the seed is re-runnable and leaves one ledger-consistent fixture", gated, 
     assert.equal(again.paid.runId, paid[0].id, "the second run replaces, not appends");
   } finally {
     await db.delete(users).where(eq(users.id, user.id));
-    rmSync(OUT, { recursive: true, force: true });
   }
 });
 
 test("the free offer is never repointed to another reading without --replace-free", gated, async () => {
-  const fixture = await writeReport();
+  const data = await fixture();
   const user = await makeUser();
   try {
-    const first = seed(fixture, user.email, ["--mode", "free", "--case", fixture.caseA]);
+    const first = seed(data, user.email, ["--mode", "free", "--case", data.caseA]);
     assert.equal(first.status, 0, first.stderr);
 
-    const moved = seed(fixture, user.email, ["--mode", "free", "--case", fixture.caseB]);
+    const moved = seed(data, user.email, ["--mode", "free", "--case", data.caseB]);
     assert.equal(moved.status, 1, "a second chart must not silently take over the free offer");
     assert.match(moved.stderr, /free offer already points at reading/);
     assert.match(moved.stderr, /--replace-free/);
 
-    const replaced = seed(fixture, user.email, ["--mode", "free", "--case", fixture.caseB, "--replace-free"]);
+    const replaced = seed(data, user.email, ["--mode", "free", "--case", data.caseB, "--replace-free"]);
     assert.equal(replaced.status, 0, replaced.stderr);
     const runs = await db.select().from(readingGenerationRuns).where(eq(readingGenerationRuns.userId, user.id));
     assert.equal(runs.length, 1);
     assert.equal(runs[0].readingId, JSON.parse(replaced.stdout).readingId);
   } finally {
     await db.delete(users).where(eq(users.id, user.id));
-    rmSync(OUT, { recursive: true, force: true });
   }
 });

@@ -65,4 +65,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(error => fail(error instanceof Error ? error.message : String(error)));
+main().catch(error => fail(error instanceof Error ? error.message : String(error))).finally(async () => {
+  // Close the pool the render path opened through the synthetic account helper. Imported here so
+  // the fixture guard still runs before anything touches src/db.
+  const { coordinationPool, pool } = await import("../src/db");
+  await Promise.all([pool.end(), coordinationPool.end()]).catch(() => {});
+});

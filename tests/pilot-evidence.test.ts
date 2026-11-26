@@ -12,13 +12,20 @@ import { buildStructures, gateIssuesByLocale, gateVerdicts, inspectReport, pilot
 const TSX = path.resolve("node_modules/.bin/tsx");
 const CLI = path.resolve("scripts/pilot-evidence.ts");
 
+/** The fixture report is expensive to build; every case below reads its own copy. */
+let cached: ReturnType<typeof syntheticPaidEvaluation> | null = null;
+function fixtureReport() {
+  cached ??= syntheticPaidEvaluation(PAID_PROFILE);
+  return cached;
+}
+
 function temp(): string {
   return mkdtempSync(path.join(os.tmpdir(), "pilot-evidence-"));
 }
 
 test("a synthetic report fails the editorial gate and is never 'passed' by the inventory", async () => {
-  const report = await syntheticPaidEvaluation(PAID_PROFILE);
-  const evidence = inspectReport(report, "synthetic", null);
+  const base = await fixtureReport();
+  const evidence = inspectReport(base, "synthetic", null);
 
   assert.equal(evidence.gate.es, "fail");
   assert.equal(evidence.gate.en, "fail");
@@ -28,16 +35,16 @@ test("a synthetic report fails the editorial gate and is never 'passed' by the i
 });
 
 test("without the pilot environment the gate is 'unknown', never 'pass'", async () => {
-  const report = await syntheticPaidEvaluation(PAID_PROFILE);
+  const base = await fixtureReport();
   // Every report-side check passes here; only the environment is missing, so the verdict must not
   // become "pass" just because nothing objected.
   const models = { cheap: "deepseek-v4.1-flash", strong: "deepseek-v4-pro" };
   const clean = {
-    ...report,
+    ...base,
     source: "provider" as const,
     processor: "opencode-console",
     models,
-    samples: report.samples.map(sample => ({
+    samples: base.samples.map(sample => ({
       ...sample,
       attempts: sample.attempts.map(attempt => ({
         ...attempt,
@@ -51,17 +58,17 @@ test("without the pilot environment the gate is 'unknown', never 'pass'", async 
 });
 
 test("the inventory delegates to the gate: a corpus mismatch fails without any environment", async () => {
-  const report = await syntheticPaidEvaluation(PAID_PROFILE);
-  const baseline = report.facts.baseline;
-  const foreign = { ...report, facts: { ...report.facts, baseline: { ...baseline, sun: { ...baseline.sun, degree: (baseline.sun.degree + 1) % 30 } } } };
+  const base = await fixtureReport();
+  const baseline = base.facts.baseline;
+  const foreign = { ...base, facts: { ...base.facts, baseline: { ...baseline, sun: { ...baseline.sun, degree: (baseline.sun.degree + 1) % 30 } } } };
   const issues = gateIssuesByLocale(foreign, null);
   assert.ok(issues.es.includes("approval_binding_changed"), issues.es.join(","));
   assert.equal(gateVerdicts(foreign, null).es, "fail");
 });
 
 test("coverage is judged per locale, not per report", async () => {
-  const report = await syntheticPaidEvaluation(PAID_PROFILE);
-  const spanish = { ...report, samples: report.samples.filter(sample => sample.locale === "es") };
+  const base = await fixtureReport();
+  const spanish = { ...base, samples: base.samples.filter(sample => sample.locale === "es") };
   const gate = gateVerdicts(spanish, null);
   const issues = gateIssuesByLocale(spanish, null);
   assert.equal(gate.en, "fail", "the English half has no cases");
@@ -70,15 +77,15 @@ test("coverage is judged per locale, not per report", async () => {
 });
 
 test("a report with a different content version is reported as different, not as stale", async () => {
-  const report = await syntheticPaidEvaluation(PAID_PROFILE);
-  const evidence = inspectReport(report, "pilot", "0".repeat(16));
+  const base = await fixtureReport();
+  const evidence = inspectReport(base, "pilot", "0".repeat(16));
   assert.ok(evidence.reasons.includes("content_version_differs"));
   assert.ok(!evidence.reasons.includes("content_version_stale"));
 });
 
 test("a report with fewer than six cases is refused by the gate", async () => {
-  const report = await syntheticPaidEvaluation(PAID_PROFILE);
-  const evidence = inspectReport({ ...report, samples: report.samples.slice(0, 1) }, "pilot", report.contentVersion);
+  const base = await fixtureReport();
+  const evidence = inspectReport({ ...base, samples: base.samples.slice(0, 1) }, "pilot", base.contentVersion);
   assert.equal(evidence.gate.es, "fail");
   assert.ok(evidence.reasons.includes("fewer_than_six_cases"));
   assert.ok(evidence.gateIssues.es.includes("approval_corpus_incomplete"));
@@ -106,9 +113,9 @@ test("an incomplete pilot environment never yields a content version", () => {
 test("the CLI refuses to invent a content version and says why", async () => {
   const dir = temp();
   try {
-    const report = await syntheticPaidEvaluation(PAID_PROFILE);
+    const base = await fixtureReport();
     mkdirSync(path.join(dir, "pilot"));
-    writeFileSync(path.join(dir, "pilot", "report.json"), JSON.stringify(report));
+    writeFileSync(path.join(dir, "pilot", "report.json"), JSON.stringify(await fixtureReport()));
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (/^READINGS_/.test(key)) delete env[key];
     const result = spawnSync(TSX, [CLI, "--root", dir, "--json"], { encoding: "utf8", env });
@@ -122,8 +129,8 @@ test("the CLI refuses to invent a content version and says why", async () => {
 });
 
 test("structures keep kinds and lengths, never prose", async () => {
-  const report = await syntheticPaidEvaluation(PAID_PROFILE);
-  const structure = buildStructures([{ pilot: "synthetic", report }]);
+  const base = await fixtureReport();
+  const structure = buildStructures([{ pilot: "synthetic", report: base }]);
   assert.equal(structure.version, "pilot-structures/1");
   assert.equal(structure.cases.length, 12);
   const serialized = JSON.stringify(structure);

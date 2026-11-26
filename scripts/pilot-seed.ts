@@ -18,7 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { and, eq, inArray } from "drizzle-orm";
-import { db } from "../src/db";
+import { coordinationPool, db, pool } from "../src/db";
 import {
   paidReadingAllowances,
   paidReadingEditions,
@@ -233,4 +233,8 @@ seed().then(output => {
   console.log(JSON.stringify({ email, ...output }, null, 2));
 }).catch(error => {
   fail(error instanceof SeedError ? error.message : error instanceof Error ? error.message : String(error));
+}).finally(async () => {
+  // Without this the process lingers until the pool's idle timeout, which made a single seed take
+  // over a minute; the run's output was already printed, so it read as a hang.
+  await Promise.all([pool.end(), coordinationPool.end()]);
 });
