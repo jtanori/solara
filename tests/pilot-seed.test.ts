@@ -17,7 +17,7 @@ import {
 } from "../src/db/schema";
 import type { ReadingViewer } from "../src/readings/reading-view";
 import { loadReadingPresentation } from "../src/readings/reading-view";
-import { PAID_PROFILE } from "../src/readings/paid-contract";
+import { PAID_PROFILE, paidSections } from "../src/readings/paid-contract";
 import { syntheticPaidEvaluation } from "./helpers/paid-evaluation";
 import { loadChartCorpus } from "../scripts/lib/chart-corpus";
 
@@ -176,6 +176,50 @@ test("a report with no generated section is refused instead of seeded", gated, a
     assert.equal(paidRuns.length, 0);
     const allowances = await db.select({ runId: paidReadingAllowances.runId }).from(paidReadingAllowances).where(eq(paidReadingAllowances.userId, user.id));
     assert.equal(allowances.length, 0, "the month was not consumed");
+  } finally {
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("the seed writes the genuine partial shape, not only complete editions", gated, async () => {
+  const data = await fixture();
+  const failedKey = paidSections(data.report.profile).at(-1)!;
+  const partial = {
+    ...data.report,
+    samples: data.report.samples
+      .filter(sample => sample.caseId === data.caseA && sample.locale === "en")
+      .map(sample => ({
+        ...sample,
+        sections: sample.sections.map(section => section.key === failedKey
+          ? { ...section, status: "failed" as const, blocks: [] }
+          : section),
+      })),
+  };
+  const reportPath = path.join(OUT, "partial.json");
+  writeFileSync(reportPath, JSON.stringify(partial));
+  const user = await makeUser();
+  try {
+    // rich-es-go2 (10/11, guidance failed) is the only genuine partial pilot and the shape the
+    // next phase renders; the complete cases alone never exercise status "partial".
+    const result = seed({ ...data, reportPath }, user.email, ["--mode", "paid", "--case", data.caseA, "--period", "2026-01"]);
+    assert.equal(result.status, 0, result.stderr);
+    const readingId = (JSON.parse(result.stdout) as { readingId: string }).readingId;
+
+    const [run] = await db.select().from(paidReadingRuns)
+      .where(and(eq(paidReadingRuns.userId, user.id), eq(paidReadingRuns.period, "2026-01")));
+    assert.equal(run.status, "partial", "a report with a failed section is not recorded as completed");
+    assert.equal(run.completedSections, paidSections(data.report.profile).length - 1);
+    assert.ok(run.consumedAt, "the edition exists, so the month is consumed");
+
+    const [edition] = await db.select().from(paidReadingEditions).where(eq(paidReadingEditions.runId, run.id));
+    const view = await loadReadingPresentation(user.viewer, readingId, "en", { kind: "paid", id: edition.id });
+    assert.equal(view.content.kind, "saved-reading");
+    if (view.content.kind !== "saved-reading") return;
+    assert.equal(view.content.partial, true);
+    assert.ok(view.content.notices.includes("partial"));
+    const failed = view.content.sections.find(section => section.key === failedKey);
+    assert.equal(failed?.status, "failed");
+    assert.ok(failed?.notices.includes("section_failed"), "the failed section carries its notice");
   } finally {
     await db.delete(users).where(eq(users.id, user.id));
   }
