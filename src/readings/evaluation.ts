@@ -175,13 +175,19 @@ export function approvalIssues(report: PaidEvaluationReport, current: ApprovalCo
       issues.push("approval_sample_invalid");
       continue;
     }
-    // Receipts can only be judged against today's prices and served-model policy; a caller that
-    // lacks them reports "unknown" rather than "pass" (see gateVerdicts in the pilot inventory).
-    if (current.settings === undefined || current.inputTokenLimits === undefined || current.servedModels === undefined) continue;
+    // Receipts can only be judged against today's prices and served-model policy. A caller that
+    // cannot judge them must not receive an approval-shaped empty list either: the approval path
+    // always passes `review`, so a missing receipt context there is a defect, not a shortcut. The
+    // pilot inventory never passes `review`, so it still reports "unknown" rather than "fail".
+    const { settings, inputTokenLimits, servedModels } = current;
+    if (settings === undefined || inputTokenLimits === undefined || servedModels === undefined) {
+      if (review !== undefined) issues.push("approval_receipt_invalid");
+      continue;
+    }
     for (const attempt of sample.attempts) {
       if (attempt.state === "reserved" || attempt.costMicros === null) { issues.push("approval_receipt_invalid"); break; }
-      const inputLimit = current.inputTokenLimits[attempt.model];
-      const quote = costMicros(current.settings.prices, attempt.model, { inputTokens: inputLimit, outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION });
+      const inputLimit = inputTokenLimits[attempt.model];
+      const quote = costMicros(settings.prices, attempt.model, { inputTokens: inputLimit, outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION });
       if (quote === null || attempt.reservedMicros !== quote || (attempt.inputTokens !== null && attempt.inputTokens > inputLimit)) {
         issues.push("approval_receipt_invalid");
         break;
@@ -189,7 +195,7 @@ export function approvalIssues(report: PaidEvaluationReport, current: ApprovalCo
       try {
         validateAttemptSettlement({ basis: attempt.state, costMicros: attempt.costMicros, model: attempt.reportedModel,
           usage: attempt.inputTokens === null || attempt.outputTokens === null ? null : { inputTokens: attempt.inputTokens, outputTokens: attempt.outputTokens }, latencyMs: attempt.latencyMs, code: attempt.code },
-        quote, current.settings, attempt.model, (requested, served) => current.servedModels?.[requested]?.includes(served) === true);
+        quote, settings, attempt.model, (requested, served) => servedModels[requested]?.includes(served) === true);
       } catch { issues.push("approval_receipt_invalid"); break; }
     }
   }
