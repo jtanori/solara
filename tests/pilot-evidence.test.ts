@@ -7,7 +7,7 @@ import test from "node:test";
 import { PAID_PROFILE } from "../src/readings/paid-contract";
 import { SECTION_MODEL_TIER } from "../src/readings/config";
 import { syntheticPaidEvaluation } from "./helpers/paid-evaluation";
-import { buildStructures, gateIssuesByLocale, gateVerdicts, inspectReport, pilotEnvComplete, resolveContentVersion, scanPilots } from "../scripts/lib/pilot-evidence";
+import { buildStructures, gateIssuesByLocale, gateVerdicts, inspectReport, pilotEnvComplete, resolveContentVersion, scanPilots, verdictFor } from "../scripts/lib/pilot-evidence";
 
 const TSX = path.resolve("node_modules/.bin/tsx");
 const CLI = path.resolve("scripts/pilot-evidence.ts");
@@ -126,6 +126,15 @@ test("the CLI refuses to invent a content version and says why", async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("the inventory derives its verdict from one evaluation of the gate", async () => {
+  const base = await fixtureReport();
+  const evidence = inspectReport(base, "pilot", base.contentVersion, null);
+  const issues = gateIssuesByLocale(base, null);
+  assert.deepEqual(evidence.gateIssues, issues, "the printed issues are the ones that produced the verdict");
+  assert.deepEqual(evidence.gate, verdictFor(issues, null));
+  assert.deepEqual(evidence.gate, gateVerdicts(base, null));
 });
 
 test("structures keep kinds and lengths, never prose", async () => {

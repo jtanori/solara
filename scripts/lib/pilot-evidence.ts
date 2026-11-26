@@ -148,8 +148,19 @@ function reasonsFor(report: PaidEvaluationReport, blockers: PilotBlockers, curre
  * The editorial gate, per locale, with the context this tool can actually see. Optional fields are
  * filled from the pilot environment when present; a missing environment can only produce `unknown`.
  */
+const corpusCache = new Map<PaidEvaluationReport["profile"], ReturnType<typeof loadPaidEvaluationCorpus>>();
+
+/** The corpus is six paid snapshots plus every prompt hash: ~6 s. It is pure per profile. */
+function corpusFor(profile: PaidEvaluationReport["profile"]) {
+  const cached = corpusCache.get(profile);
+  if (cached !== undefined) return cached;
+  const corpus = loadPaidEvaluationCorpus(profile);
+  corpusCache.set(profile, corpus);
+  return corpus;
+}
+
 function gateContext(report: PaidEvaluationReport, config: PaidGenerationConfig | null) {
-  const corpus = loadPaidEvaluationCorpus(report.profile);
+  const corpus = corpusFor(report.profile);
   return {
     profile: config?.editionProfile ?? report.profile,
     facts: corpus.facts,
@@ -173,13 +184,17 @@ export function gateIssuesByLocale(report: PaidEvaluationReport, config: PaidGen
   return Object.fromEntries((["en", "es"] as const).map(locale => [locale, approvalIssues(report, { ...context, locale })])) as Record<"en" | "es", string[]>;
 }
 
-/** Same predicate as the editorial gate, per locale; `unknown` when the environment is missing. */
-export function gateVerdicts(report: PaidEvaluationReport, config: PaidGenerationConfig | null): Record<"en" | "es", GateVerdict> {
-  const issues = gateIssuesByLocale(report, config);
+/** Derive the verdict from issues that were already computed, so callers can share one run. */
+export function verdictFor(issues: Record<"en" | "es", string[]>, config: PaidGenerationConfig | null): Record<"en" | "es", GateVerdict> {
   return Object.fromEntries((["en", "es"] as const).map(locale => [
     locale,
     issues[locale].length > 0 ? "fail" : config === null ? "unknown" : "pass",
   ])) as Record<"en" | "es", GateVerdict>;
+}
+
+/** Same predicate as the editorial gate, per locale; `unknown` when the environment is missing. */
+export function gateVerdicts(report: PaidEvaluationReport, config: PaidGenerationConfig | null): Record<"en" | "es", GateVerdict> {
+  return verdictFor(gateIssuesByLocale(report, config), config);
 }
 
 export function inspectReport(report: PaidEvaluationReport, pilot: string, currentContentVersion: string | null, config: PaidGenerationConfig | null = null): PilotEvidence {
@@ -195,6 +210,9 @@ export function inspectReport(report: PaidEvaluationReport, pilot: string, curre
   const locales = Object.values(metrics);
   const attempts = report.samples.flatMap(sample => sample.attempts);
   const reasons = reasonsFor(report, blockers, currentContentVersion);
+  // One evaluation, shared by the verdict and the printed issues: the predicate walks every
+  // attempt, and running it twice per report was the whole cost of the inventory.
+  const gateIssues = gateIssuesByLocale(report, config);
 
   return {
     pilot,
@@ -214,8 +232,8 @@ export function inspectReport(report: PaidEvaluationReport, pilot: string, curre
     configHash: report.configHash,
     processor: report.processor,
     models: report.models,
-    gate: gateVerdicts(report, config),
-    gateIssues: gateIssuesByLocale(report, config),
+    gate: verdictFor(gateIssues, config),
+    gateIssues,
     reasons,
     blockers,
   };
