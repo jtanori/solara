@@ -7,7 +7,7 @@ import test from "node:test";
 import { PAID_PROFILE } from "../src/readings/paid-contract";
 import { SECTION_MODEL_TIER } from "../src/readings/config";
 import { syntheticPaidEvaluation } from "./helpers/paid-evaluation";
-import { buildStructures, gateIssuesByLocale, gateVerdicts, inspectReport, scanPilots } from "../scripts/lib/pilot-evidence";
+import { buildStructures, gateIssuesByLocale, gateVerdicts, inspectReport, pilotEnvComplete, resolveContentVersion, scanPilots } from "../scripts/lib/pilot-evidence";
 
 const TSX = path.resolve("node_modules/.bin/tsx");
 const CLI = path.resolve("scripts/pilot-evidence.ts");
@@ -84,6 +84,43 @@ test("a report with fewer than six cases is refused by the gate", async () => {
   assert.equal(evidence.gate.es, "fail");
   assert.ok(evidence.reasons.includes("fewer_than_six_cases"));
   assert.ok(evidence.gateIssues.es.includes("approval_corpus_incomplete"));
+});
+
+test("an incomplete pilot environment never yields a content version", () => {
+  assert.equal(pilotEnvComplete({}), false);
+  assert.equal(pilotEnvComplete({ READINGS_PROVIDER: "opencode", READINGS_PROCESSOR_PROFILE: "{}", READINGS_CHEAP_MODEL: "a" }), false, "a blank model is not a model");
+  assert.equal(pilotEnvComplete({ READINGS_PROVIDER: "opencode", READINGS_PROCESSOR_PROFILE: "{}", READINGS_CHEAP_MODEL: "a", READINGS_STRONG_MODEL: " " }), false);
+
+  let called = false;
+  const absent = resolveContentVersion(null, {}, () => { called = true; return "0".repeat(16); });
+  assert.equal(called, false, "the default environment must not be hashed");
+  assert.deepEqual({ version: absent.version, source: absent.source }, { version: null, source: "absent" });
+
+  const complete = { READINGS_PROVIDER: "opencode", READINGS_PROCESSOR_PROFILE: "{}", READINGS_CHEAP_MODEL: "a", READINGS_STRONG_MODEL: "b" };
+  assert.equal(pilotEnvComplete(complete), true);
+  assert.deepEqual(resolveContentVersion(null, complete, () => "a".repeat(16)), {
+    version: "a".repeat(16), source: "env", envFingerprint: resolveContentVersion(null, complete, () => "a".repeat(16)).envFingerprint,
+  });
+  assert.deepEqual(resolveContentVersion("b".repeat(16), complete, () => { throw new Error("must not compute"); }),
+    { version: "b".repeat(16), source: "explicit", envFingerprint: resolveContentVersion(null, complete, () => "a".repeat(16)).envFingerprint });
+});
+
+test("the CLI refuses to invent a content version and says why", async () => {
+  const dir = temp();
+  try {
+    const report = await syntheticPaidEvaluation(PAID_PROFILE);
+    mkdirSync(path.join(dir, "pilot"));
+    writeFileSync(path.join(dir, "pilot", "report.json"), JSON.stringify(report));
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (/^READINGS_/.test(key)) delete env[key];
+    const result = spawnSync(TSX, [CLI, "--root", dir, "--json"], { encoding: "utf8", env });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /current contentVersion: unknown \(pilot env incomplete; use --content-version\)|"contentVersionSource": "absent"/);
+    assert.match(result.stdout, /content_version_unknown/);
+    assert.doesNotMatch(result.stdout, /content_version_stale/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("structures keep kinds and lengths, never prose", async () => {

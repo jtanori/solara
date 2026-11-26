@@ -10,6 +10,8 @@ import {
   type PaidEvaluationReport,
 } from "../../src/readings/evaluation";
 import type { PaidGenerationConfig } from "../../src/readings/paid-policy";
+import { canonicalHash } from "../../src/readings/policy";
+import { computeContentVersion } from "../../src/readings/content-version";
 import { blockText } from "../../src/readings/presentation";
 import { loadChartCorpus } from "./chart-corpus";
 import { loadPaidEvaluationCorpus } from "./paid-evaluation-corpus";
@@ -54,6 +56,48 @@ export type PilotEvidence = {
 
 export type GateVerdict = "pass" | "fail" | "unknown";
 
+export type ContentVersionSource = "explicit" | "env" | "absent";
+export type ContentVersionResolution = { version: string | null; source: ContentVersionSource; envFingerprint: string };
+
+/** The environment inputs contentVersion hashes, without any secret. */
+export function envFingerprint(env: Record<string, string | undefined> = process.env): string {
+  return canonicalHash({
+    provider: env.READINGS_PROVIDER ?? null,
+    processorProfile: env.READINGS_PROCESSOR_PROFILE ?? null,
+    baseUrl: env.READINGS_API_BASE_URL ?? null,
+    cheap: env.READINGS_CHEAP_MODEL ?? null,
+    strong: env.READINGS_STRONG_MODEL ?? null,
+  });
+}
+
+/** A generation environment, not the app default: without these, contentVersion is not comparable. */
+export function pilotEnvComplete(env: Record<string, string | undefined> = process.env): boolean {
+  return ["READINGS_PROVIDER", "READINGS_PROCESSOR_PROFILE", "READINGS_CHEAP_MODEL", "READINGS_STRONG_MODEL"]
+    .every(key => (env[key] ?? "").trim() !== "");
+}
+
+/**
+ * contentVersion hashes prompts, schemas *and* the resolved environment. Computing it in a shell
+ * that never had the pilot env produces a different digest for identical code, so a plain
+ * comparison would call a report stale when only the environment differs. Trust an explicit value;
+ * compute from the environment only when that environment is demonstrably a generation one;
+ * otherwise report `unknown` and let the caller refuse to claim anything.
+ */
+export function resolveContentVersion(
+  explicit: string | null,
+  env: Record<string, string | undefined> = process.env,
+  compute: () => string = computeContentVersion,
+): ContentVersionResolution {
+  const fingerprint = envFingerprint(env);
+  if (explicit) return { version: explicit, source: "explicit", envFingerprint: fingerprint };
+  if (!pilotEnvComplete(env)) return { version: null, source: "absent", envFingerprint: fingerprint };
+  try {
+    return { version: compute(), source: "env", envFingerprint: fingerprint };
+  } catch {
+    return { version: null, source: "absent", envFingerprint: fingerprint };
+  }
+}
+
 export type PilotScan = {
   currentContentVersion: string | null;
   pilots: PilotEvidence[];
@@ -93,7 +137,8 @@ function reasonsFor(report: PaidEvaluationReport, blockers: PilotBlockers, curre
   if (report.samples.length < PAID_EDITORIAL_MINIMUM || cases.size < 6) reasons.add("fewer_than_six_cases");
   // A difference is reported as a difference: the version also hashes the resolved environment,
   // so a mismatch alone does not prove that the code changed.
-  if (currentContentVersion !== null && report.contentVersion !== currentContentVersion) reasons.add("content_version_differs");
+  if (currentContentVersion === null) reasons.add("content_version_unknown");
+  else if (report.contentVersion !== currentContentVersion) reasons.add("content_version_differs");
   for (const [caseId, issues] of Object.entries(blockers)) {
     if (issues.length > 0) reasons.add(`blockers:${caseId}`);
   }

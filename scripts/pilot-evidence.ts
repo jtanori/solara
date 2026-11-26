@@ -13,9 +13,8 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { computeContentVersion } from "../src/readings/content-version";
 import { paidGenerationConfig, type PaidGenerationConfig } from "../src/readings/paid-policy";
-import { buildStructures, readReports, scanPilots, writeStructures, type PilotEvidence } from "./lib/pilot-evidence";
+import { buildStructures, readReports, resolveContentVersion, scanPilots, writeStructures, type PilotEvidence } from "./lib/pilot-evidence";
 
 type Options = {
   root: string;
@@ -49,15 +48,6 @@ function parseArgs(argv: string[]): Options {
     structures: value("--structures").trim(),
     help: argv.includes("--help") || argv.includes("-h"),
   };
-}
-
-function currentVersion(explicit: string | null): string | null {
-  if (explicit) return explicit;
-  try {
-    return computeContentVersion();
-  } catch {
-    return null;
-  }
 }
 
 function pilotConfig(): PaidGenerationConfig | null {
@@ -103,7 +93,8 @@ function main(): void {
     return;
   }
 
-  const current = currentVersion(options.contentVersion);
+  const resolved = resolveContentVersion(options.contentVersion);
+  const current = resolved.version;
   const config = pilotConfig();
   const scan = scanPilots(options.root, current, config);
 
@@ -113,7 +104,7 @@ function main(): void {
     console.log(`wrote ${options.structures} (${structure.cases.length} case structures, ${structure.cases.reduce((sum, row) => sum + row.sections.length, 0)} sections)`);
   }
 
-  const payload = { ...scan, pilots: scan.pilots };
+  const payload = { ...scan, contentVersionSource: resolved.source, envFingerprint: resolved.envFingerprint };
   if (options.out) {
     mkdirSync(path.dirname(options.out), { recursive: true });
     writeFileSync(options.out, JSON.stringify(payload, null, 2) + "\n");
@@ -122,7 +113,8 @@ function main(): void {
   for (const error of scan.errors) console.error(`pilot ${error.pilot}: ${error.reason}`);
   if (options.json) console.log(JSON.stringify(payload, null, 2));
   else {
-    console.log(`current contentVersion: ${current ?? "unavailable (pilot env not complete; use --content-version)"}`);
+    const source = resolved.source === "explicit" ? "explicit" : resolved.source === "env" ? "from the pilot environment" : "pilot env incomplete; use --content-version";
+    console.log(`current contentVersion: ${current ?? "unknown"} (${source})`);
     printTable(scan.pilots);
   }
 

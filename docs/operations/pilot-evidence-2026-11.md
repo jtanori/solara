@@ -2,8 +2,10 @@
 
 **Source:** `npm run readings:pilot-evidence` over `.venv/genuine-sampling/` on 2026-11-25.
 **Scope:** aggregate receipts only. No prose, no birth inputs, no keys.
-**Not qualification.** This is two complete samples and one partial, one case each, Spanish only,
-with a stale `contentVersion`. It cannot support editorial approval or B.1.
+**Not qualification.** This is two complete samples and one partial, one case each, Spanish only.
+Their `contentVersion` cannot be compared from a shell without the pilot environment, so the
+inventory reports the gate as `unknown` for them and it fails on case coverage. Nothing here can
+support editorial approval or B.1.
 
 ## Inventory
 
@@ -40,8 +42,23 @@ slower provider day turns the tail into timeouts, which are recorded as uncertai
 
 ## Limits
 
-- One case (`baseline`) per report; approval requires six.
-- `contentVersion` is stale against the current code, so none is approvable.
+- One case (`baseline`) per report; approval requires six **per locale**, and these are Spanish only,
+  so the English half fails on coverage as well.
+- `contentVersion` differs from the value computed in a plain shell, but that difference is not
+  evidence of code drift: the digest also hashes `READINGS_PROVIDER`,
+  `READINGS_PROCESSOR_PROFILE`, `READINGS_API_BASE_URL` and the resolved models. Measured on
+  2026-11-25:
+
+  | Environment | `contentVersion` |
+  |---|---|
+  | plain shell (provider/model vars unset) | `b59e08eaddd45de0` |
+  | `.env.pilot.example` applied | `8b77c215d686edc3` |
+  | the eight reports | five distinct values (`6c63bc38…`, `17833559…`, `17eeb58f…`, `2c922287…`, `a1a61b45…`) |
+
+  None of the five matches either computed value, so the cause is not established. Use
+  `--content-version` with the value the report was produced under, or run the inventory in a shell
+  that has the pilot environment; otherwise the tool reports `content_version_unknown` and refuses
+  to call the report current.
 - Spanish only; English generation is B.2.
 - The pilot processor is `TBD-105`; the disclosure is not signed.
 - Reports and rendered files stay under `.venv/` (gitignored). The committed structural fixture has
