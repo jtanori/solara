@@ -33,7 +33,7 @@ import { chartDigest } from "../src/lib/chart";
 import { calculateSolarReturn, calculateSolarReturnChart, solarReturnFacts } from "../src/lib/solar";
 import { baseFactsRow } from "../src/readings/chart-facts";
 import { canonicalHash } from "../src/readings/policy";
-import { buildReadingDocument } from "../src/readings/document";
+import { buildReadingDocument, persistableDocument } from "../src/readings/document";
 import { paidEvaluationSchema } from "../src/readings/evaluation";
 import { calculatePaidSnapshot, paidDigest, paidSnapshotHash } from "../src/readings/paid-chart";
 import { PAID_ALLOWANCE_POLICY, paidSections, type PaidProfile } from "../src/readings/paid-contract";
@@ -50,6 +50,18 @@ class SeedError extends Error {}
 function fail(message: string, code = 1): never {
   console.error(`ERROR ${message}`);
   process.exit(code);
+}
+
+/**
+ * Never print a driver message verbatim: a unique violation embeds the offending value, and a
+ * connection error can embed the URL. The SQLSTATE is enough to diagnose a fixture run.
+ */
+function describe(error: unknown): string {
+  if (error instanceof SeedError) return error.message;
+  const candidate = error as { code?: unknown; cause?: { code?: unknown } } | null;
+  const code = candidate?.code ?? candidate?.cause?.code;
+  if (typeof code === "string") return `database_error (${code})`;
+  return "unexpected_error";
 }
 
 const argv = process.argv.slice(2);
@@ -130,6 +142,11 @@ async function seed(): Promise<SeedOutput> {
         contentVersion: FREE_CONTENT_VERSION,
         results: freeResults,
       });
+      // A 0/N pilot (nine failed sections) would write a document with nothing generated: the
+      // page reports `document_unavailable` while the run below says "completed". Refuse instead.
+      if (!persistableDocument(document)) {
+        throw new SeedError(`report ${sample.caseId}/${sample.locale} has no generated free section; refusing to write a document the page cannot render`);
+      }
       // The key is (readingId, locale, contentVersion): update the previous seed in place rather
       // than inserting a second document that the unique index would reject. The row id is the
       // identity `readStoredDocument` checks against the JSON, so a rebuild keeps the existing id.
@@ -201,6 +218,11 @@ async function seed(): Promise<SeedOutput> {
         lockedSections: [],
         edition: { profile, expectedSections: [...sections], snapshotHash },
       };
+      // Same rule as the free document: an edition with no generated section is never renderable
+      // and would consume the month allowance for a page that answers `document_unavailable`.
+      if (!persistableDocument(document)) {
+        throw new SeedError(`report ${sample.caseId}/${sample.locale} has no generated section; refusing to write a paid edition the page cannot render`);
+      }
       const generated = document.sections.filter(section => section.status === "generated").length;
       const [run] = await tx.insert(paidReadingRuns).values({
         userId: user.id, readingId, intentId: randomUUID(), period,
@@ -232,7 +254,7 @@ async function seed(): Promise<SeedOutput> {
 seed().then(output => {
   console.log(JSON.stringify({ email, ...output }, null, 2));
 }).catch(error => {
-  fail(error instanceof SeedError ? error.message : error instanceof Error ? error.message : String(error));
+  fail(describe(error));
 }).finally(async () => {
   // Without this the process lingers until the pool's idle timeout, which made a single seed take
   // over a minute; the run's output was already printed, so it read as a hang.

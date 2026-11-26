@@ -12,6 +12,7 @@ import {
   paidReadingRuns,
   readingDocuments,
   readingGenerationRuns,
+  readings,
   users,
 } from "../src/db/schema";
 import type { ReadingViewer } from "../src/readings/reading-view";
@@ -38,7 +39,7 @@ after(async () => {
   if (enabled) await Promise.all([pool.end(), coordinationPool.end()]);
 });
 
-type Fixture = { reportPath: string; caseA: string; caseB: string };
+type Fixture = { reportPath: string; caseA: string; caseB: string; report: Awaited<ReturnType<typeof syntheticPaidEvaluation>> };
 
 let cached: Promise<Fixture> | null = null;
 /** Built once per file: the synthetic report is the expensive part of both cases. */
@@ -58,7 +59,7 @@ async function writeReport(): Promise<Fixture> {
   mkdirSync(OUT, { recursive: true });
   const reportPath = path.join(OUT, "report.json");
   writeFileSync(reportPath, JSON.stringify({ ...report, samples }, null, 2));
-  return { reportPath, caseA, caseB };
+  return { reportPath, caseA, caseB, report };
 }
 
 async function makeUser(): Promise<{ id: string; email: string; viewer: ReadingViewer }> {
@@ -84,8 +85,9 @@ test("the seed is re-runnable and leaves one ledger-consistent fixture", gated, 
     const second = seed(data, user.email, ["--mode", "both", "--case", data.caseA, "--period", "2026-01"]);
     assert.equal(second.status, 0, `second run must not collide: ${second.stderr}`);
 
-    const documents = await db.select().from(readingDocuments).where(eq(readingDocuments.tier, "free"));
-    const ownedDocuments = documents.filter(row => row.readingId === JSON.parse(first.stdout).readingId);
+    const readingId = (JSON.parse(first.stdout) as { readingId: string }).readingId;
+    const ownedDocuments = await db.select().from(readingDocuments)
+      .where(and(eq(readingDocuments.readingId, readingId), eq(readingDocuments.tier, "free")));
     assert.equal(ownedDocuments.length, 1, "one free document, updated in place");
 
     const runs = await db.select().from(readingGenerationRuns).where(eq(readingGenerationRuns.userId, user.id));
@@ -103,11 +105,11 @@ test("the seed is re-runnable and leaves one ledger-consistent fixture", gated, 
     assert.equal(allowances[0].runId, paid[0].id);
     assert.ok(allowances[0].consumedAt, "the month is represented as consumed");
 
-    const free = await loadReadingPresentation(user.viewer, JSON.parse(first.stdout).readingId, "es");
+    const free = await loadReadingPresentation(user.viewer, readingId, "es");
     assert.equal(free.availability, "ready", "the seeded free document is readable");
     assert.equal(free.content.kind, "saved-reading");
 
-    const paidView = await loadReadingPresentation(user.viewer, JSON.parse(first.stdout).readingId, "es", { kind: "paid", id: editions[0].id });
+    const paidView = await loadReadingPresentation(user.viewer, readingId, "es", { kind: "paid", id: editions[0].id });
     assert.equal(paidView.content.kind, "saved-reading", "the seeded paid edition is readable");
     assert.equal(paidView.content.partial, false);
 
@@ -137,6 +139,43 @@ test("the free offer is never repointed to another reading without --replace-fre
     const runs = await db.select().from(readingGenerationRuns).where(eq(readingGenerationRuns.userId, user.id));
     assert.equal(runs.length, 1);
     assert.equal(runs[0].readingId, JSON.parse(replaced.stdout).readingId);
+  } finally {
+    await db.delete(users).where(eq(users.id, user.id));
+  }
+});
+
+test("a report with no generated section is refused instead of seeded", gated, async () => {
+  const data = await fixture();
+  const allFailed = {
+    ...data.report,
+    samples: data.report.samples
+      .filter(sample => sample.caseId === data.caseA)
+      .map(sample => ({
+        ...sample,
+        sections: sample.sections.map(section => ({ ...section, status: "failed" as const, blocks: [] })),
+      })),
+  };
+  const reportPath = path.join(OUT, "all-failed.json");
+  writeFileSync(reportPath, JSON.stringify(allFailed));
+  const user = await makeUser();
+  try {
+    // The five 0/N pilots are on disk and --report is operator-supplied, so this is a reachable
+    // input. It used to write a document with nothing generated while the run said "completed".
+    const free = seed({ ...data, reportPath }, user.email, ["--mode", "both", "--case", data.caseA]);
+    assert.equal(free.status, 1, "a free fixture the page cannot render is not written");
+    assert.match(free.stderr, /has no generated free section/);
+
+    const paid = seed({ ...data, reportPath }, user.email, ["--mode", "paid", "--case", data.caseA]);
+    assert.equal(paid.status, 1, "a paid edition the page cannot render is not written");
+    assert.match(paid.stderr, /has no generated section/);
+
+    // One transaction per mode: the refusal left nothing behind, not even the chart row.
+    const charts = await db.select({ id: readings.id }).from(readings).where(eq(readings.userId, user.id));
+    assert.equal(charts.length, 0);
+    const paidRuns = await db.select({ id: paidReadingRuns.id }).from(paidReadingRuns).where(eq(paidReadingRuns.userId, user.id));
+    assert.equal(paidRuns.length, 0);
+    const allowances = await db.select({ runId: paidReadingAllowances.runId }).from(paidReadingAllowances).where(eq(paidReadingAllowances.userId, user.id));
+    assert.equal(allowances.length, 0, "the month was not consumed");
   } finally {
     await db.delete(users).where(eq(users.id, user.id));
   }
