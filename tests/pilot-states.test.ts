@@ -1,29 +1,29 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import test, { after } from "node:test";
 import { eq } from "drizzle-orm";
-import { db, pool, coordinationPool } from "../src/db";
+import { coordinationPool, db, pool } from "../src/db";
 import { readingDocuments } from "../src/db/schema";
 import { ReadingPageView } from "../src/components/reading-page-view";
-import type { PaidProfile } from "../src/readings/paid-contract";
-import { NOTICE_COPY } from "../src/readings/presentation-copy";
-import type { ReadingBlock } from "../src/readings/types";
 import type { ChartInput } from "../src/lib/types";
-import { randomUUID } from "node:crypto";
-import { paidDigest, calculatePaidSnapshot } from "../src/readings/paid-chart";
-import { buildReadingDocument, persistableDocument } from "../src/readings/document";
-import { paidSections } from "../src/readings/paid-contract";
-import type { SectionResult } from "../src/readings/document";
+import { buildReadingDocument, persistableDocument, type SectionResult } from "../src/readings/document";
+import { calculatePaidSnapshot, paidDigest } from "../src/readings/paid-chart";
+import { paidSections, type PaidProfile } from "../src/readings/paid-contract";
+import { NOTICE_COPY } from "../src/readings/presentation-copy";
 import { loadReadingPresentation } from "../src/readings/reading-view";
-import { syntheticPaidEdition } from "./helpers/paid-edition";
-import { readingLedgerSnapshot, syntheticReadingAccount } from "./helpers/reading-account";
+import { readStoredDocument } from "../src/readings/stored-document";
 import { loadChartCorpus } from "../scripts/lib/chart-corpus";
+import { syntheticPaidEdition } from "./helpers/paid-edition";
+import { blockAt, loadPilotStructures, resultsFor } from "./helpers/pilot-structure";
+import { readingLedgerSnapshot, syntheticReadingAccount } from "./helpers/reading-account";
 
 /*
- * #225 / A3: the 10/11 pilot structure and an all-failed synthetic state render the honest
- * partial notice, never a regeneration promise, a canonical promotion or an allowance reset.
+ * #225 / A3: the 10/11 pilot structure renders the honest partial state, and the document boundary
+ * it depends on is asserted directly: one failed section must still be persistable and carry both
+ * notices, while a run with no generated section must never become a saved edition.
  */
 
 const enabled = process.env.RUN_INTEGRATION_TESTS === "1";
@@ -32,51 +32,10 @@ after(async () => {
   if (enabled) await Promise.all([pool.end(), coordinationPool.end()]);
 });
 
-type Structure = {
-  cases: {
-    pilot: string;
-    profile: PaidProfile;
-    locale: "en" | "es";
-    caseId: string;
-    sections: { key: string; status: string; blocks: { kind: string; chars: number }[]; closingQuestionChars: number }[];
-  }[];
-};
+type PilotStates = { partial: { pilot: string; profile: PaidProfile; failedSection: string } };
 
-const structure = JSON.parse(readFileSync("tests/fixtures/readings/pilot-structures-v1.json", "utf8")) as Structure;
-const states = JSON.parse(readFileSync("tests/fixtures/readings/pilot-states-v1.json", "utf8")) as {
-  partial: { pilot: string; profile: PaidProfile; failedSection: string; notices: string[] };
-  failed: { notices: string[] };
-  indeterminate: { notices: string[] };
-};
-
-function text(chars: number): string {
-  const base = "palabra de prueba ";
-  return base.repeat(Math.max(1, Math.ceil(Math.max(1, chars) / base.length))).slice(0, Math.max(1, chars));
-}
-
-function block(kind: string, chars: number): ReadingBlock {
-  const value = text(chars);
-  switch (kind) {
-    case "callout": return { kind: "callout", text: value };
-    case "list": return { kind: "list", items: [value] };
-    case "keyValue": return { kind: "keyValue", entries: [{ key: "clave", value }] };
-    case "aspectTable": return { kind: "aspectTable", rows: [{ a: "Sol", b: "Luna", type: "trígono", orb: 1.2 }] };
-    default: return { kind: "prose", text: value };
-  }
-}
-
-function resultsFor(row: Structure["cases"][number]): SectionResult[] {
-  return row.sections.map(section => section.status === "failed"
-    ? { key: section.key as SectionResult["key"], status: "failed", failureReason: "pilot_section_failed", costMxn: 0 } as SectionResult
-    : {
-        key: section.key as SectionResult["key"], status: "generated", fromCache: false, model: "pilot-fixture",
-        usage: { inputTokens: 0, outputTokens: 0 }, costMxn: 0, latencyMs: 0,
-        output: {
-          blocks: section.blocks.map(entry => block(entry.kind, entry.chars)),
-          ...(section.closingQuestionChars > 0 ? { closingQuestion: text(Math.max(10, section.closingQuestionChars)).slice(0, 500) } : {}),
-        },
-      } as SectionResult);
-}
+const structure = loadPilotStructures();
+const states = JSON.parse(readFileSync("tests/fixtures/readings/pilot-states-v1.json", "utf8")) as PilotStates;
 
 async function assertPartialState(profile: PaidProfile, locale: "en" | "es", input: ChartInput, results: SectionResult[], failedSection: string) {
   const owner = await syntheticReadingAccount(locale, "none", { input });
@@ -122,16 +81,33 @@ test("the 10/11 pilot structure renders the partial state honestly", gated, asyn
   await assertPartialState(row.profile, row.locale, input, resultsFor(row), states.partial.failedSection);
 });
 
-test("an all-failed document is not publishable, so the page never shows a fake edition", async () => {
+test("one failed section is publishable and carries its notice; none is not", () => {
+  const profile: PaidProfile = "paid-core-v1";
+  const keys = paidSections(profile);
   const input = loadChartCorpus()[0].input;
-  const snapshot = calculatePaidSnapshot(randomUUID(), input, "paid-core-v1");
-  const results = paidSections("paid-core-v1").map(key => ({
-    key, status: "failed" as const, failureReason: "pilot_section_failed", costMxn: 0,
-  })) as SectionResult[];
-  const document = buildReadingDocument({
-    readingId: randomUUID(), locale: "es", tier: "paid", digest: paidDigest(snapshot), contentVersion: "pilot-structure/1", results,
+  const snapshot = calculatePaidSnapshot(randomUUID(), input, profile);
+  const build = (results: SectionResult[]) => buildReadingDocument({
+    readingId: randomUUID(), locale: "es", tier: "paid", digest: paidDigest(snapshot), contentVersion: "pilot-boundary/1", results,
   });
-  assert.equal(persistableDocument(document), false, "a run with no generated section cannot become a saved edition");
-  assert.deepEqual(states.failed.notices, ["partial", "section_failed"]);
-  assert.deepEqual(states.failed.notices, states.indeterminate.notices);
+  const failed = (key: SectionResult["key"]): SectionResult =>
+    ({ key, status: "failed", failureReason: "pilot_section_failed", costMxn: 0 }) as SectionResult;
+  const generated = (key: SectionResult["key"]): SectionResult => ({
+    key, status: "generated", fromCache: false, model: "pilot-fixture",
+    usage: { inputTokens: 0, outputTokens: 0 }, costMxn: 0, latencyMs: 0,
+    output: { blocks: [blockAt("prose", 120)] },
+  }) as SectionResult;
+
+  const mixed = build(keys.map((key, index) => (index === 0 ? failed(key) : generated(key))));
+  assert.equal(persistableDocument(mixed), true, "a run with one generated section is a saved edition");
+  const decoded = readStoredDocument(JSON.stringify(mixed), mixed, { allowPaid: true, expectedSections: keys });
+  assert.equal(decoded.ok, true, decoded.ok ? "" : decoded.code);
+  if (!decoded.ok) return;
+  assert.deepEqual(decoded.value.notices, ["partial"]);
+  assert.deepEqual(decoded.value.sections.find(section => section.key === keys[0])?.notices, ["section_failed"]);
+
+  const dead = build(keys.map(key => failed(key)));
+  assert.equal(persistableDocument(dead), false, "a run with no generated section is never a saved edition");
+  const rejected = readStoredDocument(JSON.stringify(dead), dead, { allowPaid: true, expectedSections: keys });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.ok ? "" : rejected.code, "document_unavailable", "the page never shows an empty edition");
 });
