@@ -7,14 +7,20 @@ import { users, readings, readingDocuments, readingGenerationRuns as runs, readi
   paidReadingEditions as paidEditions, paidReadingSnapshots as paidSnapshots, paidReadingCheckpoints as paidCheckpoints } from "../../src/db/schema";
 import { keyFor } from "../../src/lib/rate-limit";
 import { calculateSolarReturn } from "../../src/lib/solar";
+import type { ChartInput } from "../../src/lib/types";
 import type { ReadingViewer } from "../../src/readings/reading-view";
 import { frozenReading, readingChartInput } from "./reading-fixtures";
 
-export async function syntheticReadingAccount(locale: "en" | "es" = "en", edition: Parameters<typeof frozenReading>[1] | "none" = "free") {
+export async function syntheticReadingAccount(
+  locale: "en" | "es" = "en",
+  edition: Parameters<typeof frozenReading>[1] | "none" = "free",
+  options: { input?: ChartInput } = {},
+) {
   assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(new URL(process.env.DATABASE_URL!).hostname), "synthetic account helper requires a disposable loopback database");
   const verified = new Date("2026-01-01T00:00:00.000Z");
   const [user] = await db.insert(users).values({ name: "Synthetic reading QA", email: `${randomUUID()}@example.com`, passwordHash: "unused-fixture-hash", emailVerifiedAt: verified }).returning({ id: users.id });
-  const [chart] = await db.insert(readings).values({ userId: user.id, year: 2026, input: readingChartInput, result: calculateSolarReturn(readingChartInput) }).returning();
+  const input = options.input ?? readingChartInput;
+  const [chart] = await db.insert(readings).values({ userId: user.id, year: input.year ?? 2026, input, result: calculateSolarReturn(input) }).returning();
   const document = { ...frozenReading(locale, edition === "none" ? "free" : edition), id: randomUUID(), readingId: chart.id };
   const viewer: ReadingViewer = { id: user.id, emailVerifiedAt: verified, plan: "free" };
   async function publish() {
