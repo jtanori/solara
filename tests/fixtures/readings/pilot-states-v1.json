@@ -1,0 +1,12 @@
+{
+  "version": "pilot-states/1",
+  "purpose": "State keys for the saved-edition page and PDF. Labels come from the application copy; this file contains no prose.",
+  "partial": {
+    "pilot": "pilot-2026-11-rich-es-go2",
+    "profile": "paid-rich-v1",
+    "failedSection": "guidance",
+    "notices": ["partial", "section_failed"]
+  },
+  "failed": { "notices": ["partial", "section_failed"] },
+  "indeterminate": { "notices": ["partial", "section_failed"] }
+}
