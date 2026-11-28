@@ -76,7 +76,9 @@ STEP_FUNCS=(step0 step1 step2 step3 step4 step5 step6 step7 step8)
 
 should_run() {
   local n="$1"
-  if [[ -n "$ONLY" && "$ONLY" != "$n" ]]; then return 1; fi
+  # Compare numerically: is_step accepts zero-padded steps ("02"), and a string compare would
+  # skip every step while the run still printed "Sequence complete".
+  if [[ -n "$ONLY" ]] && (( 10#$ONLY != 10#$n )); then return 1; fi
   if (( 10#$n < 10#$FROM )); then return 1; fi
   return 0
 }
