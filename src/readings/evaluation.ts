@@ -114,6 +114,94 @@ export function comparePaidEvaluations(previous: PaidEvaluationReport, next: Pai
     previousMetrics: evaluationMetrics(previous), nextMetrics: evaluationMetrics(next) };
 }
 
+/**
+ * Report-side acceptance, extracted so the pilot inventory and the approval path cannot disagree.
+ *
+ * Every field is optional except the ones that are pure corpus data, so a caller that cannot see
+ * today's generation configuration (the inventory without a pilot env) still gets the checks that
+ * do not depend on it. `validateEditorialApproval` supplies all of them, which keeps the approval
+ * gate and the inventory on one implementation.
+ *
+ * Codes are returned in the order `validateEditorialApproval` has always thrown them, so the first
+ * entry is the error that surfaces.
+ */
+export type ApprovalContext = {
+  locale: Locale;
+  profile: PaidProfile;
+  facts: EvaluationFacts;
+  corpusHash: string;
+  schemaHash: string;
+  promptHashes: Record<string, string>;
+  contentVersion?: string;
+  configHash?: string;
+  models?: PaidEvaluationReport["models"];
+  processor?: string;
+  settings?: GenerationSettings;
+  inputTokenLimits?: Record<string, number>;
+  servedModels?: Record<string, string[]>;
+  review?: EditorialReview;
+};
+
+export function approvalIssues(report: PaidEvaluationReport, current: ApprovalContext): string[] {
+  const issues: string[] = [];
+  if (report.source !== "provider" || Object.values(report.models).some(model => /fixture|synthetic/i.test(model)) ||
+    /fixture|synthetic/i.test(report.processor)) issues.push("synthetic_is_not_editorial_approval");
+
+  const boundFields = ["profile", "contentVersion", "configHash", "corpusHash", "schemaHash"] as const;
+  const bindingChanged = boundFields.some(key => {
+    const expected = current[key];
+    return expected !== undefined && report[key] !== expected;
+  }) ||
+    (current.models !== undefined && canonicalHash(report.models) !== canonicalHash(current.models)) ||
+    (current.processor !== undefined && report.processor !== current.processor) ||
+    canonicalHash(report.promptHashes) !== canonicalHash(current.promptHashes) ||
+    canonicalHash(report.facts) !== canonicalHash(current.facts) ||
+    (current.review !== undefined && current.review.reportHash !== evaluationHash(report));
+  if (bindingChanged) issues.push("approval_binding_changed");
+
+  const cases = Object.keys(current.facts);
+  const selected = report.samples.filter(sample => sample.locale === current.locale);
+  const review = current.review;
+  if (cases.length < PAID_EDITORIAL_MINIMUM || selected.length !== cases.length ||
+    new Set(selected.map(sample => sample.caseId)).size !== cases.length ||
+    (review !== undefined && (review.samples.length !== cases.length ||
+      new Set(review.samples.map(sample => sample.caseId)).size !== cases.length))) issues.push("approval_corpus_incomplete");
+
+  for (const caseId of cases) {
+    const sample = selected.find(row => row.caseId === caseId);
+    const signed = review?.samples.find(row => row.caseId === caseId);
+    if (!sample || (review !== undefined && (!signed || signed.sampleHash !== evaluationSampleHash(sample))) ||
+      evaluationSampleChecks(sample, report.profile, current.facts[caseId], report.models).length) {
+      issues.push("approval_sample_invalid");
+      continue;
+    }
+    // Receipts can only be judged against today's prices and served-model policy. A caller that
+    // cannot judge them must not receive an approval-shaped empty list either: the approval path
+    // always passes `review`, so a missing receipt context there is a defect, not a shortcut. The
+    // pilot inventory never passes `review`, so it still reports "unknown" rather than "fail".
+    const { settings, inputTokenLimits, servedModels } = current;
+    if (settings === undefined || inputTokenLimits === undefined || servedModels === undefined) {
+      if (review !== undefined) issues.push("approval_receipt_invalid");
+      continue;
+    }
+    for (const attempt of sample.attempts) {
+      if (attempt.state === "reserved" || attempt.costMicros === null) { issues.push("approval_receipt_invalid"); break; }
+      const inputLimit = inputTokenLimits[attempt.model];
+      const quote = costMicros(settings.prices, attempt.model, { inputTokens: inputLimit, outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION });
+      if (quote === null || attempt.reservedMicros !== quote || (attempt.inputTokens !== null && attempt.inputTokens > inputLimit)) {
+        issues.push("approval_receipt_invalid");
+        break;
+      }
+      try {
+        validateAttemptSettlement({ basis: attempt.state, costMicros: attempt.costMicros, model: attempt.reportedModel,
+          usage: attempt.inputTokens === null || attempt.outputTokens === null ? null : { inputTokens: attempt.inputTokens, outputTokens: attempt.outputTokens }, latencyMs: attempt.latencyMs, code: attempt.code },
+        quote, settings, attempt.model, (requested, served) => servedModels[requested]?.includes(served) === true);
+      } catch { issues.push("approval_receipt_invalid"); break; }
+    }
+  }
+  return issues;
+}
+
 /** No independent-human/identity gate. Explicit complete-report sign-off is still
  * required, and synthetic/schema fixtures can never qualify as provider approval.
  */
@@ -122,31 +210,11 @@ export function validateEditorialApproval(reportValue: unknown, reviewValue: unk
   settings: GenerationSettings; inputTokenLimits: Record<string, number>; servedModels: Record<string, string[]>;
 }) {
   const report = paidEvaluationSchema.parse(reportValue); const review = editorialReviewSchema.parse(reviewValue);
-  if (report.source !== "provider" || Object.values(report.models).some(model => /fixture|synthetic/i.test(model)) || /fixture|synthetic/i.test(report.processor)) throw new Error("synthetic_is_not_editorial_approval");
-  for (const key of ["profile", "contentVersion", "configHash", "corpusHash", "schemaHash"] as const) if (report[key] !== current[key]) throw new Error("approval_binding_changed");
-  if (canonicalHash(report.models) !== canonicalHash(current.models) || report.processor !== current.processor ||
-    canonicalHash(report.promptHashes) !== canonicalHash(current.promptHashes) || canonicalHash(report.facts) !== canonicalHash(current.facts) || review.reportHash !== evaluationHash(report)) throw new Error("approval_binding_changed");
-  const cases = Object.keys(current.facts);
-  const selected = report.samples.filter(sample => sample.locale === review.locale);
-  if (cases.length < PAID_EDITORIAL_MINIMUM || selected.length !== cases.length || review.samples.length !== cases.length ||
-    new Set(selected.map(sample => sample.caseId)).size !== cases.length || new Set(review.samples.map(sample => sample.caseId)).size !== cases.length) throw new Error("approval_corpus_incomplete");
-  for (const caseId of cases) {
-    const sample = selected.find(sample => sample.caseId === caseId); const signed = review.samples.find(sample => sample.caseId === caseId);
-    if (!sample || !signed || signed.sampleHash !== evaluationSampleHash(sample) || evaluationSampleChecks(sample, report.profile, current.facts[caseId], report.models).length) throw new Error("approval_sample_invalid");
-    for (const attempt of sample.attempts) {
-      if (attempt.state === "reserved" || attempt.costMicros === null) throw new Error("approval_receipt_invalid");
-      const inputLimit = current.inputTokenLimits[attempt.model];
-      const quote = costMicros(current.settings.prices, attempt.model, { inputTokens: inputLimit, outputTokens: MAX_OUTPUT_TOKENS_PER_SECTION });
-      if (quote === null || attempt.reservedMicros !== quote || (attempt.inputTokens !== null && attempt.inputTokens > inputLimit)) throw new Error("approval_receipt_invalid");
-      try {
-        validateAttemptSettlement({ basis: attempt.state, costMicros: attempt.costMicros, model: attempt.reportedModel,
-          usage: attempt.inputTokens === null || attempt.outputTokens === null ? null : { inputTokens: attempt.inputTokens, outputTokens: attempt.outputTokens }, latencyMs: attempt.latencyMs, code: attempt.code },
-        quote, current.settings, attempt.model, (requested, served) => current.servedModels[requested]?.includes(served) === true);
-      } catch { throw new Error("approval_receipt_invalid"); }
-    }
-  }
+  const issues = approvalIssues(report, { ...current, locale: review.locale, review });
+  if (issues.length > 0) throw new Error(issues[0]);
+  // One sample per case per locale is enforced above, so this is also the reviewed sample count.
   return { profile: report.profile, contentVersion: report.contentVersion, locale: review.locale, configHash: report.configHash,
-    sampleCount: selected.length, reviewer: review.reviewer, evidence: `report-sha256:${evaluationHash(report)}\n${review.evidence}` };
+    sampleCount: Object.keys(current.facts).length, reviewer: review.reviewer, evidence: `report-sha256:${evaluationHash(report)}\n${review.evidence}` };
 }
 
 export function editorialReviewTemplate(report: PaidEvaluationReport, locale: Locale) {

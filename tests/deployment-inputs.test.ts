@@ -19,7 +19,8 @@ test("deployment input keeps PDF build/runtime assets but no local reading fixtu
     assert.ok(files.includes(path), `required deployment file missing: ${path}`);
   }
   for (const path of ["scripts/benchmark-reading-pdf.ts", "scripts/verify-reading-browser.ts", "scripts/verify-reading-mutations.mjs", "scripts/verify-dependency-mutations.mjs",
-    "scripts/evaluate-paid-readings.ts", "scripts/approve-paid-reading-evaluation.ts", "scripts/sample-genuine-readings.ts", "scripts/check-migration-safety.ts", "scripts/drift-monitor.ts", "scripts/lib/paid-evaluation-corpus.ts", "scripts/gen-annual-facts-fixtures.py"]) {
+    "scripts/evaluate-paid-readings.ts", "scripts/approve-paid-reading-evaluation.ts", "scripts/sample-genuine-readings.ts", "scripts/check-migration-safety.ts", "scripts/drift-monitor.ts", "scripts/lib/paid-evaluation-corpus.ts", "scripts/gen-annual-facts-fixtures.py",
+    "scripts/pilot-evidence.ts", "scripts/pilot-seed.ts", "scripts/render-pilot.ts", "scripts/lib/pilot-evidence.ts", "scripts/lib/pilot-render.ts", "scripts/run-225-sequence.sh"]) {
     assert.ok(!files.includes(path), `local-only reading tool would be deployed: ${path}`);
   }
   assert.ok(!files.some(path => path.startsWith("tests/")), "test fixtures must stay out of deployment input");
@@ -27,7 +28,7 @@ test("deployment input keeps PDF build/runtime assets but no local reading fixtu
   assert.ok(!files.some(path => /^\.env(?:\.|$)/.test(path) && path !== ".env.example"), "environment files must stay out of deployment input");
 });
 
-test("strict typecheck resolves every module after Vercel deployment exclusions", { timeout: 120_000 }, () => {
+test("strict typecheck resolves every module after Vercel deployment exclusions", { timeout: 300_000 }, () => {
   const fixture = createDeploymentInputFixture();
   try {
     assert.ok(!existsSync(join(fixture.directory, "tests")));
@@ -35,7 +36,9 @@ test("strict typecheck resolves every module after Vercel deployment exclusions"
     assert.equal(config.compilerOptions.strict, true);
     assert.ok(config.include.includes("**/*.ts"));
     const result = spawnSync(process.execPath, [join(process.cwd(), "node_modules/typescript/bin/tsc"), "--noEmit", "--incremental", "false"], {
-      cwd: fixture.directory, encoding: "utf8", timeout: 110_000,
+      // The typecheck alone measures ~108 s on a developer machine; a 110 s bound failed here as
+      // soon as it ran alongside the two-minute pilot seed test. CI runs every file concurrently.
+      cwd: fixture.directory, encoding: "utf8", timeout: 240_000,
     });
     assert.equal(result.error, undefined, result.error?.message);
     assert.equal(result.status, 0, `deployment-input typecheck failed:\n${result.stdout}\n${result.stderr}`);

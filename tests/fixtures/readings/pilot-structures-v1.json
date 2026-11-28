@@ -1,0 +1,814 @@
+{
+  "version": "pilot-structures/1",
+  "generatedFrom": [
+    {
+      "pilot": "pilot-2026-11-core-es-go2",
+      "reportHash": "9029411b54a82fd8075603eb307b08b83c9c6ff6e6b89053ef3abcacdda6d773",
+      "contentVersion": "6c63bc3811f96ffd"
+    },
+    {
+      "pilot": "pilot-2026-11-rich-es-go2",
+      "reportHash": "db075fa8197890772fbe9d251a905ea68fdbf573abd92d0e146e9487bbf00719",
+      "contentVersion": "178335598b5283fe"
+    },
+    {
+      "pilot": "pilot-2026-11-rich-es-go3",
+      "reportHash": "13a16f447bb39cdf711bef90fe1b81ea5e49709b6fec252ef1cc03ff3be4b377",
+      "contentVersion": "178335598b5283fe"
+    }
+  ],
+  "cases": [
+    {
+      "pilot": "pilot-2026-11-core-es-go2",
+      "profile": "paid-core-v1",
+      "locale": "es",
+      "caseId": "baseline",
+      "sections": [
+        {
+          "key": "overview",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 598
+            },
+            {
+              "kind": "prose",
+              "chars": 678
+            },
+            {
+              "kind": "callout",
+              "chars": 326
+            },
+            {
+              "kind": "prose",
+              "chars": 672
+            },
+            {
+              "kind": "keyValue",
+              "chars": 219
+            },
+            {
+              "kind": "prose",
+              "chars": 388
+            }
+          ],
+          "closingQuestionChars": 85
+        },
+        {
+          "key": "sun",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 532
+            },
+            {
+              "kind": "callout",
+              "chars": 234
+            },
+            {
+              "kind": "prose",
+              "chars": 417
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 155
+            },
+            {
+              "kind": "prose",
+              "chars": 494
+            },
+            {
+              "kind": "prose",
+              "chars": 320
+            }
+          ],
+          "closingQuestionChars": 111
+        },
+        {
+          "key": "moon",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 615
+            },
+            {
+              "kind": "prose",
+              "chars": 661
+            },
+            {
+              "kind": "prose",
+              "chars": 907
+            },
+            {
+              "kind": "callout",
+              "chars": 299
+            }
+          ],
+          "closingQuestionChars": 104
+        },
+        {
+          "key": "ascendant",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 654
+            },
+            {
+              "kind": "prose",
+              "chars": 736
+            },
+            {
+              "kind": "callout",
+              "chars": 487
+            }
+          ],
+          "closingQuestionChars": 104
+        },
+        {
+          "key": "aspects",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 505
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 273
+            },
+            {
+              "kind": "prose",
+              "chars": 519
+            },
+            {
+              "kind": "prose",
+              "chars": 395
+            },
+            {
+              "kind": "callout",
+              "chars": 203
+            },
+            {
+              "kind": "prose",
+              "chars": 310
+            }
+          ],
+          "closingQuestionChars": 96
+        },
+        {
+          "key": "houses",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 545
+            },
+            {
+              "kind": "keyValue",
+              "chars": 667
+            },
+            {
+              "kind": "callout",
+              "chars": 230
+            },
+            {
+              "kind": "prose",
+              "chars": 510
+            }
+          ],
+          "closingQuestionChars": 106
+        },
+        {
+          "key": "planets",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 748
+            },
+            {
+              "kind": "keyValue",
+              "chars": 1013
+            },
+            {
+              "kind": "prose",
+              "chars": 816
+            }
+          ],
+          "closingQuestionChars": 115
+        },
+        {
+          "key": "nodes",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 684
+            },
+            {
+              "kind": "callout",
+              "chars": 350
+            },
+            {
+              "kind": "prose",
+              "chars": 693
+            }
+          ],
+          "closingQuestionChars": 133
+        },
+        {
+          "key": "guidance",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 707
+            },
+            {
+              "kind": "prose",
+              "chars": 477
+            },
+            {
+              "kind": "callout",
+              "chars": 212
+            },
+            {
+              "kind": "prose",
+              "chars": 329
+            },
+            {
+              "kind": "prose",
+              "chars": 77
+            },
+            {
+              "kind": "prose",
+              "chars": 185
+            }
+          ],
+          "closingQuestionChars": 98
+        }
+      ]
+    },
+    {
+      "pilot": "pilot-2026-11-rich-es-go2",
+      "profile": "paid-rich-v1",
+      "locale": "es",
+      "caseId": "baseline",
+      "sections": [
+        {
+          "key": "overview",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 692
+            },
+            {
+              "kind": "keyValue",
+              "chars": 182
+            },
+            {
+              "kind": "prose",
+              "chars": 468
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 137
+            },
+            {
+              "kind": "prose",
+              "chars": 448
+            },
+            {
+              "kind": "callout",
+              "chars": 254
+            },
+            {
+              "kind": "prose",
+              "chars": 500
+            }
+          ],
+          "closingQuestionChars": 117
+        },
+        {
+          "key": "sun",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 527
+            },
+            {
+              "kind": "callout",
+              "chars": 299
+            },
+            {
+              "kind": "prose",
+              "chars": 528
+            },
+            {
+              "kind": "list",
+              "chars": 322
+            },
+            {
+              "kind": "prose",
+              "chars": 530
+            }
+          ],
+          "closingQuestionChars": 86
+        },
+        {
+          "key": "moon",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 543
+            },
+            {
+              "kind": "prose",
+              "chars": 608
+            },
+            {
+              "kind": "callout",
+              "chars": 553
+            },
+            {
+              "kind": "prose",
+              "chars": 437
+            }
+          ],
+          "closingQuestionChars": 147
+        },
+        {
+          "key": "ascendant",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 705
+            },
+            {
+              "kind": "prose",
+              "chars": 702
+            },
+            {
+              "kind": "callout",
+              "chars": 499
+            }
+          ],
+          "closingQuestionChars": 112
+        },
+        {
+          "key": "aspects",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 583
+            },
+            {
+              "kind": "prose",
+              "chars": 415
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 390
+            },
+            {
+              "kind": "prose",
+              "chars": 627
+            }
+          ],
+          "closingQuestionChars": 78
+        },
+        {
+          "key": "houses",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 465
+            },
+            {
+              "kind": "keyValue",
+              "chars": 895
+            },
+            {
+              "kind": "prose",
+              "chars": 420
+            },
+            {
+              "kind": "prose",
+              "chars": 357
+            },
+            {
+              "kind": "prose",
+              "chars": 350
+            }
+          ],
+          "closingQuestionChars": 102
+        },
+        {
+          "key": "planets",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 659
+            },
+            {
+              "kind": "keyValue",
+              "chars": 997
+            },
+            {
+              "kind": "prose",
+              "chars": 831
+            },
+            {
+              "kind": "callout",
+              "chars": 224
+            }
+          ],
+          "closingQuestionChars": 128
+        },
+        {
+          "key": "nodes",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 798
+            },
+            {
+              "kind": "prose",
+              "chars": 579
+            },
+            {
+              "kind": "callout",
+              "chars": 560
+            }
+          ],
+          "closingQuestionChars": 126
+        },
+        {
+          "key": "planetaryYear",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 428
+            },
+            {
+              "kind": "keyValue",
+              "chars": 178
+            },
+            {
+              "kind": "prose",
+              "chars": 493
+            },
+            {
+              "kind": "prose",
+              "chars": 269
+            },
+            {
+              "kind": "list",
+              "chars": 378
+            },
+            {
+              "kind": "callout",
+              "chars": 224
+            }
+          ],
+          "closingQuestionChars": 115
+        },
+        {
+          "key": "transits",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 409
+            },
+            {
+              "kind": "prose",
+              "chars": 520
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 324
+            },
+            {
+              "kind": "callout",
+              "chars": 231
+            },
+            {
+              "kind": "list",
+              "chars": 379
+            },
+            {
+              "kind": "prose",
+              "chars": 417
+            }
+          ],
+          "closingQuestionChars": 108
+        },
+        {
+          "key": "guidance",
+          "status": "failed",
+          "blocks": [],
+          "closingQuestionChars": 0
+        }
+      ]
+    },
+    {
+      "pilot": "pilot-2026-11-rich-es-go3",
+      "profile": "paid-rich-v1",
+      "locale": "es",
+      "caseId": "baseline",
+      "sections": [
+        {
+          "key": "overview",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 616
+            },
+            {
+              "kind": "keyValue",
+              "chars": 244
+            },
+            {
+              "kind": "prose",
+              "chars": 683
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 138
+            },
+            {
+              "kind": "prose",
+              "chars": 693
+            },
+            {
+              "kind": "callout",
+              "chars": 248
+            }
+          ],
+          "closingQuestionChars": 71
+        },
+        {
+          "key": "sun",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 435
+            },
+            {
+              "kind": "keyValue",
+              "chars": 312
+            },
+            {
+              "kind": "prose",
+              "chars": 321
+            },
+            {
+              "kind": "list",
+              "chars": 259
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 158
+            },
+            {
+              "kind": "prose",
+              "chars": 428
+            },
+            {
+              "kind": "callout",
+              "chars": 404
+            }
+          ],
+          "closingQuestionChars": 97
+        },
+        {
+          "key": "moon",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 580
+            },
+            {
+              "kind": "prose",
+              "chars": 566
+            },
+            {
+              "kind": "callout",
+              "chars": 554
+            },
+            {
+              "kind": "prose",
+              "chars": 392
+            }
+          ],
+          "closingQuestionChars": 123
+        },
+        {
+          "key": "ascendant",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 650
+            },
+            {
+              "kind": "prose",
+              "chars": 809
+            },
+            {
+              "kind": "callout",
+              "chars": 553
+            }
+          ],
+          "closingQuestionChars": 94
+        },
+        {
+          "key": "aspects",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 620
+            },
+            {
+              "kind": "prose",
+              "chars": 517
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 373
+            },
+            {
+              "kind": "prose",
+              "chars": 458
+            }
+          ],
+          "closingQuestionChars": 97
+        },
+        {
+          "key": "houses",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 643
+            },
+            {
+              "kind": "callout",
+              "chars": 197
+            },
+            {
+              "kind": "keyValue",
+              "chars": 698
+            },
+            {
+              "kind": "prose",
+              "chars": 879
+            }
+          ],
+          "closingQuestionChars": 114
+        },
+        {
+          "key": "planets",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 641
+            },
+            {
+              "kind": "keyValue",
+              "chars": 1586
+            },
+            {
+              "kind": "prose",
+              "chars": 746
+            }
+          ],
+          "closingQuestionChars": 85
+        },
+        {
+          "key": "nodes",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 640
+            },
+            {
+              "kind": "prose",
+              "chars": 591
+            },
+            {
+              "kind": "callout",
+              "chars": 384
+            }
+          ],
+          "closingQuestionChars": 106
+        },
+        {
+          "key": "planetaryYear",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 406
+            },
+            {
+              "kind": "keyValue",
+              "chars": 158
+            },
+            {
+              "kind": "prose",
+              "chars": 794
+            },
+            {
+              "kind": "list",
+              "chars": 460
+            },
+            {
+              "kind": "callout",
+              "chars": 264
+            }
+          ],
+          "closingQuestionChars": 118
+        },
+        {
+          "key": "transits",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 413
+            },
+            {
+              "kind": "prose",
+              "chars": 608
+            },
+            {
+              "kind": "aspectTable",
+              "chars": 284
+            },
+            {
+              "kind": "prose",
+              "chars": 557
+            },
+            {
+              "kind": "callout",
+              "chars": 292
+            },
+            {
+              "kind": "prose",
+              "chars": 376
+            }
+          ],
+          "closingQuestionChars": 114
+        },
+        {
+          "key": "guidance",
+          "status": "generated",
+          "blocks": [
+            {
+              "kind": "prose",
+              "chars": 658
+            },
+            {
+              "kind": "prose",
+              "chars": 363
+            },
+            {
+              "kind": "callout",
+              "chars": 209
+            },
+            {
+              "kind": "prose",
+              "chars": 124
+            },
+            {
+              "kind": "prose",
+              "chars": 399
+            }
+          ],
+          "closingQuestionChars": 73
+        }
+      ]
+    }
+  ]
+}

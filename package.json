@@ -32,7 +32,9 @@
     "readings:evaluate": "tsx scripts/evaluate-paid-readings.ts",
     "readings:sample": "tsx scripts/sample-genuine-readings.ts",
     "readings:approve-evaluation": "tsx scripts/approve-paid-reading-evaluation.ts",
-    "readings:free-path": "tsx scripts/verify-free-path.ts"
+    "readings:free-path": "tsx scripts/verify-free-path.ts",
+    "readings:pilot-evidence": "tsx scripts/pilot-evidence.ts",
+    "readings:pilot-seed": "tsx scripts/pilot-seed.ts"
   },
   "engines": {
     "node": ">=22"

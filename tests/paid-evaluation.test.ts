@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PAID_PROFILES, PAID_RICH_PROFILE, paidSections } from "../src/readings/paid-contract";
 import { syntheticPaidEvaluation } from "./helpers/paid-evaluation";
-import { comparePaidEvaluations, editorialReviewTemplate, PAID_EDITORIAL_REVIEW_VERSION, EDITORIAL_CRITERIA, evaluationHash, evaluationMetrics, evaluationSampleChecks, evaluationSampleHash, validateEditorialApproval, type PaidEvaluationReport } from "../src/readings/evaluation";
+import { approvalIssues, comparePaidEvaluations, editorialReviewTemplate, PAID_EDITORIAL_REVIEW_VERSION, EDITORIAL_CRITERIA, evaluationHash, evaluationMetrics, evaluationSampleChecks, evaluationSampleHash, validateEditorialApproval, type ApprovalContext, type PaidEvaluationReport } from "../src/readings/evaluation";
 
 function current(report: PaidEvaluationReport) {
   const models = Object.values(report.models);
@@ -117,4 +117,22 @@ test("editorial receipts: validate exact per-section model, aliases, usage, quot
   }
   const swapped = structuredClone(report); swapped.samples[0].attempts.at(-1)!.model = swapped.models.cheap;
   assert.throws(() => validateEditorialApproval(swapped, signed(swapped), current(swapped)), /approval_sample_invalid/);
+});
+
+test("a review-bound approval cannot skip receipt validation by omitting the context", async () => {
+  const report = await protocolReport();
+  const review = signed(report, "en") as NonNullable<ApprovalContext["review"]>;
+  const context: ApprovalContext = { ...current(report), locale: "en", review };
+  assert.deepEqual(approvalIssues(report, context), [], "the protocol fixture is complete");
+
+  // The inventory omits the receipt context because it may not have a pilot environment. The
+  // approval path always has one, so omitting it there must never produce an empty issue list.
+  const withoutReceipts: ApprovalContext = { ...context, settings: undefined, inputTokenLimits: undefined, servedModels: undefined };
+  assert.ok(approvalIssues(report, withoutReceipts).includes("approval_receipt_invalid"));
+  const incomplete = withoutReceipts as unknown as Parameters<typeof validateEditorialApproval>[2];
+  assert.throws(() => validateEditorialApproval(report, signed(report, "en"), incomplete), /approval_receipt_invalid/);
+
+  // Without a review (the inventory) the same missing context must stay silent: "could not check"
+  // is reported as unknown by the caller, never as approval.
+  assert.ok(!approvalIssues(report, { ...withoutReceipts, review: undefined }).includes("approval_receipt_invalid"));
 });

@@ -11,13 +11,15 @@ import { PAID_SECTION_TITLES } from "../../src/readings/copy";
 import { memoryExecution } from "./reading-execution";
 import { loadPaidEvaluationCorpus } from "../../scripts/lib/paid-evaluation-corpus";
 
-/** Explicit offline fixture runner: no database, environment switches or live-provider factory. */
-export async function syntheticPaidEvaluation(profile: PaidProfile) {
+/** Explicit offline fixture runner: no database, environment switches or live-provider factory.
+ *  `caseIds` narrows the run to the cases a caller actually needs; the corpus facts stay complete. */
+export async function syntheticPaidEvaluation(profile: PaidProfile, caseIds?: readonly string[]) {
   const corpus = loadPaidEvaluationCorpus(profile);
+  const selectedCases = caseIds ? corpus.cases.filter(entry => caseIds.includes(entry.id)) : corpus.cases;
   const settings: GenerationSettings = { models: { cheap: "fixture-1", strong: "fixture-1" }, prices: DEFAULT_MODEL_PRICES };
   const configHash = canonicalHash({ purpose: "synthetic-only", settings, profile });
   const provider = createFixtureProvider(); const samples: EvaluationSample[] = [];
-  for (const entry of corpus.cases) for (const locale of ["en", "es"] as const) {
+  for (const entry of selectedCases) for (const locale of ["en", "es"] as const) {
     const digest = corpus.facts[entry.id]; const base = memoryExecution("paid", settings); const rows = new Map<string, EvaluationAttempt>();
     const execution: GenerationExecution = { ...base,
       admit: async permit => { const id = await base.admit(permit); rows.set(id, { section: permit.section, phase: permit.phase, state: "reserved", model: permit.model, reportedModel: null,
