@@ -40,28 +40,15 @@ import { PAID_ALLOWANCE_POLICY, paidSections, type PaidProfile } from "../src/re
 import { fixtureGuard } from "./lib/free-path-guard";
 import { loadChartCorpus } from "./lib/chart-corpus";
 import { reportSectionResults } from "./lib/pilot-render";
+import { describeSeedError, SeedError } from "./lib/seed-error";
 
 /** Fixture provenance: lets a re-run find and replace exactly what a previous run wrote. */
 const SEED_ENTITLEMENT = "sub_pilot_seed";
 const FREE_CONTENT_VERSION = "pilot-seed/1";
 
-class SeedError extends Error {}
-
 function fail(message: string, code = 1): never {
   console.error(`ERROR ${message}`);
   process.exit(code);
-}
-
-/**
- * Never print a driver message verbatim: a unique violation embeds the offending value, and a
- * connection error can embed the URL. The SQLSTATE is enough to diagnose a fixture run.
- */
-function describe(error: unknown): string {
-  if (error instanceof SeedError) return error.message;
-  const candidate = error as { code?: unknown; cause?: { code?: unknown } } | null;
-  const code = candidate?.code ?? candidate?.cause?.code;
-  if (typeof code === "string") return `database_error (${code})`;
-  return "unexpected_error";
 }
 
 const argv = process.argv.slice(2);
@@ -254,7 +241,7 @@ async function seed(): Promise<SeedOutput> {
 seed().then(output => {
   console.log(JSON.stringify({ email, ...output }, null, 2));
 }).catch(error => {
-  fail(describe(error));
+  fail(describeSeedError(error));
 }).finally(async () => {
   // Without this the process lingers until the pool's idle timeout, which made a single seed take
   // over a minute; the run's output was already printed, so it read as a hang.

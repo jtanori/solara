@@ -224,3 +224,23 @@ test("the seed writes the genuine partial shape, not only complete editions", ga
     await db.delete(users).where(eq(users.id, user.id));
   }
 });
+
+test("the seed names a malformed report without echoing it", gated, async () => {
+  const data = await fixture();
+  const bad = path.join(OUT, "bad.json");
+  writeFileSync(bad, "{not json");
+  try {
+    // The report path is operator-supplied; a wrong path or malformed file must name the
+    // subsystem without printing the file, the JSON snippet or a database URL.
+    const malformed = seed({ ...data, reportPath: bad }, "nobody@example.com", ["--mode", "free"]);
+    assert.equal(malformed.status, 1);
+    assert.match(malformed.stderr, /invalid_report \(invalid JSON\)/);
+    assert.doesNotMatch(malformed.stderr, /not json/);
+
+    const missing = seed({ ...data, reportPath: path.join(OUT, "does-not-exist.json") }, "nobody@example.com", ["--mode", "free"]);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /system_error \(ENOENT\)/);
+  } finally {
+    rmSync(bad, { force: true });
+  }
+});
